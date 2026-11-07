@@ -123,3 +123,8 @@ export function ticksFor(nowMs: number, w: TimeWindow, t0Ms: number, width: numb
 export function scrollFor(x: number, viewW: number, width: number = PLOT_W): number {
   return Math.min(Math.max(0, width - viewW), Math.max(0, x - viewW / 2));
 }
+
+/** `prev` when `next` holds the same events in the same order (by identity), else `next`: keeps a stable array across ticks. */
+export function keepIfSame<T>(prev: T[], next: T[]): T[] {
+  return next.length === prev.length && next.every((e, i) => e === prev[i]) ? prev : next;
+}

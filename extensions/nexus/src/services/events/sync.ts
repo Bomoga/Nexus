@@ -15,7 +15,7 @@ import {
   ModelCallReceipt as ReceiptSchema, NexusEvent as NexusEventSchema, SwarmReview as SwarmReviewSchema,
   Task as TaskSchema, TaskPlan as TaskPlanSchema,
 } from "../../contracts";
-import type { AgentEvent, ApprovalRequest } from "../../contracts";
+import type { AgentEvent, ApprovalRequest, DecidedBy } from "../../contracts";
 import type { OutboxEntry } from "./local-store";
 import type { EventStore } from "./store";
 
@@ -30,6 +30,8 @@ export interface SyncClient {
 export type SyncLocal = EventStore & {
   pendingOutbox?(): OutboxEntry[];
   ackOutbox?(ids: number[], at: string): void;
+  /** Sets a decision whatever the local copy says (LocalStore). Used on machines that do not own the session. */
+  mirrorDecision?(id: string, decision: "approved" | "rejected", decidedBy: DecidedBy, at: string): Promise<ApprovalRequest | undefined>;
 };
 
 /** Opens one dedicated LISTEN connection. `onClose` fires if it later drops. Resolves to an unsubscribe. */
@@ -56,7 +58,7 @@ export interface SyncDeps {
   reconcileMs?: number;
   /** Re-read this much before the cursor so a row committed in the same millisecond is not missed. Default 5000. */
   overlapMs?: number;
-  /** How long an agent event with a gap before it may wait for the missing rows before it is applied anyway. Default 15000. */
+  /** How long an agent event with a gap before it waits for the missing rows (and at least 3 range fetches must confirm the hole) before it is applied anyway. Default 60000. */
   holdMs?: number;
   /** Where the first pull starts (ISO). Default: the beginning of time. */
   since?: string;
@@ -91,9 +93,19 @@ const OUTBOX_TABLE: Record<TableName, OutboxEntry["table"]> = {
   swarm_reviews: "reviews", model_call_receipts: "receipts", task_plans: "plans",
 };
 
+/** updated_at in whole milliseconds (what JavaScript can hold); the cursor and the keyset tuple use it, so there is no rounding gap. */
+const MS = "floor(extract(epoch from updated_at) * 1000)::bigint";
+const FROM_MS = "to_timestamp(($1::bigint / 1000.0)::double precision)";
+
 export const SYNC_SQL = {
   /** Table names come from the fixed list above, never from input. */
-  poll: (table: TableName) => `SELECT * FROM ${table} WHERE updated_at > $1::timestamptz ORDER BY updated_at, ${KEY_COLUMN[table]} LIMIT $2`,
+  poll: (table: TableName) => `SELECT *, ${MS} AS sync_ms FROM ${table} WHERE updated_at > ${FROM_MS} ORDER BY sync_ms, ${KEY_COLUMN[table]} LIMIT $2`,
+  /** Keyset page: strictly after the (millisecond, key) tuple of the previous page's last row, so a full page of rows with one timestamp still advances. */
+  pollAfter: (table: TableName) => {
+    const keys = table === "agent_events" ? ["session_id", "seq"] : [SINGLE_KEY[table]!];
+    const params = keys.map((_, i) => (table === "agent_events" && i === 1 ? `$${i + 2}::int` : `$${i + 2}::text`)).join(", ");
+    return `SELECT *, ${MS} AS sync_ms FROM ${table} WHERE updated_at >= ${FROM_MS} AND (${MS}, ${keys.join(", ")}) > ($1::bigint, ${params}) ORDER BY sync_ms, ${KEY_COLUMN[table]} LIMIT $${keys.length + 2}`;
+  },
   byKey: (table: TableName) => `SELECT * FROM ${table} WHERE ${SINGLE_KEY[table]} = $1`,
   /** One row per seq (two machines may have written the same event); the earliest wins. */
   agentFrom: `SELECT DISTINCT ON (seq) * FROM agent_events WHERE session_id = $1 AND seq >= $2 ORDER BY seq, at LIMIT $3`,
@@ -113,6 +125,11 @@ function iso(value: unknown): string | undefined {
   if (value === null || value === undefined) return undefined;
   const d = value instanceof Date ? value : new Date(String(value));
   return Number.isNaN(d.getTime()) ? String(value) : d.toISOString();
+}
+/** A pulled row's updated_at in ms (sync_ms from the poll SQL when present). */
+function updatedMs(r: Row): number {
+  if (r.sync_ms !== undefined && r.sync_ms !== null) { const n = Number(r.sync_ms); if (Number.isFinite(n)) return n; }
+  return epoch(r.updated_at);
 }
 function epoch(value: unknown): number {
   const d = value instanceof Date ? value : new Date(String(value));
@@ -157,7 +174,8 @@ export function createSync(deps: SyncDeps): Sync {
   const pollMs = deps.pollMs ?? 2000;
   const reconcileMs = deps.reconcileMs ?? 30_000;
   const overlapMs = deps.overlapMs ?? 5000;
-  const holdMs = deps.holdMs ?? 15_000;
+  const holdMs = deps.holdMs ?? 60_000;
+  const MIN_HOLD_FETCHES = 3;
   const batch = deps.batchSize ?? 500;
 
   const stats: SyncStats = { applied: 0, skippedRows: 0, notifications: 0, pulls: 0, gapFetches: 0 };
@@ -167,7 +185,12 @@ export function createSync(deps: SyncDeps): Sync {
   /** key -> updated_at already applied, so the overlap window does not re-apply a row. */
   const seen = new Map<string, number>();
   /** Agent events waiting for missing seqs below them. */
-  const held = new Map<string, { rows: Row[]; since: number }>();
+  const held = new Map<string, { rows: Row[]; since: number; fetches: number; pull: number }>();
+  /** Agent events that never parse: handled (skipped) so later seqs are not treated as a gap behind them. */
+  const badSeqs = new Map<string, Set<number>>();
+  const loggedHoles = new Set<string>();
+  const pendingAgentNotify = new Set<string>();
+  let agentFlushQueued = false;
   const loggedConflicts = new Set<string>();
 
   let running = false;
@@ -203,9 +226,11 @@ export function createSync(deps: SyncDeps): Sync {
     if (!local.pendingOutbox || !local.ackOutbox) { await change(); return; }
     const before = new Set(local.pendingOutbox().map(e => e.id));
     await change();
+    // Exactly one entry: the first one this change created for the key. Another writer's entry for the same key must stay queued.
     const fresh = local.pendingOutbox()
-      .filter(e => !before.has(e.id) && e.table === OUTBOX_TABLE[table] && e.op === op && outboxKey(e) === key).map(e => e.id);
-    if (fresh.length) local.ackOutbox(fresh, new Date(now()).toISOString());
+      .filter(e => !before.has(e.id) && e.table === OUTBOX_TABLE[table] && e.op === op && outboxKey(e) === key)
+      .sort((a, b) => a.id - b.id);
+    if (fresh.length) local.ackOutbox([fresh[0].id], new Date(now()).toISOString());
   }
   function outboxKey(e: OutboxEntry): string {
     const r = (e.record ?? {}) as Record<string, unknown>;
@@ -216,6 +241,18 @@ export function createSync(deps: SyncDeps): Sync {
   /** True when this machine has a write for the key that the remote has not confirmed yet (the local copy is newer). */
   function dirty(table: TableName, key: string): boolean {
     return !!local.pendingOutbox?.().some(e => e.table === OUTBOX_TABLE[table] && outboxKey(e) === key);
+  }
+  /** Keys with an unconfirmed local write right now; taken before a query so a flush that lands while the query runs cannot let a stale row through. */
+  function dirtySnapshot(): Set<string> {
+    const out = new Set<string>();
+    for (const e of local.pendingOutbox?.() ?? []) out.add(`${e.table}:${outboxKey(e)}`);
+    return out;
+  }
+  const usableId = (id: string | undefined): id is string => !!id && id.trim() !== "" && !/^somevalue/i.test(id.trim());
+  /** True when this machine runs the session (it is the authority for its approvals). An unknown session is not owned. */
+  async function ownsSession(sessionId: string): Promise<boolean> {
+    const ses = await local.getSession(sessionId);
+    return !!ses && usableId(ses.machineId) && usableId(machineId) && ses.machineId === machineId;
   }
 
   // ---- row -> contract ----
@@ -276,9 +313,12 @@ export function createSync(deps: SyncDeps): Sync {
     if (!cur.decision) {
       await quiet("approvals", a.id, "decide", () => local.decideApproval(a.id, a.decision!, a.decidedBy!, a.decidedAt!));
     } else if (cur.decision !== a.decision || cur.decidedBy?.userId !== a.decidedBy.userId || cur.decidedBy?.via !== a.decidedBy.via) {
-      if (!loggedConflicts.has(a.id)) {
+      if (!(await ownsSession(a.sessionId)) && local.mirrorDecision) {
+        await local.mirrorDecision(a.id, a.decision, a.decidedBy, a.decidedAt);   // the owner's agent acted on the shared decision
+        stats.applied++;
+      } else if (!loggedConflicts.has(a.id)) {
         loggedConflicts.add(a.id);
-        log(`sync: approval ${a.id} was decided differently on another machine; the local decision is kept`);
+        log(`sync: approval ${a.id} was decided differently on another machine; this machine owns the session, so the local decision is kept`);
       }
     }
   }
@@ -286,25 +326,27 @@ export function createSync(deps: SyncDeps): Sync {
   async function applyAgentRows(sessionId: string, rows: Row[]): Promise<void> {
     const mine = await local.agentEvents(sessionId, 0);
     const have = new Set(mine.map(e => e.seq));
-    let max = mine.length ? Math.max(...mine.map(e => e.seq)) : -1;
+    const bad = badSeqs.get(sessionId) ?? new Set<number>();
+    badSeqs.set(sessionId, bad);
+    for (const n of bad) have.add(n);
+    let max = have.size ? Math.max(...have) : -1;
     const bySeq = new Map<number, Row>();
     for (const r of rows) bySeq.set(Number(r.seq), r);
-    const heldNow = held.get(sessionId);
-    if (heldNow) for (const r of heldNow.rows) if (!bySeq.has(Number(r.seq))) bySeq.set(Number(r.seq), r);
-    held.delete(sessionId);
+    const prev = held.get(sessionId);
+    if (prev) for (const r of prev.rows) if (!bySeq.has(Number(r.seq))) bySeq.set(Number(r.seq), r);
     const ordered = [...bySeq.values()].sort((a, b) => Number(a.seq) - Number(b.seq));
-    const heldSince = heldNow?.since ?? now();
+    const heldSince = prev?.since ?? now();
+    let fetches = prev?.fetches ?? 0;
 
-    const apply = async (r: Row): Promise<boolean> => {
+    const apply = async (r: Row): Promise<void> => {
       const seq = Number(r.seq);
-      if (have.has(seq)) return true;
+      if (have.has(seq)) return;
       const e = mappers.agent_events(r);
-      if (!e) return true;   // counted and skipped; do not block the rows behind it
+      if (!e) { bad.add(seq); have.add(seq); if (seq > max) max = seq; return; }   // counted once; never a gap behind it
       await quiet("agent_events", `${sessionId}:${seq}`, "put", () => local.appendAgentEvent(e as AgentEvent));
       have.add(seq);
       if (seq > max) max = seq;
       stats.applied++;
-      return true;
     };
 
     for (let i = 0; i < ordered.length; i++) {
@@ -322,22 +364,27 @@ export function createSync(deps: SyncDeps): Sync {
         const lo = known ? from : fill.length ? Number(fill[0].seq) : seq;
         let hole = false;
         for (let n = lo; n < seq; n++) if (!have.has(n)) { hole = true; break; }
-        if (hole && now() - heldSince < holdMs) {
-          held.set(sessionId, { rows: ordered.slice(i), since: heldSince });   // retried on the next pull
-          return;
+        if (hole) {
+          fetches++;
+          if (now() - heldSince < holdMs || fetches < MIN_HOLD_FETCHES) {
+            held.set(sessionId, { rows: ordered.slice(i), since: heldSince, fetches, pull: stats.pulls });   // retried on the next pull
+            return;
+          }
+          if (!loggedHoles.has(sessionId)) {
+            loggedHoles.add(sessionId);
+            log(`sync: session ${sessionId} is missing events below seq ${seq}; applying anyway`);
+          }
         }
-        if (hole) log(`sync: session ${sessionId} is missing events below seq ${seq}; applying anyway`);
       }
       await apply(r);
     }
+    held.delete(sessionId);
   }
 
-  async function applyRows(table: TableName, rows: Row[]): Promise<number> {
-    let maxMs = 0;
+  async function applyRows(table: TableName, rows: Row[], snap: Set<string>): Promise<void> {
     const agentBySession = new Map<string, Row[]>();
     for (const r of rows) {
-      const updated = epoch(r.updated_at);
-      maxMs = Math.max(maxMs, updated);
+      const updated = updatedMs(r);
       const key = `${table}:${rowKey(table, r)}`;
       if (seen.has(key) && seen.get(key)! >= updated) continue;
       if (table === "agent_events") {
@@ -345,15 +392,19 @@ export function createSync(deps: SyncDeps): Sync {
         if (!agentBySession.has(sid)) agentBySession.set(sid, []);
         agentBySession.get(sid)!.push(r);
       } else {
-        await applyOne(table, r);
+        await applyOne(table, r, snap);
+        seen.set(key, updated);
       }
-      seen.set(key, updated);
     }
-    for (const [sid, list] of agentBySession) await applyAgentRows(sid, list);
-    return maxMs;
+    // Marked seen only after the local append succeeded; a failure leaves the rows to be pulled again.
+    for (const [sid, list] of agentBySession) {
+      await applyAgentRows(sid, list);
+      for (const r of list) seen.set(`agent_events:${rowKey("agent_events", r)}`, updatedMs(r));
+    }
   }
 
-  async function applyOne(table: TableName, r: Row): Promise<void> {
+  async function applyOne(table: TableName, r: Row, snap: Set<string>): Promise<void> {
+    const stale = (t: TableName, key: string) => dirty(t, key) || snap.has(`${OUTBOX_TABLE[t]}:${key}`);
     switch (table) {
       case "events": {
         if (r.machine_id === machineId) return;
@@ -366,7 +417,7 @@ export function createSync(deps: SyncDeps): Sync {
       case "sessions": {
         if (r.machine_id === machineId) return;
         const s = mappers.sessions(r);
-        if (!s || dirty("sessions", s.id)) return;
+        if (!s || stale("sessions", s.id)) return;
         const cur = await local.getSession(s.id);
         if (cur && isDeepStrictEqual(cur, s)) return;
         await quiet("sessions", s.id, "put", () => local.putSession(s));
@@ -375,7 +426,7 @@ export function createSync(deps: SyncDeps): Sync {
       }
       case "tasks": {
         const t = mappers.tasks(r);
-        if (!t || dirty("tasks", t.id)) return;
+        if (!t || stale("tasks", t.id)) return;
         const cur = await local.getTask(t.id);
         if (cur && isDeepStrictEqual(cur, t)) return;
         await quiet("tasks", t.id, "put", () => local.putTask(t));
@@ -391,9 +442,9 @@ export function createSync(deps: SyncDeps): Sync {
       }
       case "swarm_reviews": {
         const v = mappers.swarm_reviews(r);
-        if (!v || dirty("swarm_reviews", v.id)) return;
+        if (!v || stale("swarm_reviews", v.id)) return;
         const cur = await local.getReviewForApproval(v.approvalId);
-        if (cur && cur.id === v.id && isDeepStrictEqual(cur, v)) return;
+        if (cur && cur.id === v.id && (isDeepStrictEqual(cur, v) || cur.at > v.at)) return;   // never regress to an older version
         await quiet("swarm_reviews", v.id, "put", () => local.putReview(v));
         stats.applied++;
         return;
@@ -407,9 +458,9 @@ export function createSync(deps: SyncDeps): Sync {
       }
       case "task_plans": {
         const p = mappers.task_plans(r);
-        if (!p || dirty("task_plans", p.id)) return;
+        if (!p || stale("task_plans", p.id)) return;
         const cur = await local.getPlan(p.id);
-        if (cur && isDeepStrictEqual(cur, p)) return;
+        if (cur && (isDeepStrictEqual(cur, p) || cur.at > p.at)) return;   // never regress to an older version
         await quiet("task_plans", p.id, "put", () => local.putPlan(p));
         stats.applied++;
         return;
@@ -420,13 +471,21 @@ export function createSync(deps: SyncDeps): Sync {
 
   // ---- pulling ----
   async function pullTable(table: TableName): Promise<void> {
+    // Keyset paging within a cycle: the overlap applies to the first page only; later pages continue after the previous
+    // page's last (millisecond, key) tuple and stop only on a short page, so any number of rows with one timestamp are read.
+    let after: { ms: number; keys: unknown[] } | undefined;
     for (;;) {
-      const since = new Date(Math.max(0, cursor.get(table)! - overlapMs)).toISOString();
-      const rows = await q(SYNC_SQL.poll(table), [since, batch]);
-      const before = cursor.get(table)!;
-      const maxMs = await applyRows(table, rows);
-      if (maxMs > before) cursor.set(table, maxMs);
-      if (rows.length < batch || maxMs <= before) break;   // short batch, or no progress (all one millisecond)
+      const snap = dirtySnapshot();
+      const rows = after
+        ? await q(SYNC_SQL.pollAfter(table), [after.ms, ...after.keys, batch])
+        : await q(SYNC_SQL.poll(table), [Math.max(0, cursor.get(table)! - overlapMs), batch]);
+      await applyRows(table, rows, snap);
+      if (rows.length) {
+        const last = rows[rows.length - 1];
+        after = { ms: updatedMs(last), keys: table === "agent_events" ? [String(last.session_id), Number(last.seq)] : [rowKey(table, last)] };
+        if (after.ms > cursor.get(table)!) cursor.set(table, after.ms);
+      }
+      if (rows.length < batch) break;
     }
     trimSeen();
   }
@@ -438,7 +497,7 @@ export function createSync(deps: SyncDeps): Sync {
   }
 
   async function retryHeld(): Promise<void> {
-    for (const sid of [...held.keys()]) await applyAgentRows(sid, []);
+    for (const [sid, h] of [...held]) if (h.pull !== stats.pulls) await applyAgentRows(sid, []);   // not the ones this very cycle just held
   }
 
   /** The body of one cycle: recover if needed, then pull everything. Throws RemoteError on a remote failure. */
@@ -446,8 +505,13 @@ export function createSync(deps: SyncDeps): Sync {
     stats.pulls++;
     if (degraded) await q(SYNC_SQL.probe);   // still down? throws before anything else
     if (needFlush) {
-      try { await deps.flushOutbox(); } catch { log("sync: flushing the outbox failed; it stays queued"); }
-      needFlush = false;
+      try {
+        const result = await deps.flushOutbox();
+        const remaining = (result as { remaining?: unknown } | null | undefined)?.remaining;
+        needFlush = typeof remaining === "number" && remaining > 0;   // still queued: try again next cycle
+      } catch {
+        log("sync: flushing the outbox failed; retrying next cycle");   // needFlush stays true
+      }
     }
     for (const t of SYNC_TABLES) await pullTable(t);
     await retryHeld();
@@ -487,33 +551,57 @@ export function createSync(deps: SyncDeps): Sync {
 
   // ---- NOTIFY ----
   async function handleNotify(n: NotifyPayload): Promise<void> {
-    stats.notifications++;
     if (degraded) return;   // the next poll cycle recovers and pulls everything
     try {
-      if (n.table === "agent_events") {
-        const sid = n.sessionId ?? n.id.slice(0, Math.max(0, n.id.lastIndexOf(":")));
-        if (!sid) return;
-        const mine = await local.agentEvents(sid, 0);
-        let from = mine.length ? Math.max(...mine.map(e => e.seq)) + 1 : 0;
-        for (;;) {
-          const rows = await q(SYNC_SQL.agentFrom, [sid, from, batch]);
-          if (rows.length) await applyAgentRows(sid, rows);
-          if (rows.length < batch) break;
-          from = Number(rows[rows.length - 1].seq) + 1;
-        }
-        return;
-      }
-      const rows = await q(SYNC_SQL.byKey(n.table), [n.id]);
-      await applyRows(n.table, rows);
+      const snap = dirtySnapshot();
+      const rows = await q(SYNC_SQL.byKey(n.table as Exclude<TableName, "agent_events">), [n.id]);
+      await applyRows(n.table, rows, snap);
     } catch (err) {
       onFailure(err);
       schedulePoll();
     }
   }
 
+  /** One fetch per session per tick, however many NOTIFYs arrived; sessions this machine runs are already local. */
+  async function syncSession(sid: string): Promise<void> {
+    if (await ownsSession(sid)) return;
+    const mine = await local.agentEvents(sid, 0);
+    let from = mine.length ? Math.max(...mine.map(e => e.seq)) + 1 : 0;
+    for (;;) {
+      const rows = await q(SYNC_SQL.agentFrom, [sid, from, batch]);
+      if (rows.length) await applyAgentRows(sid, rows);
+      if (rows.length < batch) break;
+      from = Number(rows[rows.length - 1].seq) + 1;
+    }
+  }
+
+  function queueAgentNotify(sid: string): void {
+    pendingAgentNotify.add(sid);
+    if (agentFlushQueued) return;
+    agentFlushQueued = true;
+    void serial(async () => {
+      agentFlushQueued = false;
+      const sids = [...pendingAgentNotify];
+      pendingAgentNotify.clear();
+      if (degraded || !running) return;
+      try {
+        for (const sid of sids) await syncSession(sid);
+      } catch (err) {
+        onFailure(err);
+        schedulePoll();
+      }
+    });
+  }
+
   function onPayload(payload: string): void {
     const n = parseNotify(payload);
     if (!n || !running) return;
+    stats.notifications++;
+    if (n.table === "agent_events") {
+      const sid = n.sessionId ?? n.id.slice(0, Math.max(0, n.id.lastIndexOf(":")));
+      if (sid) queueAgentNotify(sid);
+      return;
+    }
     void serial(() => handleNotify(n));
   }
 

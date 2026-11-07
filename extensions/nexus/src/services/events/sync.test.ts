@@ -23,6 +23,7 @@ class FakeRemote implements SyncClient {
   tables = Object.fromEntries(SYNC_TABLES.map(t => [t, [] as Row[]])) as Record<string, Row[]>;
   down = false;
   log: string[] = [];
+  onPoll?: (table: string) => void;
   hidden = new Set<string>();   // "agent_events:ses:seq" rows not yet visible (uncommitted)
   private keyOf(t: string, r: Row): string { return t === "agent_events" ? `${r.session_id}:${r.seq}` : String(t === "model_call_receipts" ? r.call_id : r.id); }
 
@@ -34,15 +35,20 @@ class FakeRemote implements SyncClient {
   }
 
   async query(text: string, params: unknown[] = []) {
-    this.log.push(text === SYNC_SQL.probe ? "probe" : text.slice(0, 60));
+    this.log.push(text === SYNC_SQL.probe ? "probe" : text);
     if (this.down) throw Object.assign(new Error("connection refused"), { code: "ECONNREFUSED" });
     if (text === SYNC_SQL.probe) return { rows: [], rowCount: 0 };
     for (const t of SYNC_TABLES) {
-      if (text === SYNC_SQL.poll(t)) {
-        const since = Date.parse(String(params[0]));
-        const rows = this.visible(t).filter(r => (r.updated_at as Date).getTime() > since)
-          .sort((a, b) => (a.updated_at as Date).getTime() - (b.updated_at as Date).getTime() || this.keyOf(t, a).localeCompare(this.keyOf(t, b)))
-          .slice(0, Number(params[1]));
+      if (text === SYNC_SQL.poll(t) || text === SYNC_SQL.pollAfter(t)) {
+        const after = text === SYNC_SQL.pollAfter(t);
+        const ms = Number(params[0]);
+        const limit = Number(params[params.length - 1]);
+        const tuple = (r: Row): [number, string, number] => [(r.updated_at as Date).getTime(), t === "agent_events" ? String(r.session_id) : this.keyOf(t, r), t === "agent_events" ? Number(r.seq) : 0];
+        const cmp = (x: [number, string, number], y: [number, string, number]) => x[0] - y[0] || (x[1] < y[1] ? -1 : x[1] > y[1] ? 1 : 0) || x[2] - y[2];
+        const bound: [number, string, number] = [ms, String(params[1] ?? ""), Number(params[2] ?? 0)];
+        const rows = this.visible(t).filter(r => (after ? cmp(tuple(r), bound) > 0 : (r.updated_at as Date).getTime() > ms))
+          .sort((a, b) => cmp(tuple(a), tuple(b))).slice(0, limit).map(r => ({ ...r, sync_ms: String((r.updated_at as Date).getTime()) }));
+        this.onPoll?.(t);
         return { rows, rowCount: rows.length };
       }
       if (t !== "agent_events" && text === SYNC_SQL.byKey(t)) {
@@ -89,7 +95,8 @@ const msg = (sessionId: string, seq: number): AgentEvent => ({ sessionId, seq, a
 let dir: string, local: LocalStore, remote: FakeRemote, timers: FakeTimers, flushes: string[], logs: string[], online: boolean[], sync: Sync;
 let listenFn: ListenFn | undefined, notify: ((p: string) => void) | undefined, onClose: ((e?: unknown) => void) | undefined, unlistened: number;
 
-function make(opts: { listen?: "ok" | "fail" | "none"; since?: string } = {}) {
+let flushImpl: () => Promise<unknown> = async () => undefined;
+function make(opts: { listen?: "ok" | "fail" | "none"; since?: string; batchSize?: number; holdMs?: number; local?: LocalStore } = {}) {
   const mode = opts.listen ?? "none";
   listenFn = mode === "none" ? undefined : async (_c, onPayload, close) => {
     if (mode === "fail") throw new Error("no listen");
@@ -97,8 +104,8 @@ function make(opts: { listen?: "ok" | "fail" | "none"; since?: string } = {}) {
     return async () => { unlistened++; };
   };
   sync = createSync({
-    client: remote, listen: listenFn, local, machineId: ME, timers, since: opts.since,
-    flushOutbox: async () => { flushes.push("flush"); remote.log.push("flush"); },
+    client: remote, listen: listenFn, local: opts.local ?? local, machineId: ME, timers, since: opts.since, batchSize: opts.batchSize, holdMs: opts.holdMs,
+    flushOutbox: async () => { flushes.push("flush"); remote.log.push("flush"); return flushImpl(); },
     setOnline: o => online.push(o), log: m => logs.push(m), pollMs: 2000, reconcileMs: 30_000,
   });
   return sync;
@@ -108,7 +115,7 @@ beforeEach(() => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), "nexus-sync-"));
   local = new LocalStore({ dir, redact: t => t });
   remote = new FakeRemote(); timers = new FakeTimers();
-  flushes = []; logs = []; online = []; unlistened = 0; notify = undefined; onClose = undefined;
+  flushImpl = async () => undefined; flushes = []; logs = []; online = []; unlistened = 0; notify = undefined; onClose = undefined;
 });
 afterEach(async () => { await sync?.stop(); fs.rmSync(dir, { recursive: true, force: true }); });
 
@@ -132,7 +139,7 @@ describe("sync: pulling what other machines wrote", () => {
     await sync.pullNow();
     expect((await local.agentEvents("ses_b", 0)).map(e => e.seq)).toEqual([0, 1, 2, 3]);
     expect(sync.stats().gapFetches).toBe(1);
-    expect(remote.log.some(l => l === SYNC_SQL.agentRange.slice(0, 60))).toBe(true);
+    expect(remote.log.some(l => l === SYNC_SQL.agentRange)).toBe(true);
   });
 
   it("holds an event whose predecessor is not visible yet, and never exposes a gap", async () => {
@@ -190,7 +197,8 @@ describe("sync: approvals", () => {
     expect((await local.getApproval("apr_new"))?.decision).toBe("rejected");
   });
 
-  it("does not overwrite a different local decision, and says so once", async () => {
+  it("the session's owner keeps a different local decision, and says so once", async () => {
+    await local.putSession({ ...fx.session, id: "ses_b", machineId: ME });
     await local.putApproval({ ...fx.approval, id: "apr_y", sessionId: "ses_b" });
     await local.decideApproval("apr_y", "rejected", byA, T(20));
     remote.put("approvals", approvalRow("apr_y", "approved", byB), T(31));
@@ -203,6 +211,154 @@ describe("sync: approvals", () => {
   });
 });
 
+describe("sync: approvals and ownership", () => {
+  it("a machine that does not own the session converges to the shared decision", async () => {
+    await local.putSession({ ...fx.session, id: "ses_b", machineId: OTHER });
+    await local.putApproval({ ...fx.approval, id: "apr_n", sessionId: "ses_b" });
+    await local.decideApproval("apr_n", "rejected", byA, T(20));
+    remote.put("approvals", approvalRow("apr_n", "approved", byB), T(31));
+    await make().start();
+    const a = await local.getApproval("apr_n");
+    expect([a?.decision, a?.decidedBy?.userId]).toEqual(["approved", "U_B"]);
+  });
+
+  it("an unknown session, or an unusable machine id, is not owned", async () => {
+    await local.putApproval({ ...fx.approval, id: "apr_u", sessionId: "ses_unknown" });
+    await local.decideApproval("apr_u", "rejected", byA, T(20));
+    await local.putSession({ ...fx.session, id: "ses_blank", machineId: "  " });
+    await local.putApproval({ ...fx.approval, id: "apr_v", sessionId: "ses_blank" });
+    await local.decideApproval("apr_v", "rejected", byA, T(20));
+    remote.put("approvals", { ...approvalRow("apr_u", "approved", byB), session_id: "ses_unknown" }, T(31));
+    remote.put("approvals", { ...approvalRow("apr_v", "approved", byB), session_id: "ses_blank" }, T(31));
+    await make().start();
+    expect([(await local.getApproval("apr_u"))?.decision, (await local.getApproval("apr_v"))?.decision]).toEqual(["approved", "approved"]);
+  });
+});
+
+describe("sync: paging", () => {
+  it("reads 7 rows that share one timestamp with a batch size of 3", async () => {
+    for (let i = 0; i < 7; i++) remote.put("events", eventRow({ ...fx.event, id: `ws:commit:s${i}`, machineId: OTHER }), T(5));
+    await make({ batchSize: 3 }).start();
+    expect((await local.queryEvents(ALL)).map(e => e.id).sort()).toEqual([0, 1, 2, 3, 4, 5, 6].map(i => `ws:commit:s${i}`));
+  });
+
+  it("still polls newer rows after a full page that sits inside the overlap window", async () => {
+    for (let i = 0; i < 3; i++) remote.put("events", eventRow({ ...fx.event, id: `ws:commit:f${i}`, machineId: OTHER }), T(5));
+    await make({ batchSize: 3 }).start();
+    remote.put("events", eventRow({ ...fx.event, id: "ws:commit:newer", machineId: OTHER }), T(6));
+    await sync.pullNow();
+    expect((await local.queryEvents(ALL)).map(e => e.id)).toContain("ws:commit:newer");
+  });
+});
+
+describe("sync: not losing or regressing local writes", () => {
+  it("leaves a subscriber's writes made during an apply in the outbox", async () => {
+    let wrote = false;
+    local.subscribeApprovals(a => {
+      if (a.id !== "apr_s" || wrote) return;
+      wrote = true;
+      void local.putApproval({ ...fx.approval, id: "apr_other", sessionId: "ses_b" });
+      void local.putApproval({ ...a, reason: "edited by the user (model-written)" });   // same key, same op
+    });
+    remote.put("approvals", approvalRow("apr_s"), T(31));
+    await make().start();
+    const queued = local.pendingOutbox().map(e => `${e.table}:${e.op}:${(e.record as { id: string; reason?: string }).id}:${(e.record as { reason?: string }).reason?.slice(0, 6)}`).sort();
+    expect(queued).toEqual(["approvals:put:apr_other:Need t", "approvals:put:apr_s:edited"]);
+  });
+
+  it("does not let a stale row regress a task whose local write was flushed while the query ran", async () => {
+    await local.putTask({ ...fx.task, title: "v2 local" });
+    remote.put("tasks", { id: fx.task.id, title: "v1 old", brief: fx.task.brief, source: fx.task.source, workspace_id: fx.task.workspaceId, status: fx.task.status, session_id: null, created_at: D(fx.task.createdAt), code_refs: [], created_by: null }, T(3));
+    remote.onPoll = t => { if (t === "tasks") local.ackOutbox(local.pendingOutbox().map(e => e.id), T(4)); };   // the flush lands mid-query
+    await make().start();
+    expect((await local.getTask(fx.task.id))?.title).toBe("v2 local");
+  });
+
+  it("does not regress a review or a plan to an older version", async () => {
+    await local.putReview({ ...fx.review, at: T(50), summary: "newer (model-written)" });
+    local.ackOutbox(local.pendingOutbox().map(e => e.id), T(51));
+    const r = fx.review;
+    remote.put("swarm_reviews", { id: r.id, session_id: r.sessionId, approval_id: r.approvalId, swarm_type: r.swarmType, status: r.status, verdict: r.verdict, summary: "older (model-written)", judges: r.judges, at: D(T(10)), duration_ms: 1 }, T(11));
+    await make().start();
+    expect((await local.getReviewForApproval(r.approvalId))?.summary).toBe("newer (model-written)");
+  });
+});
+
+describe("sync: agent event edge cases", () => {
+  it("does not stall a session behind an event that never parses", async () => {
+    remote.put("agent_events", agentRow(msg("ses_b", 0)), T(10));
+    remote.put("agent_events", { ...agentRow(msg("ses_b", 1)), type: "bogus" }, T(11));
+    remote.put("agent_events", agentRow(msg("ses_b", 2)), T(12));
+    await make().start();
+    expect((await local.agentEvents("ses_b", 0)).map(e => e.seq)).toEqual([0, 2]);
+    expect(sync.stats().skippedRows).toBe(1);
+    expect(sync.stats().gapFetches).toBe(0);
+    remote.put("agent_events", agentRow(msg("ses_b", 3)), T(13));
+    await sync.pullNow();
+    expect((await local.agentEvents("ses_b", 0)).map(e => e.seq)).toEqual([0, 2, 3]);
+    expect(sync.stats().skippedRows).toBe(1);
+  });
+
+  it("retries an event whose local append failed", async () => {
+    for (const seq of [0, 1]) remote.put("agent_events", agentRow(msg("ses_b", seq)), T(10 + seq));
+    const real = local.appendAgentEvent.bind(local);
+    let failed = false;
+    local.appendAgentEvent = async e => { if (!failed && e.seq === 1) { failed = true; throw new Error("disk full"); } return real(e); };
+    await make().start();
+    expect((await local.agentEvents("ses_b", 0)).map(e => e.seq)).toEqual([0]);
+    await sync.pullNow();
+    expect((await local.agentEvents("ses_b", 0)).map(e => e.seq)).toEqual([0, 1]);
+  });
+
+  it("applies past a hole only after the hold time and 3 range fetches, logging once", async () => {
+    for (const seq of [0, 3]) remote.put("agent_events", agentRow(msg("ses_b", seq)), T(10 + seq));
+    let clock = 1_000_000;
+    sync = createSync({ client: remote, local, machineId: ME, timers, flushOutbox: async () => undefined, holdMs: 100, now: () => clock, log: m => logs.push(m) });
+    await sync.start();
+    expect((await local.agentEvents("ses_b", 0)).map(e => e.seq)).toEqual([0]);   // fetch 1
+    clock += 500;
+    await sync.pullNow();                                                          // fetch 2: time is up, count is not
+    expect((await local.agentEvents("ses_b", 0)).map(e => e.seq)).toEqual([0]);
+    await sync.pullNow();                                                          // fetch 3
+    expect((await local.agentEvents("ses_b", 0)).map(e => e.seq)).toEqual([0, 3]);
+    await sync.pullNow();
+    expect(logs.filter(l => l.includes("missing events"))).toHaveLength(1);
+  });
+
+  it("makes one query for 100 NOTIFYs about one session, and none for a session this machine owns", async () => {
+    await local.putSession({ ...fx.session, id: "ses_mine", machineId: ME });
+    await make({ listen: "ok" }).start();
+    remote.log.length = 0;
+    remote.put("agent_events", agentRow(msg("ses_n", 0)), T(70));
+    for (let i = 0; i < 100; i++) notify!(JSON.stringify({ table: "agent_events", id: "ses_n:0", session_id: "ses_n" }));
+    for (let i = 0; i < 20; i++) notify!(JSON.stringify({ table: "agent_events", id: "ses_mine:0", session_id: "ses_mine" }));
+    await settle();
+    expect(remote.log.filter(l => l === SYNC_SQL.agentFrom)).toHaveLength(1);
+    expect((await local.agentEvents("ses_n", 0)).map(e => e.seq)).toEqual([0]);
+  });
+});
+
+describe("sync: flush retry", () => {
+  it("retries a failed outbox flush on the next cycle", async () => {
+    let calls = 0;
+    flushImpl = async () => { calls++; if (calls === 1) throw new Error("still down"); return { flushed: 0, remaining: 0 }; };
+    await make().start();
+    expect(calls).toBe(1);
+    await timers.fire();
+    expect(calls).toBe(2);
+    await timers.fire();
+    expect(calls).toBe(2);   // flushed, so not again
+  });
+
+  it("keeps flushing while the combined store reports entries remaining", async () => {
+    let calls = 0;
+    flushImpl = async () => { calls++; return { flushed: 0, remaining: calls < 3 ? 2 : 0 }; };
+    await make().start();
+    await timers.fire(); await timers.fire(); await timers.fire();
+    expect(calls).toBe(3);
+  });
+});
+
 describe("sync: NOTIFY and polling", () => {
   it("applies a NOTIFY by fetching just the named rows", async () => {
     await make({ listen: "ok" }).start();
@@ -212,7 +368,7 @@ describe("sync: NOTIFY and polling", () => {
     notify!(JSON.stringify({ table: "events", id: ev.id, session_id: null }));
     await settle();
     expect((await local.queryEvents(ALL)).map(e => e.id)).toEqual([ev.id]);
-    expect(remote.log).toEqual([SYNC_SQL.byKey("events").slice(0, 60)]);
+    expect(remote.log).toEqual([SYNC_SQL.byKey("events")]);
 
     for (const seq of [0, 1]) remote.put("agent_events", agentRow(msg("ses_n", seq)), T(71));
     notify!(JSON.stringify({ table: "agent_events", id: "ses_n:1", session_id: "ses_n" }));
@@ -280,7 +436,7 @@ describe("sync: outages", () => {
     await timers.fire();
     expect(online).toEqual([true, false, true]);
     const flushAt = remote.log.indexOf("flush");
-    const firstPull = remote.log.findIndex(l => l.startsWith("SELECT * FROM"));
+    const firstPull = remote.log.findIndex(l => l.startsWith("SELECT *, floor"));
     expect(flushAt).toBeGreaterThanOrEqual(0);
     expect(flushAt).toBeLessThan(firstPull);
     expect(remote.log[0]).toBe("probe");

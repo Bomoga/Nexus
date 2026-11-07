@@ -5,6 +5,14 @@
 --    `WHERE updated_at > $since` when LISTEN is unavailable.
 -- 2. AFTER INSERT OR UPDATE triggers send a tiny NOTIFY on channel 'nexus': {"table","id","session_id"}. Ids only, never row
 --    text (pg_notify payloads are limited to 8000 bytes). agent_events uses id = '<session_id>:<seq>'.
+-- The table name in each payload is hardcoded per function: inside a TimescaleDB chunk trigger TG_TABLE_NAME may be the chunk
+-- name (_hyper_N_M_chunk), which the extension would not recognise.
+-- Live check (two psql sessions; the second commits one row per hypertable, then deletes it, which fires nothing):
+--   session 1:  LISTEN nexus;
+--   session 2:  INSERT INTO events (id, at, kind, orbit, title, actor_name, actor_kind, target, workspace_id, machine_id)
+--                 VALUES ('chk', now(), 'commit', 'main', 't', 'a', 'human', '{}', 'w', 'm');   -- likewise agent_events, model_call_receipts
+--   session 1 must print a payload like {"table":"events","id":"chk","session_id":null}, never a _hyper_ name.
+--   Automated: TIGER_URL=... npm run test:int -- sync
 -- Row-level triggers are supported on TimescaleDB hypertables (they are created on every chunk). ON CONFLICT DO NOTHING inserts
 -- that add no row fire nothing, so re-sent outbox writes are silent.
 
@@ -21,7 +29,7 @@ CREATE INDEX IF NOT EXISTS events_updated_at_idx ON events (updated_at);
 
 CREATE OR REPLACE FUNCTION nexus_notify_events() RETURNS trigger AS $$
 BEGIN
-  PERFORM pg_notify('nexus', json_build_object('table', TG_TABLE_NAME, 'id', left(NEW.id, 200), 'session_id', left(NULL::text, 200))::text);
+  PERFORM pg_notify('nexus', json_build_object('table', 'events'::text, 'id', left(NEW.id, 200), 'session_id', left(NULL::text, 200))::text);
   RETURN NULL;
 END;
 $$ LANGUAGE plpgsql;
@@ -37,7 +45,7 @@ CREATE INDEX IF NOT EXISTS agent_events_updated_at_idx ON agent_events (updated_
 
 CREATE OR REPLACE FUNCTION nexus_notify_agent_events() RETURNS trigger AS $$
 BEGIN
-  PERFORM pg_notify('nexus', json_build_object('table', TG_TABLE_NAME, 'id', left(NEW.session_id || ':' || NEW.seq::text, 200), 'session_id', left(NEW.session_id, 200))::text);
+  PERFORM pg_notify('nexus', json_build_object('table', 'agent_events'::text, 'id', left(NEW.session_id || ':' || NEW.seq::text, 200), 'session_id', left(NEW.session_id, 200))::text);
   RETURN NULL;
 END;
 $$ LANGUAGE plpgsql;
@@ -53,7 +61,7 @@ CREATE INDEX IF NOT EXISTS approvals_updated_at_idx ON approvals (updated_at);
 
 CREATE OR REPLACE FUNCTION nexus_notify_approvals() RETURNS trigger AS $$
 BEGIN
-  PERFORM pg_notify('nexus', json_build_object('table', TG_TABLE_NAME, 'id', left(NEW.id, 200), 'session_id', left(NEW.session_id, 200))::text);
+  PERFORM pg_notify('nexus', json_build_object('table', 'approvals'::text, 'id', left(NEW.id, 200), 'session_id', left(NEW.session_id, 200))::text);
   RETURN NULL;
 END;
 $$ LANGUAGE plpgsql;
@@ -69,7 +77,7 @@ CREATE INDEX IF NOT EXISTS swarm_reviews_updated_at_idx ON swarm_reviews (update
 
 CREATE OR REPLACE FUNCTION nexus_notify_swarm_reviews() RETURNS trigger AS $$
 BEGIN
-  PERFORM pg_notify('nexus', json_build_object('table', TG_TABLE_NAME, 'id', left(NEW.id, 200), 'session_id', left(NEW.session_id, 200))::text);
+  PERFORM pg_notify('nexus', json_build_object('table', 'swarm_reviews'::text, 'id', left(NEW.id, 200), 'session_id', left(NEW.session_id, 200))::text);
   RETURN NULL;
 END;
 $$ LANGUAGE plpgsql;
@@ -85,7 +93,7 @@ CREATE INDEX IF NOT EXISTS sessions_updated_at_idx ON sessions (updated_at);
 
 CREATE OR REPLACE FUNCTION nexus_notify_sessions() RETURNS trigger AS $$
 BEGIN
-  PERFORM pg_notify('nexus', json_build_object('table', TG_TABLE_NAME, 'id', left(NEW.id, 200), 'session_id', left(NEW.id, 200))::text);
+  PERFORM pg_notify('nexus', json_build_object('table', 'sessions'::text, 'id', left(NEW.id, 200), 'session_id', left(NEW.id, 200))::text);
   RETURN NULL;
 END;
 $$ LANGUAGE plpgsql;
@@ -101,7 +109,7 @@ CREATE INDEX IF NOT EXISTS model_call_receipts_updated_at_idx ON model_call_rece
 
 CREATE OR REPLACE FUNCTION nexus_notify_model_call_receipts() RETURNS trigger AS $$
 BEGIN
-  PERFORM pg_notify('nexus', json_build_object('table', TG_TABLE_NAME, 'id', left(NEW.call_id, 200), 'session_id', left(NEW.session_id, 200))::text);
+  PERFORM pg_notify('nexus', json_build_object('table', 'model_call_receipts'::text, 'id', left(NEW.call_id, 200), 'session_id', left(NEW.session_id, 200))::text);
   RETURN NULL;
 END;
 $$ LANGUAGE plpgsql;
@@ -117,7 +125,7 @@ CREATE INDEX IF NOT EXISTS tasks_updated_at_idx ON tasks (updated_at);
 
 CREATE OR REPLACE FUNCTION nexus_notify_tasks() RETURNS trigger AS $$
 BEGIN
-  PERFORM pg_notify('nexus', json_build_object('table', TG_TABLE_NAME, 'id', left(NEW.id, 200), 'session_id', left(NEW.session_id, 200))::text);
+  PERFORM pg_notify('nexus', json_build_object('table', 'tasks'::text, 'id', left(NEW.id, 200), 'session_id', left(NEW.session_id, 200))::text);
   RETURN NULL;
 END;
 $$ LANGUAGE plpgsql;
@@ -133,7 +141,7 @@ CREATE INDEX IF NOT EXISTS task_plans_updated_at_idx ON task_plans (updated_at);
 
 CREATE OR REPLACE FUNCTION nexus_notify_task_plans() RETURNS trigger AS $$
 BEGIN
-  PERFORM pg_notify('nexus', json_build_object('table', TG_TABLE_NAME, 'id', left(NEW.id, 200), 'session_id', left(NULL::text, 200))::text);
+  PERFORM pg_notify('nexus', json_build_object('table', 'task_plans'::text, 'id', left(NEW.id, 200), 'session_id', left(NULL::text, 200))::text);
   RETURN NULL;
 END;
 $$ LANGUAGE plpgsql;

@@ -5,6 +5,7 @@ import { BridgeError, type BridgeRouter } from "../bridge/types";
 import type { Disposable } from "../bridge/types";
 import type { ApprovalHook } from "../features/approvals/approvals-controller";
 import type { Lane2Services } from "./lane-1-features";
+import { createActivity, registerActivity, type ActivityQueryClient } from "../services/events/activity";
 import type { EventStore } from "../services/events/store";
 import { createGate } from "../services/gate/gate";
 import type { ApprovalsHook } from "../services/gate/types";
@@ -17,6 +18,11 @@ import { createSlackService, type ComposedSlackService, type CreateSlackServiceO
 import { SlackCache } from "../services/slack/cache";
 import type { SlackService } from "../services/slack/types";
 import { GitWatcher } from "../services/git/watcher";
+
+/** nexus.agent.allowedCommands from the user's own settings (never a workspace's): a list of non-empty strings, anything else is ignored. */
+export function userAllowlist(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((c): c is string => typeof c === "string" && c.trim().length > 0) : [];
+}
 
 /** SecretStorage keys for the manual Slack connection (Token Vault, L2-15, replaces the user token later). */
 export const SLACK_SECRET_KEYS = { user: "nexus.slack.userToken", bot: "nexus.slack.botToken", app: "nexus.slack.appToken" } as const;
@@ -47,6 +53,8 @@ export interface Lane2Inputs {
   executeCommand?: (id: string, ...args: unknown[]) => Promise<unknown>;
   /** The editor side of opening a code reference; without it (or without git) coderef.open is not served. */
   codeRefEditor?: CodeRefEditor;
+  /** The shared store's client for the activity strip's continuous aggregate; counted from the local copy without it. */
+  activityQuery?: ActivityQueryClient;
   /** Test seams for the Slack service. */
   slackSeams?: Pick<CreateSlackServiceOptions, "webOptions" | "makeBotApi" | "socketOptions">;
 }
@@ -140,6 +148,8 @@ export function buildLane2(i: Lane2Inputs): Lane2Built {
     { dispose: i.store.subscribeEvents(e => r.publish("events.subscribe", e)) },
 
     registerOpenExternal(r, i.openExternal),
+    // The activity strip under the globe: 15-minute buckets per orbit (L2-12).
+    registerActivity(r, createActivity({ ...(i.activityQuery ? { query: i.activityQuery } : {}), localEvents: w => i.store.queryEvents({ from: w.from, to: w.to, limit: w.limit }) })),
   );
   if (i.executeCommand) parts.push(registerOpenTarget(r, { executeCommand: i.executeCommand }));
 

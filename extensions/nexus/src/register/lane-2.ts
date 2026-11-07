@@ -12,7 +12,7 @@ import { GitCli } from "../services/git/git-cli";
 import type { Lane2Services } from "./lane-1-features";
 import { CodeRef, decodeCodeRef, Sha } from "../contracts";
 import type { GitService } from "../services/git/types";
-import { buildLane2, SLACK_SECRET_KEYS, type CodeRefEditor, type Lane2Built } from "./lane-2-services";
+import { buildLane2, SLACK_SECRET_KEYS, userAllowlist, type CodeRefEditor, type Lane2Built } from "./lane-2-services";
 
 /** Read-only documents of a file at a commit: nexus-git:/<path>?<full sha>. */
 const AT_COMMIT_SCHEME = "nexus-git";
@@ -78,7 +78,8 @@ export function registerLane2(context: vscode.ExtensionContext): Lane2Wiring {
         },
       },
     } : {}),
-    allowlist: () => vscode.workspace.getConfiguration("nexus").get<string[]>("agent.allowedCommands") ?? [],
+    // Only the user's own settings count: a cloned repository's .vscode/settings.json must never let an agent skip approvals.
+    allowlist: () => userAllowlist(vscode.workspace.getConfiguration("nexus").inspect<unknown>("agent.allowedCommands")?.globalValue),
     openExternal: url => Promise.resolve(vscode.env.openExternal(vscode.Uri.parse(url, true))),
     log: m => log(m),
   });

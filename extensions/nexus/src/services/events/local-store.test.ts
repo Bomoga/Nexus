@@ -74,6 +74,26 @@ describe("LocalStore", () => {
     expect([r3.won, r3.approval.decision]).toEqual([false, "approved"]);
   });
 
+  it("mirrorDecision copies the shared store's decision over a decided approval, journaled but never queued", async () => {
+    const a = open();
+    await a.putApproval(fx.approval);
+    await a.decideApproval("apr_01", "approved", by, T1);
+    const queued = (await a.status()).outboxDepth;
+    const seen: string[] = [];
+    a.subscribeApprovals(x => seen.push(`${x.id}:${x.decision}`));
+    const owner = { via: "slack" as const, userId: "U_OWNER" };
+    const m = await a.mirrorDecision("apr_01", "rejected", owner, T2);
+    expect([m?.decision, m?.decidedBy?.userId, m?.decidedAt]).toEqual(["rejected", "U_OWNER", T2]);
+    expect((await a.status()).outboxDepth).toBe(queued);   // never sent back to the shared store
+    expect(seen).toEqual(["apr_01:rejected"]);
+    expect(await a.mirrorDecision("apr_01", "rejected", owner, T2)).toEqual(m);   // the same value again changes nothing
+    expect(seen).toHaveLength(1);
+    const b = open();   // survives a restart, over the earlier local decide
+    expect(b.skippedLines()).toBe(0);
+    expect([(await b.getApproval("apr_01"))?.decision, (await b.getApproval("apr_01"))?.decidedBy?.userId]).toEqual(["rejected", "U_OWNER"]);
+    expect(await b.mirrorDecision("apr_none", "approved", owner, T3)).toBeUndefined();
+  });
+
   it("putApproval cannot change a decision but still updates other fields", async () => {
     const a = open();
     await a.putApproval(fx.approval);

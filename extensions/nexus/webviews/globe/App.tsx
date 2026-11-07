@@ -5,6 +5,7 @@ import { QUERY_LIMIT, TIME_WINDOWS, keepNewest, visibleEvents, windowMs } from "
 import { insertLive, scriptedNow } from "./model/arcs";
 import { markLive, useDriftNow, useLiveEvents } from "./scene/live";
 import { Scene } from "./scene/Scene";
+import { DetailStrip } from "./DetailStrip";
 
 const NOW_TICK_MS = 5_000;
 const FAKE_SPAN_MS = 36 * 3_600_000;
@@ -20,6 +21,8 @@ export function App() {
   // so normal builds don't ship demo data. Until it's known, nothing is queried or drawn.
   const [now, setNow] = useState<number | null>(() => (isFakeMode() ? null : Date.now()));
   const ready = now !== null;
+  // Selected event: set by picking today; L3-05 search/tracking sets it through the same setter.
+  const [selected, setSelected] = useState<NexusEvent | undefined>();
 
   useEffect(() => {
     if (isFakeMode()) {
@@ -106,8 +109,9 @@ export function App() {
       {truncated ? <StatusLine tone="pending">{`truncated: showing newest ${events.length}`}</StatusLine> : null}
       {error ? <StatusLine tone="error">{error}</StatusLine> : null}
       <div className="globe-stage">
-        {now === null ? null : <Scene events={visible} now={now} window={window_} />}
+        {now === null ? null : <Scene events={visible} now={now} window={window_} onPick={setSelected} />}
       </div>
+      <DetailStrip event={selected} />
     </div>
   );
 }

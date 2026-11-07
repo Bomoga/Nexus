@@ -9,6 +9,7 @@ import type { ApprovalRequester, SessionEvents } from "../sessions/sessions-cont
 // human DecidedBy can set a decision, and the agent process has no path to it (CLAUDE.md §5, §14).
 
 type Decision = "approved" | "rejected";
+type Waiter = { resolve(d: Decision): void; reject(e: Error): void };
 
 export interface NotifyPort {
   /** Shows "Agent wants to … (model-written)" with APPROVE / REJECT; calls back with the button pressed. */
@@ -64,7 +65,7 @@ function redactAction(action: ApprovalAction): ApprovalAction {
 export class ApprovalsController implements ApprovalRequester {
   /** Approvals created by sessions on THIS machine that are still waiting: only the owner wakes the agent. */
   private readonly pending = new Map<string, string>();               // approvalId -> sessionId
-  private readonly waiters = new Map<string, Array<(d: Decision) => void>>();
+  private readonly waiters = new Map<string, Array<Waiter>>();
   private readonly known = new Set<string>();                         // ids already announced on this machine
   /** Approvals being created right now: a decision that arrives early is parked here and applied, in order, afterwards. */
   private readonly creating = new Map<string, ApprovalRequest | undefined>();
@@ -136,11 +137,11 @@ export class ApprovalsController implements ApprovalRequester {
   /** Resolves when ANY surface or machine decides. There is no timeout path: a silent human leaves it pending. */
   async waitForDecision(approvalId: string): Promise<Decision> {
     // Register first, then look at the store: a decision that lands in between must not leave this waiting forever.
-    let register!: (d: Decision) => void;
-    const waiting = new Promise<Decision>(resolve => {
-      register = resolve;
+    let register!: Waiter;
+    const waiting = new Promise<Decision>((resolve, reject) => {
+      register = { resolve, reject };
       const list = this.waiters.get(approvalId) ?? [];
-      list.push(resolve);
+      list.push(register);
       this.waiters.set(approvalId, list);
     });
     let stored: ApprovalRequest | undefined;
@@ -155,7 +156,8 @@ export class ApprovalsController implements ApprovalRequester {
     // Already woken while the read was in flight (a human decided, or the session ended): that outcome stands, the read is stale.
     if (!(this.waiters.get(approvalId) ?? []).includes(register)) return waiting;
     if (stored?.decision && !this.pending.has(approvalId)) this.wake(approvalId, stored.decision);
-    else if (!stored?.decision && (this.dead.has(approvalId) || (stored && this.ended.has(stored.sessionId)))) {
+    else if (!stored?.decision && (this.dead.has(approvalId) || (stored ? this.ended.has(stored.sessionId) : !this.pending.has(approvalId)))) {
+      // A missing row is dead only when this machine no longer owns the approval: a live pending one is still being waited for.
       // Nothing can ever wake this waiter (its session ended, or it was abandoned): release the gate as rejected, writing no decision.
       const rest = (this.waiters.get(approvalId) ?? []).filter(w => w !== register);
       if (rest.length > 0) this.waiters.set(approvalId, rest); else this.waiters.delete(approvalId);
@@ -292,6 +294,7 @@ export class ApprovalsController implements ApprovalRequester {
   private async markDead(approval: ApprovalRequest): Promise<void> {
     this.pending.delete(approval.id);
     this.dead.set(approval.id, approval);
+    try { this.emitChange(approval); } catch (err) { this.deps.log?.(`an approval subscriber failed: ${err instanceof Error ? err.message : "unknown error"}`); }
     try { this.deps.notify.update(approval.id, "The request could not be completed; there is nothing to approve."); } catch (err) { this.deps.log?.(`could not update the notification: ${err instanceof Error ? err.message : "unknown error"}`); }
     if (!this.ended.has(approval.sessionId) && ![...this.pending.values()].includes(approval.sessionId)) await this.attempt("restore the session status", () => this.deps.sessions.setStatus(approval.sessionId, "running"));
   }
@@ -301,7 +304,13 @@ export class ApprovalsController implements ApprovalRequester {
   }
 
   private wake(approvalId: string, decision: Decision): void {
-    for (const w of this.waiters.get(approvalId) ?? []) w(decision);
+    for (const w of this.waiters.get(approvalId) ?? []) w.resolve(decision);
+    this.waiters.delete(approvalId);
+  }
+
+  /** Releases the gate with an error instead of a decision, so its text says what really happened. */
+  private wakeWithError(approvalId: string, error: Error): void {
+    for (const w of this.waiters.get(approvalId) ?? []) w.reject(error);
     this.waiters.delete(approvalId);
   }
 
@@ -322,7 +331,11 @@ export class ApprovalsController implements ApprovalRequester {
       if (!this.pending.has(id)) continue;                            // already settled above
       this.pending.delete(id);
       // A throwing notification must never keep the gate waiting.
-      try { this.deps.notify.update(id, "The session ended; there is nothing to approve."); } catch (e) { this.deps.log?.(`could not update the notification: ${e instanceof Error ? e.message : "unknown error"}`); } finally { this.wake(id, "rejected"); }
+      try { this.deps.notify.update(id, "The session ended; there is nothing to approve."); } catch (e) { this.deps.log?.(`could not update the notification: ${e instanceof Error ? e.message : "unknown error"}`); } finally {
+        if (how === "cancelled") this.wake(id, "rejected");         // the cancelling human's "no"
+        else this.wakeWithError(id, new Error(`the session ended (${how}); nothing was approved`));
+        try { const a = await this.deps.store.getApproval(id); if (a) this.emitChange(a); } catch (e) { this.deps.log?.(`could not refresh approval ${id}: ${e instanceof Error ? e.message : "unknown error"}`); }
+      }
     }
   }
 }
@@ -334,7 +347,7 @@ export function approvalsBridgeHandlers(c: ApprovalsController, identity: () => 
     "approvals.resolve": async (r: Req<"approvals.resolve">): Promise<Res<"approvals.resolve">> => {
       const res = await c.resolve(r.approvalId, r.decision, { via: "app", userId: identity() });
       if (!res.won) {
-        if (!res.approval.decision) throw new Error("This approval is no longer pending.");   // refused, not lost: nobody decided it
+        if (!res.approval.decision) throw new Error("This approval's session ended; there is nothing to decide.");   // refused, not lost: nobody decided it
         throw new ApprovalConflict(res.approval);                        // the router maps this to error code "conflict" with the winner
       }
       return res.approval;

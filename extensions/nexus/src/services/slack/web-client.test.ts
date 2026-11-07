@@ -73,7 +73,21 @@ describe("extractCodeRefs", () => {
     extractCodeRefs(`nexus://coderef/${")".repeat(40_000)}`);
     extractCodeRefs(`${"<nexus://coderef/a|".repeat(2_000)}`);
     extractCodeRefs(`nexus://coderef/${"a)(".repeat(13_000)}.!~`);
+    extractCodeRefs(`nexus://coderef/${")".repeat(100_000)}b`);
+    extractCodeRefs("<nexus://coderef/a".repeat(20_000));
     expect(Date.now() - t).toBeLessThan(500);
+  });
+  it("skips a link over the length cap and keeps one under it", () => {
+    const under = { ...fx.codeRef, path: "a".repeat(1_900) };
+    const over = { ...fx.codeRef, path: "a".repeat(2_100) };
+    expect(extractCodeRefs(`<${encodeCodeRef(under)}>`)).toEqual([under]);
+    expect(extractCodeRefs(`<${encodeCodeRef(over)}>`)).toEqual([]);
+    expect(extractCodeRefs(encodeCodeRef(over))).toEqual([]);
+  });
+  it("keeps a balanced closing paren and trims trailing mrkdwn from a bare link", () => {
+    const ref = { ...fx.codeRef, path: "a(b)" };
+    expect(extractCodeRefs(encodeCodeRef(ref))).toEqual([ref]);
+    for (const end of ["~", "*", "!", "'", "."]) expect(extractCodeRefs(`${link}${end}`)).toEqual([fx.codeRef]);
   });
 });
 
@@ -237,6 +251,43 @@ describe("SlackWebClient", () => {
     release();
     expect((await stale).postsAs).toBeNull();
     expect((await c.status()).postsAs?.userId).toBe("U_B");
+  });
+
+  it("discards a stale auth.test when two calls straddle a swap in the same tick", async () => {
+    let token = "xoxp-A";
+    let release!: () => void;
+    const gate = new Promise<void>(r => { release = r; });
+    const fakes: Record<string, Fake> = { "xoxp-A": makeFake(), "xoxp-B": makeFake() };
+    fakes["xoxp-A"].auth.test.mockImplementation(async () => { await gate; return { user_id: "U_A", user: "a" }; });
+    fakes["xoxp-B"].auth.test.mockResolvedValue({ user_id: "U_B", user: "b" });
+    const c = new SlackWebClient({ getToken: async () => ({ token, source: "manual" as const }), makeApi: t => fakes[t] as unknown as SlackApi });
+    const first = c.status();
+    token = "xoxp-B";
+    const second = c.status();
+    release();
+    await Promise.all([first, second]);
+    expect((await c.status()).postsAs?.userId).toBe("U_B");
+  });
+
+  it("drops the identity on a swap after auth.test completed", async () => {
+    let token = "xoxp-A";
+    const fakes: Record<string, Fake> = { "xoxp-A": makeFake(), "xoxp-B": makeFake() };
+    fakes["xoxp-A"].auth.test.mockResolvedValue({ user_id: "U_A", user: "a" });
+    fakes["xoxp-B"].auth.test.mockResolvedValue({ user_id: "U_B", user: "b" });
+    const c = new SlackWebClient({ getToken: async () => ({ token, source: "manual" as const }), makeApi: t => fakes[t] as unknown as SlackApi });
+    expect((await c.status()).postsAs?.userId).toBe("U_A");
+    token = "xoxp-B";
+    expect((await c.status()).postsAs?.userId).toBe("U_B");
+  });
+
+  it("never forwards a Slack error field that is not a plain code", async () => {
+    const api = makeFake();
+    api.conversations.list.mockRejectedValue({ code: "slack_webapi_platform_error", data: { error: "invalid_auth xoxp-SECRET" } });
+    const err = await client(api).c.channels().catch((e: Error) => e) as Error;
+    expect(err.message).not.toContain("SECRET");
+    expect(err.message).toContain("slack_webapi_platform_error");
+    api.conversations.list.mockRejectedValue({ code: "slack_webapi_platform_error", data: { error: "invalid_auth" } });
+    expect((await client(api).c.channels().catch((e: Error) => e) as Error).message).toContain(": invalid_auth");
   });
 
   it("de-duplicates thread messages across pages", async () => {

@@ -125,7 +125,7 @@ function safeError(e: unknown, what: string): Error {
   // Only a short Slack error code, a rate-limit hint or "timeout" is forwarded; never the original message, which could echo headers.
   const err = e as { code?: unknown; data?: { error?: unknown }; retryAfter?: unknown; original?: { name?: unknown; code?: unknown } } | null;
   const parts: string[] = [];
-  if (typeof err?.data?.error === "string") parts.push(err.data.error);
+  if (typeof err?.data?.error === "string" && /^[a-z0-9_]+$/.test(err.data.error)) parts.push(err.data.error);
   else if (err?.code === "slack_webapi_rate_limited_error") parts.push(typeof err.retryAfter === "number" ? `rate_limited (retry after ${err.retryAfter}s)` : "rate_limited");
   else if (/timeout|timedout|abort/i.test(String(err?.original?.name ?? "") + String(err?.original?.code ?? "") + String(err?.code ?? ""))) parts.push("timeout");
   else if (typeof err?.code === "string" && /^slack_webapi_[a-z_]+$/.test(err.code)) parts.push(err.code);
@@ -244,11 +244,10 @@ export class SlackWebClient implements UserSlack {
 
   private async identity(api: SlackApi): Promise<{ userId: string; name: string } | null> {
     if (this.self !== undefined) return this.self;
-    const token = this.apiToken;
     const r = await api.auth.test();
     // a bot token must never count as "posts as the person"
     const me = r.user_id && !r.bot_id ? { userId: r.user_id, name: r.user ?? r.user_id } : null;
-    if (this.apiToken !== token) return null;   // the token was swapped while auth.test ran: stale, discard
+    if (this.reader !== api) return null;   // the token was swapped while auth.test ran: stale, discard
     this.self = me;
     return me;
   }

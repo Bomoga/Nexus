@@ -200,6 +200,69 @@ describe("paging past the cap", () => {
   });
 });
 
+describe("scroll-back memory", () => {
+  /** A Slack-like source with many channels, 200 messages each. */
+  function channelsSource(ids: string[]) {
+    const per = (id: string) => Array.from({ length: 200 }, (_, i) => ({ ...msg(i + 1), id: `${id}:${ts(i + 1)}`, channelId: id }));
+    const svc: Pick<SlackService, "history"> = {
+      async history(channelId, cursor, limit = 50): Promise<HistoryPage> {
+        const sorted = per(channelId).sort((a, b) => compareTs(b.ts, a.ts));
+        const start = cursor ? Number(cursor.slice(1)) : 0;
+        const next = start + limit < sorted.length ? `p${start + limit}` : undefined;
+        return { messages: sorted.slice(start, start + limit), nextCursor: next, fromCache: false };
+      },
+    };
+    void ids;
+    return svc;
+  }
+  async function pageToEnd(c: SlackCache, id: string) {
+    let cursor: string | undefined;
+    let n = 0;
+    do { cursor = (await c.history(id, cursor, 50)).nextCursor; await c.idle(); } while (cursor && ++n < 20);
+  }
+
+  it("keeps a channel's scroll-back under its cap", async () => {
+    const c = new SlackCache({ dir, fetcher: channelsSource(["C1"]), maxMessages: 50, maxCarryTotal: 1000 });
+    await pageToEnd(c, "C1");
+    expect(c.carrySize()).toBeLessThanOrEqual(50);
+  });
+
+  it("keeps scroll-back under one total across many channels, dropping the least recently paged", async () => {
+    const ids = Array.from({ length: 20 }, (_, i) => `C${i}`);
+    const c = new SlackCache({ dir, fetcher: channelsSource(ids), maxMessages: 50, maxCarryTotal: 120 });
+    for (const id of ids) await pageToEnd(c, id);
+    expect(c.carrySize()).toBeLessThanOrEqual(120);
+  });
+
+  it("still pages every channel's full history on its first walk under the total", async () => {
+    const ids = ["C1", "C2", "C3"];
+    const c = new SlackCache({ dir, fetcher: channelsSource(ids), maxMessages: 50, maxCarryTotal: 60 });
+    for (const id of ids) {
+      const seen = new Set<string>();
+      let cursor: string | undefined;
+      let n = 0;
+      do { const p = await c.history(id, cursor, 50); p.messages.forEach(m => seen.add(m.ts)); cursor = p.nextCursor; await c.idle(); } while (cursor && ++n < 20);
+      expect([id, seen.size]).toEqual([id, 200]);
+    }
+    expect(c.carrySize()).toBeLessThanOrEqual(60);
+  });
+});
+
+describe("exhaustion", () => {
+  it("ends paging when Slack keeps returning the same cursor with nothing new", async () => {
+    const calls: (string | undefined)[] = [];
+    const svc: Pick<SlackService, "history"> = {
+      async history(_channelId, cursor) { calls.push(cursor); return { messages: cursor ? [] : [msg(1)], nextCursor: "stuck", fromCache: false }; },
+    };
+    const c = new SlackCache({ dir, fetcher: svc });
+    let cursor = (await c.history(CH, undefined, 1)).nextCursor;
+    let n = 0;
+    while (cursor && ++n < 10) { cursor = (await c.history(CH, cursor, 1)).nextCursor; await c.idle(); }
+    expect(cursor).toBeUndefined();
+    expect(calls.length).toBeLessThan(10);
+  });
+});
+
 describe("compareTs", () => {
   it("orders by integer length before text, and fractions numerically", () => {
     expect(compareTs("9.0", "10.0")).toBeLessThan(0);
@@ -299,10 +362,36 @@ describe("pending echoes", () => {
 describe("echo lifetime", () => {
   it("a live event with the echo's text retires it before the send result arrives", async () => {
     const c = new SlackCache({ dir, fetcher: source([]).svc });
-    c.ingest(msg(99, "same words", { pending: true, clientId: "c9", author: { id: "", name: "", isBot: false } }));
+    c.ingest(msg(99, "same words", { pending: true, clientId: "c9" }));   // author U_A, the sender
     c.ingest(msg(5, "same words"));
     const p = await c.history(CH);
     expect(p.messages.map(m => m.ts)).toEqual([ts(5)]);
+  });
+
+  it("only the sender's own message, in the same thread and within 30 s, retires an echo by text", async () => {
+    let t = 1_000_000;
+    const c = new SlackCache({ dir, fetcher: source([]).svc, now: () => t });
+    const pendingCount = async () => (await c.history(CH)).messages.filter(m => m.pending).length;
+    c.ingest(msg(99, "+1", { pending: true, clientId: "c1" }));
+    c.ingest(msg(5, "+1", { author: { id: "U_OTHER", name: "o", isBot: false } }));   // someone else, same text
+    expect(await pendingCount()).toBe(1);
+    c.ingest(msg(6, "+1", { threadTs: ts(1) }));   // the sender, but in a thread
+    expect(await pendingCount()).toBe(1);
+    t += 31_000;
+    c.ingest(msg(7, "+1"));   // the sender, too late to be this echo
+    expect(await pendingCount()).toBe(1);
+    t -= 31_000;
+    c.ingest(msg(8, "+1"));   // the sender, same place, in time
+    expect(await pendingCount()).toBe(0);
+  });
+
+  it("an echo with no known author is retired only by its clientId", async () => {
+    const c = new SlackCache({ dir, fetcher: source([]).svc });
+    c.ingest(msg(99, "hi", { pending: true, clientId: "c2", author: { id: "", name: "", isBot: false } }));
+    c.ingest(msg(5, "hi"));
+    expect((await c.history(CH)).messages.filter(m => m.pending)).toHaveLength(1);
+    c.ingest(msg(5, "hi", { clientId: "c2" }));
+    expect((await c.history(CH)).messages.filter(m => m.pending)).toHaveLength(0);
   });
 
   it("drops an echo older than two minutes", async () => {

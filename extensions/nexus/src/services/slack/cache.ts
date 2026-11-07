@@ -43,6 +43,8 @@ export interface SlackCacheOptions {
   fetcher: Pick<SlackService, "history">;
   /** Newest messages kept per channel. Default 5000. */
   maxMessages?: number;
+  /** Scroll-back held in memory past the cap, across ALL channels; the least recently paged channel's is dropped first. Default maxMessages. */
+  maxCarryTotal?: number;
   /** Test seams. */
   now?: () => number;
   rename?: (from: string, to: string) => void;
@@ -72,6 +74,9 @@ export class SlackCache {
   private readonly dir: string;
   private readonly fetcher: Pick<SlackService, "history">;
   private readonly maxMessages: number;
+  private readonly maxCarryTotal: number;
+  /** Channels with scroll-back in memory, least recently paged first. */
+  private readonly carryOrder = new Map<string, true>();
   private readonly slack: number;
   private readonly now: () => number;
   private readonly rename: (from: string, to: string) => void;
@@ -87,6 +92,7 @@ export class SlackCache {
     this.dir = opts.dir;
     this.fetcher = opts.fetcher;
     this.maxMessages = Math.max(1, opts.maxMessages ?? DEFAULT_MAX_MESSAGES);
+    this.maxCarryTotal = Math.max(1, opts.maxCarryTotal ?? this.maxMessages);
     this.slack = Math.max(1, Math.floor(this.maxMessages / 10));
     this.now = opts.now ?? Date.now;
     this.rename = opts.rename ?? fs.renameSync;
@@ -141,7 +147,7 @@ export class SlackCache {
       for (const m of res) consider(m);
       for (const m of leftover) if (isTop(m)) state.carry.set(m.ts, m);
     }
-    this.trimCarry(state);
+    this.trimCarry(channelId, state);
 
     const sorted = [...pool.values()].sort((a, b) => compareTs(b.ts, a.ts));
     const messages = sorted.slice(0, size);
@@ -202,8 +208,9 @@ export class SlackCache {
     let i = msg.clientId === undefined ? -1 : list.findIndex(e => e.msg.clientId === msg.clientId);
     if (i < 0 && msg.sentVia === "user" && !msg.author.isBot) {
       const t = this.now();
+      // Only the sender's own message can retire an echo: an echo with no known author is retired only by its clientId.
       i = list.findIndex(e => t - e.at <= ECHO_MATCH_MS && e.msg.text === msg.text && e.msg.threadTs === msg.threadTs
-        && (e.msg.author.id === "" || e.msg.author.id === msg.author.id));
+        && e.msg.author.id !== "" && e.msg.author.id === msg.author.id);
     }
     if (i >= 0) { list.splice(i, 1); if (list.length === 0) this.pending.delete(msg.channelId); }
   }
@@ -301,10 +308,35 @@ export class SlackCache {
   }
 
   /** The carry is memory-only scroll-back. If it outgrows the cap, drop the newest (already shown); Slack's position is kept so paging never re-walks. */
-  private trimCarry(state: ChannelState): void {
-    if (state.carry.size <= this.maxMessages) return;
-    const keep = [...state.carry.values()].sort((a, b) => compareTs(b.ts, a.ts)).slice(-this.maxMessages);
-    state.carry = new Map(keep.map(m => [m.ts, m]));
+  private trimCarry(channelId: string, state: ChannelState): void {
+    if (state.carry.size > this.maxMessages) {
+      const keep = [...state.carry.values()].sort((a, b) => compareTs(b.ts, a.ts)).slice(-this.maxMessages);
+      state.carry = new Map(keep.map(m => [m.ts, m]));
+      // Known limit: the dropped middle is not refetched on a later walk of the same channel (SlackService.history has no
+      // "older than" parameter to resume from). The first walk is complete; only re-paging past the cap twice skips it.
+    }
+    // Across channels: this channel becomes the most recently paged; drop whole carries from the least recent until under the total.
+    this.carryOrder.delete(channelId);
+    if (state.carry.size > 0) this.carryOrder.set(channelId, true);
+    let total = 0;
+    for (const id of this.carryOrder.keys()) total += this.channels.get(id)?.carry.size ?? 0;
+    for (const id of this.carryOrder.keys()) {
+      if (total <= this.maxCarryTotal) break;
+      if (id === channelId) continue;
+      const other = this.channels.get(id);
+      if (!other) { this.carryOrder.delete(id); continue; }
+      total -= other.carry.size;
+      other.carry = new Map();
+      other.upstream = undefined;   // its Slack position belonged to the dropped scroll-back: paging there starts over
+      this.carryOrder.delete(id);
+    }
+  }
+
+  /** Total scroll-back held in memory across channels (tests and diagnostics). */
+  carrySize(): number {
+    let total = 0;
+    for (const s of this.channels.values()) total += s.carry.size;
+    return total;
   }
 
   private startRefresh(channelId: string, limit: number, served: Set<string>): Promise<void> {
@@ -399,7 +431,9 @@ function wrapService(cache: SlackCache, service: SlackService): SlackService {
 
   return {
     postAsUser: async (opts: PostOptions) => {
-      const echo = opts.clientId === undefined ? undefined : localEcho(opts);
+      let me: { userId: string; name: string } | null = null;
+      try { me = (await service.status()).postsAs; } catch { /* unknown sender: the echo is retired only by its clientId */ }
+      const echo = opts.clientId === undefined ? undefined : localEcho(opts, me);
       if (echo) cache.ingest(echo);
       try { return confirmed(await service.postAsUser(opts)); }
       catch (e) { if (opts.clientId !== undefined) cache.dropPending(opts.channelId, opts.clientId); throw e; }
@@ -421,10 +455,10 @@ function wrapService(cache: SlackCache, service: SlackService): SlackService {
 }
 
 /** The unconfirmed copy of a send: memory only, replaced by the confirmed message carrying the same clientId. */
-function localEcho(opts: PostOptions): ChatMessage {
+function localEcho(opts: PostOptions, me: { userId: string; name: string } | null): ChatMessage {
   const ts = (Date.now() / 1000).toFixed(6);
   return {
     id: `${opts.channelId}:${ts}`, channelId: opts.channelId, ts, ...(opts.threadTs ? { threadTs: opts.threadTs } : {}),
-    author: { id: "", name: "", isBot: false }, text: opts.text, codeRefs: [], sentVia: "user", pending: true, clientId: opts.clientId,
+    author: { id: me?.userId ?? "", name: me?.name ?? "", isBot: false }, text: opts.text, codeRefs: [], sentVia: "user", pending: true, clientId: opts.clientId,
   };
 }

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { NexusEvent } from "../../../src/contracts";
-import { NOW_ANGLE, angleFor, familiesOf, orbitLayout, orbitPoint, visibleEvents, windowMs } from "./index";
+import { NOW_ANGLE, angleFor, familiesKey, familiesOf, keepNewest, useInstancing, orbitLayout, orbitPoint, visibleEvents, windowMs } from "./index";
 
 const H = 3_600_000;
 const NOW = Date.parse("2026-11-07T12:00:00Z");
@@ -93,5 +93,34 @@ describe("visibleEvents", () => {
   it("drops events too far in the future", () => {
     expect(visibleEvents([ev("main", -5)], NOW, "24h")).toHaveLength(0);
     expect(visibleEvents([ev("main", -0.01)], NOW, "24h")).toHaveLength(1);
+  });
+});
+
+describe("useInstancing", () => {
+  it("switches strictly above 2,000", () => {
+    expect(useInstancing(0)).toBe(false);
+    expect(useInstancing(2000)).toBe(false);
+    expect(useInstancing(2001)).toBe(true);
+  });
+});
+
+describe("familiesKey", () => {
+  it("is equal for equal family lists and differs otherwise", () => {
+    expect(familiesKey(["main", "lane-1"])).toBe(familiesKey(["main", "lane-1"]));
+    expect(familiesKey(["main", "lane-1"])).not.toBe(familiesKey(["main", "lane-2"]));
+    expect(familiesKey(["a", "bc"])).not.toBe(familiesKey(["ab", "c"]));
+  });
+});
+
+describe("keepNewest", () => {
+  const evs = [ev("main", 5), ev("main", 1), ev("main", 3)];
+  it("keeps the newest events and flags truncation at the limit", () => {
+    const r = keepNewest(evs, 2);
+    expect(r.events.map((e) => e.id)).toEqual(["main:1", "main:3"]);
+    expect(r.truncated).toBe(true);
+  });
+  it("is not truncated below the limit", () => {
+    expect(keepNewest(evs, 4).truncated).toBe(false);
+    expect(keepNewest(evs, 4).events).toHaveLength(3);
   });
 });

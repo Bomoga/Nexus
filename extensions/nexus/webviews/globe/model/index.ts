@@ -90,3 +90,21 @@ export function eventPoint(o: Pick<OrbitSpec, "radius" | "tilt">, atMs: number, 
 
 /** Above this many visible events the scene draws instanced meshes. */
 export const INSTANCE_THRESHOLD = 2000;
+
+/** True when the scene should draw one InstancedMesh instead of a mesh per event (strictly more than 2,000). */
+export function useInstancing(count: number): boolean {
+  return count > INSTANCE_THRESHOLD;
+}
+
+/** Stable key for a family list, so layouts rebuild only when the set of orbits changes. */
+export function familiesKey(families: readonly string[]): string {
+  return families.join("\u0000");
+}
+
+export const QUERY_LIMIT = 5000;
+
+/** Newest `limit` events (a response may arrive oldest-first); `truncated` when the store may hold more. */
+export function keepNewest(events: readonly NexusEvent[], limit: number): { events: NexusEvent[]; truncated: boolean } {
+  const sorted = [...events].sort((a, b) => b.at.localeCompare(a.at));
+  return { events: sorted.slice(0, limit), truncated: events.length >= limit };
+}

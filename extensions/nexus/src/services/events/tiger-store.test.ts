@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { fx } from "../../contracts/fixtures";
 import { demoScenario } from "../../contracts/fixtures/scenario";
 import type { AgentEvent, NexusEvent } from "../../contracts";
-import { SQL, TigerStore, createTigerPool, isTransientError, queryEventsSql } from "./tiger-store";
+import { ApprovalNotFoundError, ApprovalUnparseableError, SQL, TigerStore, createTigerPool, isTransientError, queryEventsSql } from "./tiger-store";
 import type { PoolConstructor, TigerClient } from "./tiger-store";
 
 const SECRET = "SECRETVAL";
@@ -34,6 +34,12 @@ class FakePg implements TigerClient {
     const rows = (rs: Record<string, unknown>[]) => ({ rows: rs.map(r => ({ ...r })), rowCount: rs.length });
     const insert = /^INSERT INTO (\w+) \(([^)]+)\)\s*VALUES \((.+?)\)\s*ON CONFLICT/s.exec(text);
     if (insert) return this.insert(insert[1], insert[2].split(",").map(s => s.trim()), insert[3], params, text.includes("DO NOTHING"), text);
+    if (text === SQL.overrideDecision) {   // no guard: replaces whatever is there
+      const row = this.table("approvals").get(String(params[0]));
+      if (!row) return rows([]);
+      Object.assign(row, { decision: params[1], decided_by: JSON.parse(String(params[2])), decided_at: new Date(String(params[3])) });
+      return rows([row]);
+    }
     if (text === SQL.decideApproval) {
       const row = this.table("approvals").get(String(params[0]));
       // the fake evaluates the statement's own guard, so dropping `AND decision IS NULL` from the SQL fails behavioral tests
@@ -169,6 +175,13 @@ describe("TigerStore SQL", () => {
       [
         "UPDATE approvals SET decision = $2, decided_by = $3::jsonb, decided_at = $4::timestamptz
       WHERE id = $1 AND decision IS NULL
+      RETURNING *",
+      ]
+    `);
+    expect(await sqlFor(() => store.overrideDecision("apr_01", "approved", by("U_A"), "2026-11-07T04:00:00Z"))).toMatchInlineSnapshot(`
+      [
+        "UPDATE approvals SET decision = $2, decided_by = $3::jsonb, decided_at = $4::timestamptz
+      WHERE id = $1
       RETURNING *",
       ]
     `);
@@ -442,6 +455,30 @@ describe("TigerStore review fixes", () => {
     const lose = await store.decideApproval("apr_01", "rejected", by("U_B"), "2026-11-07T04:00:01Z");
     expect(lose.won).toBe(false);
     expect(fake.table("approvals").get("apr_01")).toMatchObject({ decision: "approved", decided_by: by("U_A") });
+  });
+
+  it("tells an approval that does not exist from a row that does not parse", async () => {
+    const { fake, store } = make();
+    await expect(store.decideApproval("nope", "approved", by("U_A"), "2026-11-07T04:00:00Z")).rejects.toBeInstanceOf(ApprovalNotFoundError);
+    await store.putApproval(fx.approval);
+    await store.decideApproval("apr_01", "approved", by("U_A"), "2026-11-07T04:00:00Z");
+    fake.table("approvals").get("apr_01")!.action = { kind: "bogus" };
+    await expect(store.decideApproval("apr_01", "rejected", by("U_B"), "2026-11-07T04:00:01Z")).rejects.toBeInstanceOf(ApprovalUnparseableError);
+    await store.putApproval({ ...fx.approval, id: "apr_9" });
+    fake.table("approvals").get("apr_9")!.action = { kind: "bogus" };
+    await expect(store.decideApproval("apr_9", "approved", by("U_A"), "2026-11-07T04:00:00Z")).rejects.toBeInstanceOf(ApprovalUnparseableError);   // decided, but unreadable
+    expect([ApprovalNotFoundError, ApprovalUnparseableError].map(C => isTransientError(new C("x")))).toEqual([false, false]);
+  });
+
+  it("overrideDecision replaces an existing decision, and is the only path that can", async () => {
+    const { store } = make();
+    await store.putApproval(fx.approval);
+    await store.decideApproval("apr_01", "rejected", by("U_B"), "2026-11-07T04:00:00Z");
+    expect((await store.decideApproval("apr_01", "approved", by("U_A"), "2026-11-07T04:00:01Z")).won).toBe(false);
+    const over = await store.overrideDecision("apr_01", "approved", by("U_A"), "2026-11-07T04:00:02Z");
+    expect(over).toMatchObject({ decision: "approved", decidedBy: by("U_A") });
+    expect(await store.getApproval("apr_01")).toMatchObject({ decision: "approved", decidedBy: by("U_A") });
+    await expect(store.overrideDecision("nope", "approved", by("U_A"), "2026-11-07T04:00:02Z")).rejects.toBeInstanceOf(ApprovalNotFoundError);
   });
 
   it("returns one agent event per seq, ordered, even when two machines wrote different timestamps", async () => {

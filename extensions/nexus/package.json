@@ -81,6 +81,12 @@
         "priority": "option"
       }
     ],
+    "commands": [
+      {
+        "command": "nexus.shareSelectionToSlack",
+        "title": "Nexus: Share to Slack"
+      }
+    ],
     "views": {
       "nexus": [
         {
@@ -92,6 +98,15 @@
           "type": "webview",
           "id": "nexus.approvals",
           "name": "Approvals"
+        }
+      ]
+    },
+    "menus": {
+      "editor/context": [
+        {
+          "command": "nexus.shareSelectionToSlack",
+          "when": "editorHasSelection",
+          "group": "nexus"
         }
       ]
     }

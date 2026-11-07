@@ -57,3 +57,6 @@ dist
 .agent-validation/
 .env*
 CLAUDE.local.md
+
+# but the template is tracked
+!.env.example

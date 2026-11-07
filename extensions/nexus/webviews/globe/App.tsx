@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { NexusEvent, TimeWindow } from "../../src/contracts";
-import { Select, StatusLine, isFakeMode, request } from "../shared";
+import { Button, Select, StatusLine, isFakeMode, request } from "../shared";
 import { QUERY_LIMIT, TIME_WINDOWS, keepNewest, visibleEvents, windowMs } from "./model";
 import { insertLive, scriptedNow } from "./model/arcs";
 import { markLive, useDriftNow, useLiveEvents } from "./scene/live";
 import { Scene } from "./scene/Scene";
+import { chooseWindow, shouldRelease, withEvent } from "./model/tracking";
 import { DetailStrip } from "./DetailStrip";
+import { Search } from "./Search";
 
 const NOW_TICK_MS = 5_000;
 const FAKE_SPAN_MS = 36 * 3_600_000;
@@ -23,6 +25,9 @@ export function App() {
   const ready = now !== null;
   // Selected event: set by picking today; L3-05 search/tracking sets it through the same setter.
   const [selected, setSelected] = useState<NexusEvent | undefined>();
+  // Tracked event (search): the camera follows and rings it until a drag, STOP TRACKING, or it leaves the window.
+  const [tracked, setTracked] = useState<NexusEvent | undefined>();
+  const [notice, setNotice] = useState<string | undefined>();
 
   useEffect(() => {
     if (isFakeMode()) {
@@ -98,18 +103,45 @@ export function App() {
   );
   useLiveEvents(onLive, ready);
 
+  const release = useCallback(() => setTracked(undefined), []);
+  useEffect(() => {
+    if (tracked && now !== null && shouldRelease(tracked, now, window_)) setTracked(undefined);
+  }, [tracked, now, window_]);
+
+  const onSearchPick = useCallback(
+    (event: NexusEvent) => {
+      setSelected(event);
+      const choice = chooseWindow(Date.parse(event.at), driftNow(), windowRef.current);
+      if (choice.kind === "outside") {
+        setTracked(undefined);
+        setNotice(`${event.title}: outside the 30d window`);
+        return;
+      }
+      setNotice(undefined);
+      if (choice.kind === "widen") onWindow(choice.window);
+      const next = withEvent(eventsRef.current, event);
+      eventsRef.current = next;
+      setEvents(next);
+      setTracked(event);
+    },
+    [driftNow, onWindow],
+  );
+
   const visible = useMemo(() => (now === null ? [] : visibleEvents(events, now, window_)), [events, now, window_]);
 
   return (
     <div className="globe-app">
       <div className="globe-bar">
         <Select aria-label="Time window" value={window_} options={OPTIONS} onChange={(e) => onWindow(e.target.value)} />
+        <Search onPick={onSearchPick} />
+        {tracked ? <Button onClick={release}>STOP TRACKING</Button> : null}
         <span className="nx-data">{visible.length} events</span>
       </div>
       {truncated ? <StatusLine tone="pending">{`truncated: showing newest ${events.length}`}</StatusLine> : null}
       {error ? <StatusLine tone="error">{error}</StatusLine> : null}
+      {notice ? <StatusLine tone="pending">{notice}</StatusLine> : null}
       <div className="globe-stage">
-        {now === null ? null : <Scene events={visible} now={now} window={window_} onPick={setSelected} />}
+        {now === null ? null : <Scene events={visible} now={now} window={window_} onPick={setSelected} tracked={tracked} onRelease={release} />}
       </div>
       <DetailStrip event={selected} />
     </div>

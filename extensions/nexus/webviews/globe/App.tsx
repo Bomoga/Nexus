@@ -185,7 +185,7 @@ export function App({ bridge: injected }: AppProps = {}) {
       {loaded && !error && visible.length === 0 ? <EmptyState message="no events in this window" /> : null}
       {notice ? <StatusLine tone="pending">{notice}</StatusLine> : null}
       <div className="globe-stage">
-        {shown === null ? null : <Scene events={visible} now={shown} window={window_} onPick={setSelected} tracked={tracked} onRelease={release} />}
+        {shown === null ? null : <Scene events={visible} now={shown} window={window_} onPick={setSelected} tracked={tracked} onRelease={release} frozen={pinnedNow !== undefined} />}
       </div>
       {now === null || shown === null ? null : <ActivityStrip bridge={bridge} now={shown} window={window_} families={families} onPin={onPin} />}
       <DetailStrip event={selected} open={open} />

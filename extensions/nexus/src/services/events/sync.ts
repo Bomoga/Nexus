@@ -360,8 +360,9 @@ export function createSync(deps: SyncDeps): Sync {
         const fill = (await q(SYNC_SQL.agentRange, [sessionId, from, seq])).sort((a, b) => Number(a.seq) - Number(b.seq));
         const known = max !== -1;
         for (const f of fill) await apply(f);
-        // With nothing local the true first seq is unknown, so only what the fetch returned has to be contiguous.
-        const lo = known ? from : fill.length ? Number(fill[0].seq) : seq;
+        // Every session's seq starts at 0 (the contracts' fixtures and the runtime both number from 0), so with nothing local
+        // the run must still be contiguous from 0: a missing seq 0 is a hole like any other.
+        const lo = known ? from : 0;
         let hole = false;
         for (let n = lo; n < seq; n++) if (!have.has(n)) { hole = true; break; }
         if (hole) {

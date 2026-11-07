@@ -1,12 +1,13 @@
 // L2-10: TigerStore against the real Tiger Cloud service: one record of every type round-trips and is deleted afterwards.
-// Skips without TIGER_URL; runs only via the int config, never in `npm test`. Every id is unique to this run and removed in `finally`.
+// Skips without TIGER_TEST_URL (a scratch database, not the team service); runs only via the int config, never in `npm test`. Every id is unique to this run and removed in `finally`.
 //   npm run test:int -- tiger.int
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { fx } from "../../contracts/fixtures";
 import { createTigerPool, TigerStore } from "./tiger-store";
 
-const url = process.env.TIGER_URL;
+// A scratch database, never the team's: with 003 applied, these rows would be copied into every running teammate's Nexus.
+const url = process.env.TIGER_TEST_URL;
 const ALL = { from: "2000-01-01T00:00:00Z", to: "2100-01-01T00:00:00Z", limit: 5000 };
 
 describe.skipIf(!url)("L2-10 TigerStore on Tiger Cloud", () => {

@@ -151,6 +151,15 @@ describe("sync: pulling what other machines wrote", () => {
     expect((await local.agentEvents("ses_b", 0)).map(e => e.seq)).toEqual([0, 1, 2, 3]);
   });
 
+  it("holds a session's events while its seq 0 is not visible yet", async () => {
+    for (const seq of [1, 2]) remote.put("agent_events", agentRow(msg("ses_c", seq)), T(10 + seq));
+    await make().start();
+    expect((await local.agentEvents("ses_c", 0)).map(e => e.seq)).toEqual([]);
+    remote.put("agent_events", agentRow(msg("ses_c", 0)), T(50));
+    await sync.pullNow();
+    expect((await local.agentEvents("ses_c", 0)).map(e => e.seq)).toEqual([0, 1, 2]);
+  });
+
   it("skips this machine's own rows and publishes the others on the subscriptions", async () => {
     const mine = { ...fx.event, id: "ws:commit:mine", machineId: ME, title: "mine" };
     const theirs = { ...fx.event, id: "ws:commit:theirs", machineId: OTHER, title: "theirs" };

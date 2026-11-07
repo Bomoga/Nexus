@@ -1,13 +1,14 @@
 // L2-11: applies 003_notify.sql, LISTENs on "nexus" and checks each table's trigger sends its own table name (a hypertable's
-// chunk trigger must not leak a _hyper_N_M_chunk name). Skips without TIGER_URL; runs only via the int config.
+// chunk trigger must not leak a _hyper_N_M_chunk name). Skips without TIGER_TEST_URL (a scratch database, not the team service); runs only via the int config.
 // Rows are committed (NOTIFY is only delivered on commit) and then deleted by unique id; deletes fire no trigger.
-//   TIGER_URL=... npm run test:int -- sync
+//   TIGER_TEST_URL=... npm run test:int -- sync
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { Client } from "pg";
 import { describe, expect, it } from "vitest";
 
-const url = process.env.TIGER_URL;
+// A scratch database, never the team's: with 003 applied, these rows would be copied into every running teammate's Nexus.
+const url = process.env.TIGER_TEST_URL;
 const sql = (f: string) => readFileSync(path.join(__dirname, "../../../sql", f), "utf8");
 const tag = `sync_int_${Date.now()}`;
 

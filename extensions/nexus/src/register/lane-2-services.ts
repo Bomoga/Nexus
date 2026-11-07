@@ -43,8 +43,8 @@ export interface Lane2Inputs {
   slackCacheDir?: string;
   /** The git watcher's change source (a FileSystemWatcher on .git refs) and this machine's id; no watcher when omitted. */
   watcher?: { watch: (onChange: () => void) => () => void; machineId: string };
-  /** vscode.commands.executeCommand, for ui.openTarget (the commit, session and Slack views are Lane 3's commands). */
-  executeCommand: (id: string, ...args: unknown[]) => Promise<unknown>;
+  /** vscode.commands.executeCommand, for ui.openTarget (the commit, session and Slack views are Lane 3's commands). Without it ui.openTarget is not served. */
+  executeCommand?: (id: string, ...args: unknown[]) => Promise<unknown>;
   /** The editor side of opening a code reference; without it (or without git) coderef.open is not served. */
   codeRefEditor?: CodeRefEditor;
   /** Test seams for the Slack service. */
@@ -140,8 +140,8 @@ export function buildLane2(i: Lane2Inputs): Lane2Built {
     { dispose: i.store.subscribeEvents(e => r.publish("events.subscribe", e)) },
 
     registerOpenExternal(r, i.openExternal),
-    registerOpenTarget(r, { executeCommand: i.executeCommand }),
   );
+  if (i.executeCommand) parts.push(registerOpenTarget(r, { executeCommand: i.executeCommand }));
 
   if (i.git) {
     const git = i.git;

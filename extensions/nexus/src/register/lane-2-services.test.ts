@@ -133,6 +133,11 @@ describe("buildLane2", () => {
     expect(commands).toEqual([["nexus.openCommit", "c".repeat(40)], ["nexus.openSlack", { channelId: "C1", threadTs: "1.000100" }]]);
   });
 
+  it("does not serve ui.openTarget without a command executor", async () => {
+    const { router } = setup({ executeCommand: undefined });
+    await expect(router.call("ui.openTarget", { type: "commit", sha: "c".repeat(40) })).rejects.toMatchObject({ code: "not_found" });
+  });
+
   it("creates code refs at HEAD, opens fresh ones live and stale ones at their commit, and maps refusals to bridge codes", async () => {
     const git = new FakeGit();
     const head = await git.headOf();

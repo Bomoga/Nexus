@@ -17,12 +17,45 @@ export type RequestHandler<N extends RequestName> = (req: Req<N>) => Res<N> | Pr
 export type SubscribeHandler<N extends SubscriptionName> =
   (req: z.infer<(typeof Subscriptions)[N]["req"]>, emit: (evt: SubEvt<N>) => void) => Disposable | void | Promise<Disposable | void>;
 
-/** Extension-side surface. Lanes 1 and 2 register handlers and publish events through this. */
+/**
+ * Extension-side surface. Lanes 1 and 2 register handlers and publish events through this.
+ *
+ * Subscription delivery rules (the real router and the fake both follow them):
+ * - `emit` (passed to onSubscribe) is for REPLAY only, inside the handler. Live events go only through publish.
+ * - The router owns ordering: live events published while onSubscribe is unresolved are held for that
+ *   subscription, then delivered after the handler resolves. Held agent events whose seq was already delivered are dropped.
+ * - After unsubscribe, emit delivers nothing, and a cleanup returned late is disposed immediately.
+ * - A throwing handler removes the subscription; the error maps like a request error (BridgeError code kept, else "internal").
+ * - publish reaches only subscriptions whose req matches the event (see matchesSubscription).
+ */
 export interface BridgeRouter {
   /** Register the single handler for a request name. Registering twice throws. */
   handle<N extends RequestName>(name: N, fn: RequestHandler<N>): Disposable;
   /** Register the handler invoked on each new subscription of this name (e.g. replay from fromSeq, then live). */
   onSubscribe<N extends SubscriptionName>(name: N, fn: SubscribeHandler<N>): Disposable;
-  /** Broadcast an event to every live subscription of this name. The router validates it against Subscriptions[name].evt. */
+  /** Deliver an event to matching live subscriptions of this name. The router validates it against Subscriptions[name].evt. */
   publish<N extends SubscriptionName>(sub: N, evt: SubEvt<N>): void;
+}
+
+/**
+ * Does a subscription made with `req` receive `evt`? The one shared scoping rule.
+ * - An optional scope field left unset means all.
+ * - slack.subscribe: `status` events always pass; messages pass only if channelId is in channelIds (empty array = no messages).
+ * - agent.subscribe by sessionId; receipts.subscribe by sessionId (a receipt with no sessionId matches only unscoped subs);
+ *   swarms.review.subscribe by approvalId. Every other subscription is unscoped.
+ */
+export function matchesSubscription<N extends SubscriptionName>(name: N, req: unknown, evt: unknown): boolean {
+  const r = (req ?? {}) as Record<string, unknown>;
+  const e = (evt ?? {}) as Record<string, unknown>;
+  switch (name) {
+    case "slack.subscribe": {
+      if (e.type === "status") return true;
+      const message = e.message as { channelId?: string } | undefined;
+      return (r.channelIds as string[]).includes(message?.channelId ?? "");
+    }
+    case "agent.subscribe": return r.sessionId === e.sessionId;
+    case "receipts.subscribe": return r.sessionId === undefined || r.sessionId === e.sessionId;
+    case "swarms.review.subscribe": return r.approvalId === undefined || r.approvalId === e.approvalId;
+    default: return true;
+  }
 }

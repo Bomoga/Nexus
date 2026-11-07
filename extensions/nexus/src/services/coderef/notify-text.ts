@@ -5,8 +5,8 @@
 /** The most characters of untrusted text a notification shows. */
 export const MAX_NOTIFICATION_TEXT = 300;
 
-/** Square brackets become their full-width look-alikes, control characters spaces, and the text is cut on code points. */
+/** Square brackets become their full-width look-alikes; control and invisible format characters (a right-to-left override) become spaces; the text is cut on code points. */
 export function plainNotificationText(text: string, max = MAX_NOTIFICATION_TEXT): string {
-  const points = Array.from(text.replace(/\p{Cc}/gu, " ").replace(/\[/g, "［").replace(/\]/g, "］"));
+  const points = Array.from(text.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, " ").replace(/\[/g, "［").replace(/\]/g, "］"));
   return points.length > max ? `${points.slice(0, max).join("")}…` : points.join("");
 }

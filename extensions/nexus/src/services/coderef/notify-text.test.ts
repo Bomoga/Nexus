@@ -19,6 +19,7 @@ describe("plainNotificationText", () => {
   });
   it("replaces control characters and cuts long text on code points", () => {
     expect(plainNotificationText("a\nb\tc")).toBe("a b c");
+    expect(plainNotificationText("a\u202eb\u200bc\u2028d\u0085e")).toBe("a b c d e");
     const long = plainNotificationText("😀".repeat(MAX_NOTIFICATION_TEXT + 5));
     expect(Array.from(long)).toHaveLength(MAX_NOTIFICATION_TEXT + 1);
     expect(long.endsWith("😀…")).toBe(true);

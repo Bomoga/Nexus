@@ -1,10 +1,23 @@
 ## Done
 - H0-N1 webview skeleton smoke (in C:\dev\nexus-hello, outside the repo)
 - H0-N3 theme.css + style test drafted; theme.css and Button seeded into webviews/shared/
+- L3-02 globe core (attempt 2 confirmed by review; merged T+3:40)
+- L3-08 Slack view part 1 (confirmed on first review; merged T+3:45)
+- L3-01 first drop (component stubs + fakeBridge) merged early at T+3:25 so L3-02/L3-08 could start
 
 ## In flight
+- L3-01 shared kit: attempt 2 (bridge timeouts, validate-before-subscribe, lazy fake, shared ambient types) in re-review
+
+## Follow-ups (from reviews, not yet scheduled)
+- Fake bridge live streams don't echo the fake's own writes (approvals.resolve, slack.post, tasks.*); slack.subscribe ignores channelIds.
+- Chat (for L3-09): older-page load errors are silent; paging stalls if the first page doesn't overflow; Slack mrkdwn (`<url|label>`, `<@U…>`, `&amp;`) shown raw — who normalizes, Lane 2 or the view?; not-a-member dot uses amber (reserved for pending approval) and its tooltip isn't keyboard-reachable; no error boundary in main.tsx.
+- Globe: rename model `useInstancing` (not a hook) to `shouldInstance`; tilts repeat after 5 families; InstancedMesh remounts when the count changes.
+- After L3-01 merges: delete webviews/globe/env.d.ts and webviews/chat/env.d.ts in favour of the kit's shared webviews/shared/env.d.ts.
 
 ## Blocked
+- Opening links from webviews: no contract request for external URLs (ui.openTarget only takes commit/session/thread). Asked Lane 1 for e.g. ui.openExternal; chat links render as buttons that do nothing until then.
+- Slack avatars: remote images are blocked by the webview CSP; initials are shown. Asked Lane 2 to hand avatars over as data: URIs.
+- @types/react-dom is not a dependency; webviews use a local ambient declaration until Lane 1 adds it.
 - style.test.tsx (L3-01 acceptance) needs `test.css: true` in extensions/nexus/vitest.config.ts — Vitest replaces every .css import (including ?raw) with an empty string otherwise, so the test would run against nothing. That file is Lane 1's; asked Adrian.
 
 ## Decisions

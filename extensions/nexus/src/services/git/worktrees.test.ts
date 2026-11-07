@@ -158,12 +158,18 @@ describe("commitIn bound to the approved diff", () => {
     const w = await git.createSessionWorktree({ sessionId: "s1", workspaceId: "w" });
     write(w.worktreePath, "a.txt", "approved\n");
     const approved = await approve(w);
+    const headBefore = sh(w.worktreePath, "rev-parse", "HEAD");
     const p = git.commitIn(w.worktreePath, "m", "s1", approved);
     const timer = setInterval(() => write(w.worktreePath, "a.txt", "RACE " + Math.random() + "\n"), 1);
     let sha: string | undefined, err: unknown;
     try { sha = await p; } catch (e) { err = e; } finally { clearInterval(timer); }
-    if (sha) expect(sh(repo, "show", `${sha}:a.txt`)).toBe("approved");
-    else expect(String(err)).toMatch(/differ from the diff/);
+    if (sha) {
+      expect(sh(repo, "show", `${sha}:a.txt`)).toBe("approved");
+    } else {
+      // Refused either by the diff check or by git itself (a "short read" while the file changes under git add): no commit either way.
+      expect(String(err)).toMatch(/differ from the diff|git add failed/);
+      expect(sh(w.worktreePath, "rev-parse", "HEAD")).toBe(headBefore);
+    }
   });
   it("commits a normal approved change, including untracked and deleted files, and leaves the worktree's index in step", async () => {
     const w = await git.createSessionWorktree({ sessionId: "s1", workspaceId: "w" });

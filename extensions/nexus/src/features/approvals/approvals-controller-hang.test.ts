@@ -59,15 +59,51 @@ describe("approvals: store failures never leave the agent waiting", () => {
     expect(s.hostEvents).toHaveLength(1);
   });
 
-  it("waitForDecision: a failing store read rejects instead of hanging, and a later decision does not break anything", async () => {
+  it("waitForDecision: a failing store read rejects instead of hanging and leaves no dead waiter", async () => {
     const s = await setup();
     const a = await s.approvals.create({ sessionId: s.session.id, action: { kind: "run_command", command: "npm test" }, reason: "r" });
-    const spy = vi.spyOn(s.store, "getApproval").mockImplementation(boom);
+    vi.spyOn(s.store, "getApproval").mockImplementation(boom);
     await expect(bounded(s.approvals.waitForDecision(a.id))).rejects.toThrow("store I/O failed");
     expect((s.approvals as unknown as { waiters: Map<string, unknown> }).waiters.size).toBe(0);
-    spy.mockRestore();
-    const res = await bounded(s.approvals.resolve(a.id, "approved", { via: "slack", userId: "brandon" }));
-    expect(res.won).toBe(true);
+  });
+
+  it("request: a failing read inside waitForDecision kills the approval: a later decision is refused, nothing written, session running", async () => {
+    const s = await setup();
+    const real = s.store.getApproval.bind(s.store);
+    let reads = 0;                                                 // create() reads once (ok); waitForDecision's read fails
+    vi.spyOn(s.store, "getApproval").mockImplementation(id => (++reads === 2 ? boom() : real(id)));
+    await expect(bounded(s.approvals.request({ sessionId: s.session.id, action: { kind: "run_command", command: "npm test" }, reason: "r" }))).rejects.toThrow("store I/O failed");
+    const id = s.shown[0].approval.id;
+    expect(s.updates.at(-1)).toMatchObject({ id, text: expect.stringContaining("nothing to approve") });
+    expect((await s.store.getSession(s.session.id))!.status).toBe("running");
+    const res = await bounded(s.approvals.resolve(id, "approved", { via: "slack", userId: "brandon" }));
+    expect(res.won).toBe(false);
+    expect((await s.store.getApproval(id))!.decision).toBeUndefined();
+    expect(s.hostEvents).toEqual([]);
+  });
+
+  it("a human click already in flight when create()'s read fails is recorded as theirs but announces and wakes nothing", async () => {
+    const s = await setup();
+    const real = s.store.getApproval.bind(s.store);
+    const realDecide = s.store.decideApproval.bind(s.store);
+    let release!: () => void;
+    const gate = new Promise<void>(r => { release = r; });
+    vi.spyOn(s.store, "decideApproval").mockImplementation(async (...args) => { await gate; return realDecide(...args); });
+    let reads = 0;
+    let inflight!: Promise<unknown>;
+    vi.spyOn(s.store, "getApproval").mockImplementation(async id => {
+      if (++reads > 1) return real(id);
+      inflight = s.approvals.resolve(id, "approved", { via: "slack", userId: "brandon" });   // passes the dead check, then blocks in decideApproval
+      await new Promise(r => setTimeout(r, 0));
+      throw new Error("store I/O failed");
+    });
+    await expect(bounded(create(s))).rejects.toThrow("store I/O failed");
+    const updatesBefore = s.updates.length;
+    release();
+    await bounded(inflight);
+    expect(s.updates.slice(updatesBefore)).toEqual([]);              // no "Decided by ..." announcement
+    expect(s.hostEvents).toEqual([]);
+    expect(s.logs.some(l => l.includes("decided after the request failed"))).toBe(true);
   });
 
   it("request: a failing read-back after the decision still returns the human's decision", async () => {

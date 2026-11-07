@@ -116,10 +116,7 @@ export class ApprovalsController implements ApprovalRequester {
         await this.settle(parked);
       } else {
         // Nobody decided and nobody is waiting: the approval is dead. No decision is ever written for it.
-        this.pending.delete(approval.id);
-        this.dead.set(approval.id, approval);
-        try { this.deps.notify.update(approval.id, "The request could not be completed; there is nothing to approve."); } catch (err) { this.deps.log?.(`could not update the notification: ${err instanceof Error ? err.message : "unknown error"}`); }
-        if (![...this.pending.values()].includes(approval.sessionId)) await this.attempt("restore the session status", () => sessions.setStatus(approval.sessionId, "running"));
+        await this.markDead(approval);
       }
       throw e;
     }
@@ -154,7 +151,14 @@ export class ApprovalsController implements ApprovalRequester {
 
   async request(input: { sessionId: string; action: ApprovalAction; reason: string; diffPreview?: string }): Promise<{ approval: ApprovalRequest; decision: Decision }> {
     const created = await this.create(input);
-    const decision = await this.waitForDecision(created.id);
+    let decision: Decision;
+    try {
+      decision = await this.waitForDecision(created.id);
+    } catch (e) {
+      // The gate gets this error, so nobody waits on the approval any more: a later click must not "approve" a call that already failed.
+      if (this.pending.has(created.id)) await this.markDead(created);
+      throw e;
+    }
     // The decision is already known; the read-back only adds who decided, so a store failure here must not turn it into an error.
     const stored = await this.deps.store.getApproval(created.id).catch(e => { this.deps.log?.(`could not read back approval ${created.id}: ${e instanceof Error ? e.message : "unknown error"}`); return undefined; });
     return { approval: stored ?? created, decision };
@@ -244,6 +248,10 @@ export class ApprovalsController implements ApprovalRequester {
     const decision = approval.decision;
     if (!decision) return;
     if (this.creating.has(approval.id)) { this.creating.set(approval.id, approval); return; }
+    if (this.dead.has(approval.id)) {                                 // a click that was already in flight when the request failed
+      this.deps.log?.(`approval ${approval.id} decided after the request failed; nothing was woken`);
+      return;
+    }
     const sessionId = this.pending.get(approval.id);
     if (sessionId !== undefined) this.pending.delete(approval.id);
     try {
@@ -263,6 +271,14 @@ export class ApprovalsController implements ApprovalRequester {
     } finally {
       if (sessionId !== undefined) this.wake(approval.id, decision);
     }
+  }
+
+  /** The request failed and nothing waits on it: no decision may ever be written, its notification says so, the session stops showing "awaiting". */
+  private async markDead(approval: ApprovalRequest): Promise<void> {
+    this.pending.delete(approval.id);
+    this.dead.set(approval.id, approval);
+    try { this.deps.notify.update(approval.id, "The request could not be completed; there is nothing to approve."); } catch (err) { this.deps.log?.(`could not update the notification: ${err instanceof Error ? err.message : "unknown error"}`); }
+    if (![...this.pending.values()].includes(approval.sessionId)) await this.attempt("restore the session status", () => this.deps.sessions.setStatus(approval.sessionId, "running"));
   }
 
   private async attempt(what: string, fn: () => Promise<unknown>): Promise<void> {

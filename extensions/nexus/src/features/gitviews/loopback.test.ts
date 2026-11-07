@@ -57,6 +57,13 @@ describe("loopback client", () => {
     await expect(client.request("git.commit.show", { sha: "abc1234" })).rejects.toThrow(/timed out/);
   });
 
+  it("honours a per-call timeout and reports code timeout", async () => {
+    const router = makeRouter();
+    router.handle("git.commit.show", () => new Promise(() => {}));
+    const client = createLoopbackClient(router);
+    await expect(client.request("git.commit.show", { sha: "abc1234" }, { timeoutMs: 20 })).rejects.toMatchObject({ code: "timeout" });
+  });
+
   it("refuses requests after dispose", async () => {
     const client = createLoopbackClient(makeRouter());
     client.dispose();

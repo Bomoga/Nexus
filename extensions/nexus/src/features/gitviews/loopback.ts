@@ -11,10 +11,11 @@ export class LoopbackError extends Error {
 }
 
 export interface LoopbackClient extends Disposable {
-  request<N extends RequestName>(name: N, body: Req<N>): Promise<Res<N>>;
+  request<N extends RequestName>(name: N, body: Req<N>, options?: RequestOptions): Promise<Res<N>>;
 }
 
 export interface LoopbackOptions { timeoutMs?: number }
+export interface RequestOptions { timeoutMs?: number }
 
 interface Pending { resolve(v: unknown): void; reject(e: Error): void; name: RequestName; timer: ReturnType<typeof setTimeout> }
 
@@ -50,14 +51,15 @@ export function createLoopbackClient(router: { attach(t: WebviewTransport): Disp
   const attached = router.attach(transport);
 
   return {
-    request<N extends RequestName>(name: N, body: Req<N>): Promise<Res<N>> {
+    request<N extends RequestName>(name: N, body: Req<N>, options?: RequestOptions): Promise<Res<N>> {
+      const limit = options?.timeoutMs ?? timeoutMs;
       if (disposed) return Promise.reject(new LoopbackError("cancelled", "loopback client disposed"));
       next += 1;
       const id = `lb-${next}`;
       return new Promise<Res<N>>((resolve, reject) => {
         const timer = setTimeout(() => {
-          if (settle(id)) reject(new LoopbackError("offline", `request ${name} timed out after ${timeoutMs} ms`));
-        }, timeoutMs);
+          if (settle(id)) reject(new LoopbackError("timeout", `request ${name} timed out after ${limit} ms`));
+        }, limit);
         pending.set(id, { resolve: resolve as (v: unknown) => void, reject, name, timer });
         toRouter({ t: "req", id, name, body });
       });

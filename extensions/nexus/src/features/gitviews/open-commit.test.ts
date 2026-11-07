@@ -23,18 +23,21 @@ function setup(show: Res<"git.commit.show"> | Error, pickIndex = 0) {
   const picks: { items: CommitPickItem[]; title: string }[] = [];
   const diffs: Array<{ left: DiffSide; right: DiffSide; path: string; title: string }> = [];
   const errors: string[] = [];
+  const resolved: string[] = [];
   const deps: OpenCommitDeps = {
     request: (async <N extends RequestName>(name: N, body: Req<N>) => {
       calls.push([name, body]);
+      if (!/^[0-9a-f]{40}$/.test((body as { sha: string }).sha)) throw new Error("internal error");   // like Lane 2's GitCli.show
       if (show instanceof Error) throw show;
       return show as Res<N>;
     }) as OpenCommitDeps["request"],
     showQuickPick: async (items, o) => { picks.push({ items, title: o.title }); return items[pickIndex]; },
     showInputBox: vi.fn(async () => undefined),
+    resolveSha: async sha => { resolved.push(sha); return sha === "abcdef1" ? "ABCDEF1" + "0".repeat(33) : undefined; },
     showError: m => { errors.push(m); },
     openDiff: async (left, right, path, title) => { diffs.push({ left, right, path, title }); },
   };
-  return { deps, calls, picks, diffs, errors };
+  return { deps, calls, picks, diffs, errors, resolved };
 }
 
 describe("openCommit", () => {
@@ -107,7 +110,35 @@ describe("openCommit", () => {
     const s = setup(commit(), -1);
     s.deps.showInputBox = async () => " ABCDEF1 ";
     await openCommit(s.deps);
-    expect(s.calls).toEqual([["git.commit.show", { sha: "abcdef1" }]]);
+    expect(s.resolved).toEqual(["abcdef1"]);
+    expect(s.calls).toEqual([["git.commit.show", { sha: "abcdef1" + "0".repeat(33) }]]);
+  });
+
+  it("does not resolve a full sha, and lowercases it", async () => {
+    const s = setup(commit(), -1);
+    await openCommit(s.deps, SHA.toUpperCase());
+    expect(s.resolved).toEqual([]);
+    expect(s.calls).toEqual([["git.commit.show", { sha: SHA }]]);
+  });
+
+  it("reports a short sha the repository cannot resolve, without calling git.commit.show", async () => {
+    const s = setup(commit());
+    await openCommit(s.deps, "1234567");
+    expect(s.calls).toEqual([]);
+    expect(s.errors).toEqual(["Nexus: no commit 1234567 in this repository"]);
+  });
+
+  it("treats a renamed file like an added one (empty left)", async () => {
+    const s = setup(commit({ files: [{ path: "src/r.ts", status: "R", additions: 1, deletions: 1 }] }), 0);
+    await openCommit(s.deps, SHA);
+    expect(s.diffs[0]).toMatchObject({ left: { kind: "empty" }, right: { kind: "git", ref: SHA } });
+  });
+
+  it("escapes codicon syntax in labels", async () => {
+    const s = setup(commit({ files: [{ path: "src/$(check)/x.ts", status: "M", additions: 1, deletions: 0 }] }), 0);
+    await openCommit(s.deps, SHA);
+    expect(s.picks[0]!.items[0]!.label).toBe("src/\\$(check)/x.ts");
+    expect(s.diffs[0]!.path).toBe("src/$(check)/x.ts");
   });
 
   it("shows an error message when the request fails", async () => {

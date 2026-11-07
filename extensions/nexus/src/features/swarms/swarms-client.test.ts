@@ -114,7 +114,44 @@ describe("SwarmsClient.run", () => {
     expect(t.seen).toHaveLength(2);
     await go("s2");
     expect(c.remaining("s2")).toBe(1);
-    expect(c.remaining()).toBe(2);
+    expect(c.remaining()).toBe(60);                                               // calls outside a session share a larger global budget
+  });
+});
+
+describe("SwarmsClient hardening", () => {
+  it("only allowlisted extras reach the request, they are redacted, and they can never override the fixed fields", async () => {
+    const t = fakeFetch(() => json(200, councilResponse));
+    const extra = {
+      council_judge_model_name: "judge-" + SECRET, director_model_name: "dir",
+      task: "ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", swarm_type: "X", agents: "[]", max_loops: "99", name: "evil",
+      tools_list_dictionary: "[]", mcp_url: "https://evil", selected_tools: "run_bash",
+    } as unknown as Record<string, string>;
+    await new SwarmsClient({ fetch: t.f }).run({ apiKey: "k", swarmType: "CouncilAsAJudge", task: "real task", extra });
+    const body = t.seen[0].body!;
+    expect(body).toMatchObject({ swarm_type: "CouncilAsAJudge", task: "real task", max_loops: 1, name: "Nexus", director_model_name: "dir" });
+    expect(body.council_judge_model_name).toBe("judge-[REDACTED:anthropic-key]");
+    expect(Object.keys(body).sort()).toEqual(["agents", "council_judge_model_name", "director_model_name", "max_loops", "name", "swarm_type", "task"]);
+    expect(JSON.stringify(body)).not.toMatch(/ghp_|evil|run_bash|tools_list|mcp_/);
+  });
+
+  it("the time limit also covers reading a response body that stalls", async () => {
+    const stalled = (async (_u: string, init?: RequestInit) => {
+      const body = new ReadableStream({ start(controller) { init!.signal!.addEventListener("abort", () => controller.error(new Error("aborted"))); } });
+      return new Response(body, { status: 200, headers: { "content-type": "application/json" } });
+    }) as unknown as typeof fetch;
+    const err = await new SwarmsClient({ fetch: stalled, timeoutMs: 30 }).run({ apiKey: "k", swarmType: "CouncilAsAJudge", task: "t" }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(SwarmsUnavailable);
+    expect((err as SwarmsUnavailable).reason).toBe("timeout");
+  });
+
+  it("calls outside a session use a separate, larger budget and report it when it runs out", async () => {
+    const t = fakeFetch(() => json(200, councilResponse));
+    const c = new SwarmsClient({ fetch: t.f, budgetPerSession: 1, globalBudget: 2 });
+    await c.run({ apiKey: "k", swarmType: "CouncilAsAJudge", task: "t" });
+    await c.run({ apiKey: "k", swarmType: "CouncilAsAJudge", task: "t" });
+    const err = await c.run({ apiKey: "k", swarmType: "CouncilAsAJudge", task: "t" }).catch((e: unknown) => e);
+    expect((err as SwarmsUnavailable).message).toContain("(2)");
+    await c.run({ apiKey: "k", sessionId: "s1", swarmType: "CouncilAsAJudge", task: "t" });   // sessions are unaffected
   });
 });
 

@@ -14,7 +14,7 @@ export const DATA_USE: Record<string, DataUseFacts> = {
   anthropic: {
     dataUse: "not_used_for_training",
     dataLeavesMachine: true,
-    source: "privacy.claude.com: commercial products (Anthropic API) are excluded from training by default (checked 2026-11-07)",
+    source: "privacy.claude.com: commercial products (Anthropic API) are excluded from training by default (checked 2026-11-06)",
   },
   swarms: { dataUse: "unknown", dataLeavesMachine: true, source: "no published statement found; Swarms routes to its own model providers" },
   openai: { dataUse: "unknown", dataLeavesMachine: true, source: "not checked" },

@@ -1,6 +1,6 @@
 import { ModelCallReceipt, type ModelRole } from "../contracts";
 
-// Prune receipts (PLAN L1-20). Facts from withprune.com/docs, fetched 2026-11-07: a response body carries
+// Prune receipts (PLAN L1-20). Facts from withprune.com/docs, fetched 2026-11-06: a response body carries
 // `prune_metadata` with original_model, routed_model, optimizations_applied, cache_hit, cost_with_prune_usd,
 // cost_without_prune_usd, receipt_signature (Ed25519, base64) and receipt_signing_key_id. No separate receipt id is
 // documented, so the signature is the receipt id; the full metadata is what the public verify page checks.

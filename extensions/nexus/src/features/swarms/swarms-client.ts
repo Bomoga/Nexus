@@ -3,7 +3,7 @@ import { ProviderAuthError } from "../../models/provider";
 import { redact } from "../../shared/redact";
 
 // Swarms API client (PLAN L1-17), plain REST, text only (CLAUDE.md §14). Facts from the API reference
-// (docs.swarms.ai swarm_completions, fetched 2026-11-07): POST /v1/swarm/completions and POST /v1/agent/completions
+// (docs.swarms.ai swarm_completions, fetched 2026-11-06): POST /v1/swarm/completions and POST /v1/agent/completions
 // with an `x-api-key` header; GET /v1/models/available answers 401 on a bad key. We never send tool, MCP or code
 // fields, every outbound string is redacted, every call has a time limit, and each session has a request budget.
 // Nothing that comes back is executed: it is text a human reads.
@@ -11,6 +11,11 @@ import { redact } from "../../shared/redact";
 export const SWARMS_BASE_URL = "https://api.swarms.world";
 export const DEFAULT_TIMEOUT_MS = 45_000;
 export const DEFAULT_BUDGET_PER_SESSION = 6;
+/** Calls made outside any agent session (text-role provider) share one larger budget for the life of the client. */
+export const DEFAULT_GLOBAL_BUDGET = 60;
+
+/** The only extra top-level SwarmSpec fields a caller may set: model choices for the council and the director. */
+export const ALLOWED_EXTRA_FIELDS: ReadonlySet<string> = new Set(["council_judge_model_name", "director_model_name"]);
 export const DEFAULT_AGENT_MODEL = "claude-sonnet-5";     // the API's documented default model_name
 
 export type UnavailableReason = "timeout" | "budget" | "rate_limited" | "no_credit" | "auth" | "server" | "bad_request" | "bad_response" | "network";
@@ -43,8 +48,8 @@ export interface SwarmRunInput {
   agents?: AgentSpec[];
   maxLoops?: number;
   name?: string;
-  /** Extra top-level SwarmSpec fields such as council_judge_model_name or director_model_name. */
-  extra?: Record<string, string | number | boolean>;
+  /** Allowlisted extra SwarmSpec fields (ALLOWED_EXTRA_FIELDS); anything else is dropped. */
+  extra?: Record<string, string>;
 }
 
 export interface SwarmRun {
@@ -62,6 +67,7 @@ export interface SwarmsClientOptions {
   fetch?: typeof fetch;
   timeoutMs?: number;
   budgetPerSession?: number;
+  globalBudget?: number;
 }
 
 const SwarmResponse = z.object({
@@ -103,6 +109,7 @@ export class SwarmsClient {
   private readonly doFetch: typeof fetch;
   private readonly timeoutMs: number;
   private readonly budget: number;
+  private readonly globalBudget: number;
   private readonly used = new Map<string, number>();
 
   constructor(opts: SwarmsClientOptions = {}) {
@@ -110,11 +117,12 @@ export class SwarmsClient {
     this.doFetch = opts.fetch ?? fetch;
     this.timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     this.budget = opts.budgetPerSession ?? DEFAULT_BUDGET_PER_SESSION;
+    this.globalBudget = opts.globalBudget ?? DEFAULT_GLOBAL_BUDGET;
   }
 
   /** Calls left for a session. */
   remaining(sessionId = "global"): number {
-    return Math.max(0, this.budget - (this.used.get(sessionId) ?? 0));
+    return Math.max(0, this.limitFor(sessionId) - (this.used.get(sessionId) ?? 0));
   }
 
   /** Verifies a key with a real call that costs nothing; throws ProviderAuthError when the key is rejected. */
@@ -130,13 +138,15 @@ export class SwarmsClient {
   async run(input: SwarmRunInput): Promise<SwarmRun> {
     this.spend(input.sessionId);
     const agents = (input.agents ?? [{ agent_name: "Reviewer", model_name: DEFAULT_AGENT_MODEL }]).map(a => this.cleanAgent(a));
+    // Allowlisted extras go FIRST so they can never override the fixed fields below; values are redacted like all text.
+    const extras = Object.fromEntries(Object.entries(input.extra ?? {}).filter(([k, v]) => ALLOWED_EXTRA_FIELDS.has(k) && typeof v === "string").map(([k, v]) => [k, redact(v)]));
     const body = {
+      ...extras,
       name: input.name ?? "Nexus",
       swarm_type: input.swarmType,
       task: redact(input.task),
       agents,
       max_loops: input.maxLoops ?? 1,
-      ...input.extra,
     };
     const json = await this.request("POST", "/v1/swarm/completions", input.apiKey, body);
     const parsed = SwarmResponse.safeParse(json);
@@ -162,8 +172,13 @@ export class SwarmsClient {
 
   private spend(sessionId = "global"): void {
     const n = this.used.get(sessionId) ?? 0;
-    if (n >= this.budget) throw new SwarmsUnavailable("budget", `The Swarms request budget for this session (${this.budget}) is used up.`);
+    const limit = this.limitFor(sessionId);
+    if (n >= limit) throw new SwarmsUnavailable("budget", `The Swarms request budget for this session (${limit}) is used up.`);
     this.used.set(sessionId, n + 1);
+  }
+
+  private limitFor(sessionId: string): number {
+    return sessionId === "global" ? this.globalBudget : this.budget;
   }
 
   /** Only plain text fields are ever sent: no tools, MCP, code or image fields. */
@@ -180,23 +195,33 @@ export class SwarmsClient {
   private async request(method: "GET" | "POST", path: string, apiKey: string, body?: unknown): Promise<unknown> {
     const ac = new AbortController();
     const timer = setTimeout(() => ac.abort(), this.timeoutMs);
-    let res: Response;
+    // The one time limit covers the whole exchange, including reading the body: a stalled body must not hang a review.
     try {
-      res = await this.doFetch(`${this.baseUrl}${path}`, {
-        method, signal: ac.signal,
-        headers: { "x-api-key": apiKey, ...(body !== undefined ? { "content-type": "application/json" } : {}) },
-        ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
-      });
-    } catch (e) {
-      if (ac.signal.aborted) throw new SwarmsUnavailable("timeout", `Swarms did not answer within ${Math.round(this.timeoutMs / 1000)} s.`);
-      throw new SwarmsUnavailable("network", `Could not reach Swarms: ${redact(e instanceof Error ? e.message : "network error")}`);
+      let res: Response;
+      try {
+        res = await this.doFetch(`${this.baseUrl}${path}`, {
+          method, signal: ac.signal,
+          headers: { "x-api-key": apiKey, ...(body !== undefined ? { "content-type": "application/json" } : {}) },
+          ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+        });
+      } catch (e) {
+        if (ac.signal.aborted) throw this.timedOut();
+        throw new SwarmsUnavailable("network", `Could not reach Swarms: ${redact(e instanceof Error ? e.message : "network error")}`);
+      }
+      if (res.ok) {
+        try { return await res.json(); } catch {
+          if (ac.signal.aborted) throw this.timedOut();
+          throw new SwarmsUnavailable("bad_response", "Swarms returned a body that is not JSON.");
+        }
+      }
+      throw new SwarmsUnavailable(reasonFor(res.status), `Swarms answered ${res.status}${await detail(res)}`);
     } finally {
       clearTimeout(timer);
     }
-    if (res.ok) {
-      try { return await res.json(); } catch { throw new SwarmsUnavailable("bad_response", "Swarms returned a body that is not JSON."); }
-    }
-    throw new SwarmsUnavailable(reasonFor(res.status), `Swarms answered ${res.status}${await detail(res)}`);
+  }
+
+  private timedOut(): SwarmsUnavailable {
+    return new SwarmsUnavailable("timeout", `Swarms did not answer within ${Math.round(this.timeoutMs / 1000)} s.`);
   }
 }
 

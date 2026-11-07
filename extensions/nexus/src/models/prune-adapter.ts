@@ -5,7 +5,7 @@ import type { Provider, StopReason, TurnEvent, TurnMessage, TurnRequest } from "
 
 // Prune gateway adapter (PLAN L1-20, CLAUDE.md §5 Prune semantics and §14). When "Optimize with Prune" is on, calls in
 // scope go through Prune's OpenAI-compatible endpoint and each yields a ModelCallReceipt from the response's signed
-// `prune_metadata`. Documented contract (withprune.com/docs, 2026-11-07): POST {base}/chat/completions, the Prune key as
+// `prune_metadata`. Documented contract (withprune.com/docs, 2026-11-06): POST {base}/chat/completions, the Prune key as
 // a Bearer token, the model id in the body, provider keys held in Prune's vault (so no provider key is sent), responses
 // non-streaming here. Whether tool calls pass through for Anthropic and Gemini models is NOT documented, so by default
 // the agent role is out of scope (scope "text_roles") until the live check (smoke L1-S4) says otherwise.
@@ -153,7 +153,7 @@ export function wrapProvider(direct: Provider, cfg: PruneConfig): Provider {
       if (typeof text === "string" && text.length > 0) yield { type: "text_delta", text };
       let sawTool = false;
       for (const [i, c] of (choice?.message?.tool_calls ?? []).entries()) {
-        let args: unknown = {};
+        let args: unknown;
         try { args = c.function?.arguments?.trim() ? JSON.parse(c.function.arguments) : {}; } catch {
           yield { type: "error", message: `the model sent malformed arguments for tool ${c.function?.name ?? "?"}` };
           return;

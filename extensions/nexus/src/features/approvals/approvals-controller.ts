@@ -8,7 +8,12 @@ import type { ApprovalRequester, SessionEvents } from "../sessions/sessions-cont
 // any machine wins (a conditional write in the store); the agent waits with no timeout; nothing but resolve() with a
 // human DecidedBy can set a decision, and the agent process has no path to it (CLAUDE.md §5, §14).
 
-/** How long sessionEnded() lets the store catch up before returning; the work then continues in the background. */
+/**
+ * How long sessionEnded() lets the store catch up before returning; the work then continues in the background.
+ * Tradeoff (deliberate, do not change without re-running the hang tests): with a store slower than this, the cancelling human's
+ * rejection and its `approval_resolved` event can land after the session's `status: cancelled`. A longer grace would hold the
+ * session's ending hostage to a slow store; a shorter one only widens that window. The waiters are released before any store call.
+ */
 const SETTLE_GRACE_MS = 250;
 
 type Decision = "approved" | "rejected";
@@ -81,6 +86,10 @@ export class ApprovalsController implements ApprovalRequester {
   private readonly settled = new Map<string, Decision>();
   /** approvalId -> sessionId for approvals created here; never cleared by settle(), so a missing store row can still be tied to its session. */
   private readonly sessionOf = new Map<string, string>();
+  /** approvalId -> sessionId for approvals that were still waiting when their session ended (own, larger cap): a pending approval evicted from sessionOf still knows its session ended. */
+  private readonly endedApprovals = new Map<string, string>();
+  /** Callbacks waiting for a session to end (request()'s read-back must not outlive its session). */
+  private readonly endWatchers = new Map<string, Set<() => void>>();
 
   constructor(private readonly deps: ApprovalsDeps) {}
 
@@ -97,7 +106,7 @@ export class ApprovalsController implements ApprovalRequester {
     this.creating.set(approval.id, undefined);
     this.pending.set(approval.id, approval.sessionId);
     this.sessionOf.set(approval.id, approval.sessionId);
-    while (this.sessionOf.size > 256) this.sessionOf.delete(this.sessionOf.keys().next().value as string);
+    while (this.sessionOf.size > 256) this.sessionOf.delete(this.sessionOf.keys().next().value as string);   // an evicted pending approval is still found via endedApprovals once its session ends
     this.known.add(approval.id);
     // From here on the approval may exist in the store, on screen and on other machines. ANY failure before it is handed back
     // means the caller (the gate) fails, so nobody waits on it: it must never be decidable afterwards (see abandon()).
@@ -181,7 +190,7 @@ export class ApprovalsController implements ApprovalRequester {
       if (rest.length > 0) this.waiters.set(approvalId, rest); else this.waiters.delete(approvalId);
       return human;
     }
-    const sessionId = stored?.sessionId ?? this.sessionOf.get(approvalId);
+    const sessionId = stored?.sessionId ?? this.sessionOf.get(approvalId) ?? this.endedApprovals.get(approvalId);
     if (stored?.decision && !this.pending.has(approvalId)) this.wake(approvalId, stored.decision);
     else if (!stored?.decision && (this.dead.has(approvalId) || (sessionId !== undefined && this.ended.has(sessionId)))) {
       // A missing row is dead only when the approval was abandoned or its session is known to have ended; anything else keeps waiting.
@@ -204,8 +213,24 @@ export class ApprovalsController implements ApprovalRequester {
       throw e;
     }
     // The decision is already known; the read-back only adds who decided, so a store failure here must not turn it into an error.
-    const stored = await this.deps.store.getApproval(created.id).catch(e => { this.deps.log?.(`could not read back approval ${created.id}: ${e instanceof Error ? e.message : "unknown error"}`); return undefined; });
+    // It must not outlive the session either: after a cancel nobody should be left holding a read that never answers.
+    const read = this.deps.store.getApproval(created.id).catch(e => { this.deps.log?.(`could not read back approval ${created.id}: ${e instanceof Error ? e.message : "unknown error"}`); return undefined; });
+    const stored = await this.untilSessionEnds(created.sessionId, read);
     return { approval: stored ?? created, decision };
+  }
+
+  /** Resolves with `work`'s value, or with undefined as soon as the session is over, whichever comes first. */
+  private untilSessionEnds<T>(sessionId: string, work: Promise<T | undefined>): Promise<T | undefined> {
+    if (this.ended.has(sessionId)) { work.catch(() => { /* abandoned */ }); return Promise.resolve(undefined); }
+    let off!: () => void;
+    const over = new Promise<undefined>(resolve => {
+      const set = this.endWatchers.get(sessionId) ?? new Set<() => void>();
+      const fire = () => resolve(undefined);
+      set.add(fire);
+      this.endWatchers.set(sessionId, set);
+      off = () => { set.delete(fire); if (set.size === 0 && this.endWatchers.get(sessionId) === set) this.endWatchers.delete(sessionId); };
+    });
+    return Promise.race([work, over]).finally(off);
   }
 
   // ---- deciding (the humans' side) ----
@@ -218,6 +243,8 @@ export class ApprovalsController implements ApprovalRequester {
     if (gone) return { approval: gone, won: false };                  // refused: nothing is written
     const existing = await this.deps.store.getApproval(approvalId);
     if (!existing) throw new Error(`No approval ${approvalId}.`);
+    const goneNow = this.dead.get(approvalId);                        // its request may have failed while the read was in flight
+    if (goneNow) return { approval: goneNow, won: false };
     if (this.ended.has(existing.sessionId) && !existing.decision) throw new Error("That session has ended; there is nothing to approve.");
     const res = await this.deps.store.decideApproval(approvalId, decision, by, this.deps.clock.now());
     await this.settle(res.approval);
@@ -357,6 +384,10 @@ export class ApprovalsController implements ApprovalRequester {
     const waiting = [...this.pending].filter(([, s]) => s === sessionId).map(([id]) => id);
     const by: DecidedBy = { via: "app", userId: this.deps.identity() };
     this.ended.add(sessionId);
+    for (const id of waiting) this.endedApprovals.set(id, sessionId);
+    while (this.endedApprovals.size > 4096) this.endedApprovals.delete(this.endedApprovals.keys().next().value as string);
+    for (const fire of [...(this.endWatchers.get(sessionId) ?? [])]) fire();   // unblocks request()'s read-back
+    this.endWatchers.delete(sessionId);
     // Release every waiter first, synchronously, before any store call: nothing below may hold one back.
     for (const id of waiting) {
       this.pending.delete(id);

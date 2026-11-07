@@ -149,7 +149,7 @@ export class AgentRuntime {
         try {
           for await (const e of provider.turn({ modelId: start.session.model.modelId, role: "agent", system, messages: [...messages], tools: TOOL_DEFS, signal }, key)) {
             if (e.type === "text_delta") text += e.text;
-            else if (e.type === "tool_call") toolCalls.push({ id: e.id, name: e.name, args: e.args });
+            else if (e.type === "tool_call") toolCalls.push({ id: e.id, name: e.name, args: e.args, ...(e.providerMeta !== undefined ? { providerMeta: e.providerMeta } : {}) });
             else if (e.type === "done") stop = e.stopReason;
             else return await fail(`model error: ${e.message}`);
           }

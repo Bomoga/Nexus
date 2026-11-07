@@ -13,6 +13,8 @@ export interface ToolCall {
   id: string;
   name: string;
   args: unknown;
+  /** Opaque provider data that must travel back with this call (e.g. Gemini thought signatures). The loop never reads it. */
+  providerMeta?: unknown;
 }
 
 export type TurnMessage =
@@ -39,7 +41,7 @@ export type StopReason = "end_turn" | "tool_use" | "max_tokens" | "cancelled";
 
 export type TurnEvent =
   | { type: "text_delta"; text: string }
-  | { type: "tool_call"; id: string; name: string; args: unknown }
+  | { type: "tool_call"; id: string; name: string; args: unknown; providerMeta?: unknown }
   | { type: "done"; usage: Usage; stopReason: StopReason }
   | { type: "error"; message: string };
 
@@ -77,7 +79,7 @@ export async function collectTurn(events: AsyncIterable<TurnEvent>): Promise<{ t
   let error: string | undefined;
   for await (const e of events) {
     if (e.type === "text_delta") text += e.text;
-    else if (e.type === "tool_call") toolCalls.push({ id: e.id, name: e.name, args: e.args });
+    else if (e.type === "tool_call") toolCalls.push({ id: e.id, name: e.name, args: e.args, ...(e.providerMeta !== undefined ? { providerMeta: e.providerMeta } : {}) });
     else if (e.type === "done") done = e;
     else error = e.message;
   }

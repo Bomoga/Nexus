@@ -14,6 +14,14 @@ Lead session, no workers: everything below was written, tested and independently
 - L1-22 extension half (home keeper); L1-26 demo repo seed + `demo/demo-script.md` + `nexus.dev.reseedDemoRepo`
 - Independent reviews: four rounds with fresh Opus/Sonnet reviewers; every blocking finding fixed and covered by a test (one fix was mutation-checked). Round four's fixes: early approval decision read after the await, session ending claimed synchronously and shared by concurrent callers, event sanitiser bounded by total nodes with cycle and getter handling, undecidable approvals of ended sessions hidden from "waiting", swarm subtask briefs quoted and parent referenced by id, scheduler marks tasks failed only while still draft.
 - Composition root `composeLane1` (src/features/compose.ts) with an offline end-to-end test: thread, task, agent, human approvals, swarm review, commit.
+- Session 2 (2026-11-07), after merging `origin/main` (interface drops, conflict-free): `npm run contributes:check`, typecheck, lint, 549 unit tests (35 files) and build all pass.
+  - Ports fit: `EventStore` -> `StorePort`, `SlackService` -> `SlackPort`, `Gate` -> `GatePort` are compile-time assertions in `src/features/adapters/adapters.test.ts`; none needed an adapter.
+  - One adapter: `approvalsHookFor` (src/features/adapters/approvals-hook.ts) turns `ApprovalRequester.request` into Lane 2's `ApprovalsHook.create({session, action, reason, diffPreview})` -> `{approvalId, decision}`. `ApprovalRequester.request` gained an optional `diffPreview`.
+  - Bridge wiring: `wireLane1ToRouter` (src/features/wire-bridge.ts) registers every handler with `router.handle` (`ApprovalConflict` -> `BridgeError("conflict")`) and every subscription with `router.onSubscribe`. Replay-then-live follows bridge/types.ts: the handler only replays stored `agent.subscribe` events, and one `lane.live` feed per subscription name calls `router.publish`, once per event (new `SessionsController.subscribeAll`). `lane.subscriptions` still exists (per-subscriber emit) but is not used for the router.
+  - `src/register/lane-1.ts` takes optional `Partial<Lane2Services>`; `src/register/lane-1-features.ts` builds everything with the real `ProcessHost`/`forkAgentProcess`, `SwarmsClient`, `OptimizerService`, a VS Code `NotifyPort` (APPROVE / REJECT buttons, dismissing leaves it pending), and registers Lane 1's commands (src/features/commands.ts). Missing Lane 2 pieces: in-memory router, store and Slack; git and gate REFUSE (never fake), so no agent can run without the real gate.
+  - Commands added to contributes/lane-1.json: `nexus.approve`, `nexus.reject`, `nexus.makeTaskFromThread`, `nexus.decomposeTask`, `nexus.rerunSwarmReview`, `nexus.toggleOptimizer`, `nexus.cancelSession`.
+  - Review leftovers: receipts are schema-validated before they are recorded; a `session.start` timeout kills the child; `removeSessionWorktree` is called through a promise so a synchronous throw or non-promise cannot escape.
+  - CLAUDE.md sections 10 and 11 now say `lane-N-wt/<task-id>` for worker branches.
 
 ## In flight
 - none
@@ -22,7 +30,13 @@ Lead session, no workers: everything below was written, tested and independently
 - cp-0 is not tagged, so `lane-1` exists only locally (CLAUDE.md §10: no lane branch before cp-0). Needs Adrian: branding in product.json, branch protection, the T+0 minute, GitHub handles in CODEOWNERS, then the tag.
 - Core work stays with Adrian: L1-S1 (register extensions/nexus with the fork build), L1-02 (tab-less home), L1-22 core half (startup defaults, Nexus Dark, chat/Copilot off).
 - Live checks need Adrian's keys and accounts: `npm run test:int -- anthropic|gemini|swarms` (ANTHROPIC_API_KEY, GEMINI_API_KEY, SWARMS_API_KEY); Prune live check (L1-S4: tool-calling passthrough decides `all_roles`); Auth0 tenant + Native app for L1-S6.
-- Wiring needs Lane 2: the sessions, approvals, tasks, swarm review, decompose, optimizer and Auth0 services are built and tested but NOT constructed in `src/register/lane-1.ts`, because they need Lane 2's event store, git service, gate and Slack service (interface drops not on main yet). Adapters to the Lane-1-owned ports in `src/features/ports.ts` are the integration step; `src/features/testing/memory-ports.ts` shows the expected behaviour (conditional approval update, worktree per session, gate asking approvals).
+- Real Lane 2 pieces not on main yet: `LocalStore`, the bridge router/host, the gate implementation, the git service and the real Slack service. `registerLane1` is constructed against the interfaces; `extension.ts` must pass the real services (`registerLane1(context, { router, store, slack, git, makeGate, approvalHooks })`) when `registerLane2` returns them. Until then the stand-ins described above apply.
+- Mismatches to settle with Lane 2 (their files untouched):
+  - `COMMAND_OWNER` gives `nexus.openSession` and `nexus.openReceipt` to lane-3, so the merge script refuses them in contributes/lane-1.json and Lane 1 did not register them. Lane 3 can call `OptimizerService.openReceipt(receiptId, sessionId?)` (returns the verify URL and the signed metadata).
+  - `orbitOf("lane-1-wt/x")` returns `lane-1-wt/x` (a separate orbit), because the frozen rule only strips `lane-N/...`. Worker branches are local and never pushed, so the git watcher should skip `lane-N-wt/*`. Changing `orbitOf` is a contracts PR.
+  - `decodeCodeRef` can throw `URIError` on a malformed escape (contracts PR, the team's call; not changed).
+  - Lane 2 reported hang paths in Lane 1 on store I/O failure (approvals-controller.ts:218-223, sessions-controller.ts:159-160 and 166-167). Not touched this session.
+- Needs Adrian (not done here): the PR bringing `src/shared/redact.ts` to `main` (needs the launch check on a machine with the fork built); startup defaults must disable workspace trust (setting name to confirm in L1-22; Lane 2 found that an untrusted folder stops Nexus activating when it depends on `vscode.git`); CIBA plan yes/no (L1-15/L1-16); Auth0 round trip through the fork (L1-S6) and refresh tokens on the Auth0 app; Swarms CouncilAsAJudge live run (costs money); Prune tool-calling passthrough (L1-S4).
 
 ## Decisions
 T+0 = <HH:MM ET>, 2026-11-06
@@ -37,7 +51,7 @@ T+0 = <HH:MM ET>, 2026-11-06
 - Anthropic: `dataUse: not_used_for_training` is sourced to privacy.claude.com (src/models/data-use.ts). Gemini is "may be used" unless the user says the project is billing-enabled.
 - Untrusted text: the whole Slack thread, author names and code-ref paths are on `> ` quoted brief lines; the task title is fenced when given to the model; SYSTEM_RULES say so. A task title is still shown to people as plain text.
 - Cancelling a session records any waiting approval as the cancelling human's rejection; any other ending releases the waiting gate as rejected WITHOUT writing a decision and refuses later decisions.
-- `nexus.approve` / `nexus.reject` without an id act only when exactly one approval is waiting.
+- `nexus.approve` / `nexus.reject` without an id act on the only waiting approval; with several waiting they open a quick pick, and dismissing it decides nothing (a decision is always an explicit click).
 - Commit 46d2d305 was committed with one failing approvals test (a real ordering bug, fixed by the next commit 3236ec0d). The branch is green at every other commit.
 - The demo history must be seeded close to demo time (`--t0 now`, which the re-seed command does).
 - eslint.config.mjs got an `.mjs` globals block for the child-process test fixture (integrator-owned file).
@@ -45,5 +59,6 @@ T+0 = <HH:MM ET>, 2026-11-06
 ## Next
 - Adrian: tag cp-0 (see Blocked), then push `lane-1` and merge `main` into it.
 - Run the live smoke checks with real keys (anthropic, gemini, swarms, prune, auth0) and write the results here.
-- With Lane 2's interfaces on main: write the adapters, construct the services in `register/lane-1.ts`, register `nexus.approve`, `nexus.reject`, `nexus.makeTaskFromThread`, `nexus.decomposeTask`, `nexus.rerunSwarmReview`, `nexus.toggleOptimizer`, `nexus.openReceipt`, and add the VS Code notification adapter for approvals.
+- When Lane 2's `LocalStore`, router, gate and git service land on main: pass them to `registerLane1` from `extension.ts`, drop the stand-ins, run a launch check.
+- Look at the store-I/O hang paths Lane 2 listed.
 - L1-15 / L1-16 (Cloudflare Worker + CIBA push) only if the Auth0 plan includes CIBA (decided at H0-A6); L1-13 (Slack progress message) is proposed to move to Lane 2 as L2-17.

@@ -32,6 +32,10 @@ export const OUTPUT_TAIL_CHARS = 8000;
 const MAX_CAPTURE_CHARS = 64_000;
 const DRAIN_MS = 50;
 const TASKKILL_MS = 3000;
+/** After a timeout kill has settled, how long a child that still has not exited may keep the run open. */
+const FORCE_MS = 500;
+/** Added to stderr when a timed-out run is reported without its process ever exiting. */
+export const UNCONFIRMED_KILL_NOTE = "[nexus: the timed-out process could not be confirmed dead]";
 const WRITE_PREVIEW_CHARS = 4000;
 
 export function createGate(deps: GateDeps): Gate {
@@ -91,14 +95,19 @@ export function createGate(deps: GateDeps): Gate {
         void killing.then(() => resolve({ exitCode: code, stdoutTail: tail(deps.redact(out), OUTPUT_TAIL_CHARS), stderrTail: tail(deps.redact(err), OUTPUT_TAIL_CHARS) }));
       };
       // A timeout kills the tree. If the child is still not gone once the kill has settled (taskkill failed or hit its cap on
-      // Windows), stop waiting for it after a short grace and report it as killed, so the agent never waits forever.
+      // Windows), stop waiting for it after a grace and report it as killed, saying so in stderr, so the agent never waits forever.
+      // finish() runs before the last kill attempt: a refused kill emits "error" synchronously, which must not turn this into 127.
       const timer = setTimeout(() => {
         if (!child) return;
         const c = child;
         kill(c);
         void killing.then(() => {
           if (done) return;
-          force = setTimeout(() => { try { c.kill("SIGKILL"); } catch { /* best effort */ } finish(exitCode ?? (win ? 1 : 137)); }, DRAIN_MS);
+          force = setTimeout(() => {
+            if (exitCode === undefined) err = keep(err, `\n${UNCONFIRMED_KILL_NOTE}`);
+            finish(exitCode ?? (win ? 1 : 137));
+            try { c.kill("SIGKILL"); } catch { /* best effort */ }
+          }, FORCE_MS);
         });
       }, timeoutMs);
       try {

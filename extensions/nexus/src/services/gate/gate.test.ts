@@ -12,7 +12,7 @@ import { redact } from "../../shared/redact";
 import { FakeGit } from "../git/fake-git";
 import { absolutePath, cmdQuote, isGitBinary, splitCommand, trimCutEnd, trimCutStart, windowsPlan } from "./commands";
 import { writeFileAt } from "./fs";
-import { createGate, type GateDeps, type SpawnFn } from "./gate";
+import { createGate, UNCONFIRMED_KILL_NOTE, type GateDeps, type SpawnFn } from "./gate";
 import type { ApprovalsHook } from "./types";
 
 type Pending = { action: { kind: string; [k: string]: unknown }; diffPreview?: string; resolve: (d: "approved" | "rejected") => void };
@@ -429,10 +429,12 @@ describe("hardening", () => {
     expect(new Set(calls.slice(1))).toEqual(new Set(["/pid 4242 /T /F"]));
   });
 
-  it("reports a timed-out run as killed even when taskkill fails and the child never exits", async () => {
+  it("reports a timed-out run as killed, and says so, even when taskkill and the last kill are refused and the child never exits", async () => {
     let killed = 0;
     const spawn = ((file: string) => {
-      const child = Object.assign(new EventEmitter(), { pid: 4243, stdout: new PassThrough(), stderr: new PassThrough(), kill: () => { killed++; return true; } });
+      // A refused kill emits "error" synchronously, as Node's ChildProcess.kill does for EPERM.
+      const child: EventEmitter = Object.assign(new EventEmitter(), { pid: 4243, stdout: new PassThrough(), stderr: new PassThrough(),
+        kill: () => { killed++; child.emit("error", Object.assign(new Error("kill EPERM"), { code: "EPERM" })); return false; } });
       // taskkill fails (access denied); the main process ignores everything and never exits or closes
       if (file === "taskkill") setTimeout(() => child.emit("exit", 128, null), 10);
       return child as unknown as ChildProcess;
@@ -441,6 +443,7 @@ describe("hardening", () => {
     const t0 = Date.now();
     const r = await gate({ allow: ["tool"], spawn, platform: "win32", env, fileExists: f => f === "C:\\bin\\tool.EXE", taskkillTimeoutMs: 50 }).request(session, "cmd.run", { command: "tool", timeoutMs: 50 });
     expect(r.exitCode).toBe(1);
+    expect(r.stderrTail).toContain(UNCONFIRMED_KILL_NOTE);
     expect(killed).toBeGreaterThan(0);
     expect(Date.now() - t0).toBeLessThan(2000);
   });

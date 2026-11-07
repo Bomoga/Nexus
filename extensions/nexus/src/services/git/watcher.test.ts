@@ -240,15 +240,17 @@ describe("GitWatcher", () => {
     const log = [entry(5, [2, 4], "Merge branch 'x; rm -rf /'"), entry(4, [3]), entry(3, []), entry(2, [1]), entry(1, [])];
     const t = fakeGit([{ name: "main", kind: "branch", sha: sha(5) }], log);
     const { w } = make({ git: t.git }); await w.scan();
-    expect(events.find(e => e.kind === "merge")!.fromOrbit).toBe("merged");
+    // An unparsable subject names no source: no arc, and the merged-in commits stay on main.
+    expect(events.find(e => e.kind === "merge")!.fromOrbit).toBeUndefined();
+    expect(events.filter(e => e.kind === "commit").every(e => e.orbit === "main")).toBe(true);
   });
 
   it("refuses dot, dot-dot, absolute and doubled-slash names from a merge subject", async () => {
     for (const [subject, expected] of [
-      ["Merge branch '../../etc'", "merged"], ["Merge branch '.hidden'", "merged"], ["Merge branch 'a/../b'", "merged"],
-      ["Merge branch '/abs'", "merged"], ["Merge branch 'a//b'", "merged"], ["Merge branch 'feature/./x'", "merged"],
-      [`Merge branch '${"a".repeat(101)}'`, "merged"],
-      ["Merge branch 'lane-5'", "lane-5"], ["Merge branch 'feature/cart/v2'", "feature/cart"], ["Merge branch 'release-1.2'", "release-1.2"],
+      ["Merge branch '../../etc'", undefined], ["Merge branch '.hidden'", undefined], ["Merge branch 'a/../b'", undefined],
+      ["Merge branch '/abs'", undefined], ["Merge branch 'a//b'", undefined], ["Merge branch 'feature/./x'", undefined],
+      [`Merge branch '${"a".repeat(101)}'`, undefined],
+      ["Merge branch 'lane-5'", "lane-5"], ["lane-2: merge the git watcher", "lane-2"], ["lane-2: x", "lane-2"], ["lane-2 without colon", undefined], ["Merge branch 'feature/cart/v2'", "feature/cart"], ["Merge branch 'release-1.2'", "release-1.2"],
     ] as const) {
       events.length = 0;
       const log = [entry(5, [2, 4], subject), entry(4, [3]), entry(3, []), entry(2, [1]), entry(1, [])];

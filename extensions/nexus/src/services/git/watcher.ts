@@ -171,18 +171,23 @@ export class GitWatcher {
 // segment, no leading dot or slash, no doubled slash.
 const NAME_RE = /^(?!.*(?:^|\/)\.)(?!.*\/\/)(?!\/)[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)*$/;
 const MAX_NAME = 100;
-const MERGED = "merged";
 
-/** The source branch names a merge subject claims, one per secondary parent. Untrusted text: it can only pick an orbit name. */
-function sourceFamilies(subject: string, count: number): string[] {
+/**
+ * The source family a merge subject claims, one per secondary parent, or undefined when it names none: those commits then
+ * stay on the orbit they merged into (no arc), rather than on an invented orbit. Untrusted text: it can only pick an orbit
+ * name. Understands git's own subjects, GitHub's PR subjects, and this repo's `lane-N: ...` convention for lane merges.
+ */
+function sourceFamilies(subject: string, count: number): (string | undefined)[] {
   const names: string[] = [];
   const m = /^Merge (?:branches|branch|tag|tags) (.+?)(?: into .*)?$/.exec(subject);
   if (m) for (const q of m[1].matchAll(/'([^']*)'/g)) names.push(q[1]);
   else {
     const pr = /^Merge pull request #\d+ from [^/\s]+\/(\S+)$/.exec(subject);
+    const lane = /^(lane-\d+):\s/.exec(subject);
     if (pr) names.push(pr[1]);
+    else if (lane && count === 1) names.push(lane[1]);
   }
-  return Array.from({ length: count }, (_, i) => (names.length === count && names[i].length <= MAX_NAME && NAME_RE.test(names[i]) ? orbitOf(names[i]) : MERGED));
+  return Array.from({ length: count }, (_, i) => (names.length === count && names[i].length <= MAX_NAME && NAME_RE.test(names[i]) ? orbitOf(names[i]) : undefined));
 }
 
 /**
@@ -218,7 +223,7 @@ function assignOwners(refs: RefInfo[], head: FullSha | undefined, log: LogEntry[
     merge.parents.slice(1).forEach((p, idx) => {
       let cur: FullSha | undefined = p;
       while (cur && bySha.has(cur) && !owners.has(cur)) {
-        owners.set(cur, fams[idx]);
+        owners.set(cur, fams[idx] ?? owners.get(merge.sha)!);
         const e: LogEntry = bySha.get(cur)!;
         if (e.parents.length >= 2) queue.push(e);
         cur = e.parents[0];

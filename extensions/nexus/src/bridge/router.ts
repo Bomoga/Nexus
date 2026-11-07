@@ -46,8 +46,9 @@ function logView(e: unknown, depth = 0): unknown {
   if (typeof e === "string") return e;
   if (!(e instanceof Error)) return e === undefined ? undefined : { type: typeof e };
   const code = (e as { code?: unknown }).code;
+  const text = (value: unknown) => typeof value === "string" ? value : undefined;
   return {
-    name: e.name, message: e.message, stack: e.stack,
+    name: text(e.name), message: text(e.message), stack: text(e.stack),
     code: typeof code === "string" || typeof code === "number" ? code : undefined,
     cause: depth < 5 && e.cause !== undefined ? logView(e.cause, depth + 1) : undefined,
   };
@@ -80,13 +81,15 @@ class Guard {
   /** What a webview sees for a failure: handler-authored valid codes pass through unless flagged; everything else is generic `internal`. */
   wireError(e: unknown, context: string): { code: ErrorCode; message: string } {
     const generic = { code: "internal" as ErrorCode, message: GENERIC_INTERNAL };
-    if (e instanceof BridgeError && e.code !== "internal") {
-      if (!ErrorCode.safeParse(e.code).success) { this.log(`invalid error code in ${context}`, e); return generic; }
-      const wire = { code: e.code, message: e.message };
-      if (!this.flagged(wire)) return wire;
-      this.log(`flagged error message suppressed in ${context}`, e);
-      return generic;
-    }
+    try {
+      if (e instanceof BridgeError && e.code !== "internal") {
+        if (!ErrorCode.safeParse(e.code).success) { this.log(`invalid error code in ${context}`, e); return generic; }
+        const wire = { code: e.code, message: e.message };
+        if (!this.flagged(wire)) return wire;
+        this.log(`flagged error message suppressed in ${context}`, e);
+        return generic;
+      }
+    } catch { /* a hostile getter or proxy: answer generically */ }
     this.log(`internal error in ${context}`, e);
     return generic;
   }

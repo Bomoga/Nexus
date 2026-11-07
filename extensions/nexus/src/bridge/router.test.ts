@@ -116,6 +116,38 @@ describe("NexusBridgeRouter requests", () => {
     }
   });
 
+  it("logs only strings for name, message and stack", async () => {
+    const t = setup();
+    const e = new Error("x");
+    e.stack = new Error("nested") as unknown as string;
+    Object.defineProperty(e, "name", { value: { headers: "h" } });
+    t.router.handle("store.status", () => { throw e; });
+    await t.send({ t: "req", id: "1", name: "store.status", body: {} });
+    const detail = t.logs[0][1] as { name?: unknown; stack?: unknown; message?: unknown };
+    expect([detail.name, detail.stack, detail.message]).toEqual([undefined, undefined, "x"]);
+  });
+
+  it("answers generically when a thrown value has hostile getters", async () => {
+    const hostile = [
+      Object.defineProperty(new BridgeError("offline", "m"), "message", { get() { throw new Error("boom"); } }),
+      Object.defineProperty(new BridgeError("offline", "m"), "code", { get() { throw new Error("boom"); } }),
+      new Proxy({}, { getPrototypeOf() { throw new Error("trap"); } }),
+    ];
+    const unhandled: unknown[] = [];
+    const onUnhandled = (e: unknown) => { unhandled.push(e); };
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      for (const thrown of hostile) {
+        const t = setup();
+        t.router.handle("store.status", () => { throw thrown; });
+        await t.send({ t: "req", id: "1", name: "store.status", body: {} });
+        await tick();
+        expect(t.posted[0]).toEqual({ t: "res", id: "1", ok: false, error: { code: "internal", message: "internal error" } });
+      }
+      expect(unhandled).toEqual([]);
+    } finally { process.off("unhandledRejection", onUnhandled); }
+  });
+
   it("the redacted record carries nothing from the error", async () => {
     const t = setup(v => JSON.stringify(v).includes("sk-ant"));
     const e = Object.assign(new Error("x"), { name: "sk-ant-name", code: "sk-ant-code" });

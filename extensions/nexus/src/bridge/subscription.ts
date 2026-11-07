@@ -23,13 +23,20 @@ export type OpenHandler = (req: unknown, emit: (evt: unknown) => void) => unknow
 export class SubscriptionSet {
   private readonly subs = new Set<Sub>();
 
+  /** `maxHeld`: live events buffered per subscription while it is still opening; overflow removes the subscription. */
+  constructor(private readonly maxHeld = 10_000) {}
+
   get size(): number { return this.subs.size; }
 
   /** Deliver an already-validated event to matching subscriptions (held while a subscription is still opening). */
   publish(name: SubscriptionName, evt: unknown): void {
     for (const s of [...this.subs]) {
       if (s.name !== name || !matchesSubscription(name, s.req, evt)) continue;
-      if (!s.ready) { s.held.push(evt); continue; }
+      if (!s.ready) {
+        if (s.held.length >= this.maxHeld) { this.remove(s); s.onFail?.(new BridgeError("internal", "held event overflow")); continue; }
+        s.held.push(evt);
+        continue;
+      }
       try { this.deliver(s, evt); }
       catch (e) { this.remove(s); s.onFail?.(toBridgeError(e)); }   // a failing subscriber is removed
     }

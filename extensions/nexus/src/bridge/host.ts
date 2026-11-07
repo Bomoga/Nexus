@@ -38,7 +38,7 @@ export function buildCsp(nonce: string, cspSource: string): string {
   ].join("; ");
 }
 
-function escapeAttr(s: string): string { return s.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;"); }
+function escapeAttr(s: string): string { return s.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
 
 export function buildHtml(opts: { nonce: string; cspSource: string; scriptUri: string; title: string }): string {
   const { nonce, cspSource, scriptUri, title } = opts;
@@ -64,12 +64,29 @@ function configureWebview(api: HostApi, ctx: vscode.ExtensionContext, entry: str
   webview.html = buildHtml({ nonce: makeNonce(), cspSource: webview.cspSource, scriptUri, title });
 }
 
-function transportOf(webview: vscode.Webview, onDidDispose: (cb: () => void) => Disposable): WebviewTransport {
-  return {
+interface HostedWebview {
+  webview: vscode.Webview;
+  onDidDispose(cb: () => void): Disposable;
+  onDidChangeVisibility(cb: (visible: boolean) => void): Disposable;
+}
+
+/** Attach a webview to the router; its session is dropped on dispose and its ctx.subscriptions entry removed. */
+function attachTracked(ctx: vscode.ExtensionContext, router: NexusBridgeRouter, hosted: HostedWebview): void {
+  const { webview } = hosted;
+  const transport: WebviewTransport = {
     post: m => webview.postMessage(m),
     onMessage: cb => webview.onDidReceiveMessage(cb),
-    onDidDispose,
+    onDidDispose: cb => hosted.onDidDispose(cb),
+    onDidChangeVisibility: cb => hosted.onDidChangeVisibility(cb),
   };
+  const attached = router.attach(transport);
+  ctx.subscriptions.push(attached);
+  const gone = hosted.onDidDispose(() => {
+    attached.dispose();
+    const i = ctx.subscriptions.indexOf(attached);
+    if (i >= 0) ctx.subscriptions.splice(i, 1);
+    gone.dispose();
+  });
 }
 
 export interface WebviewHost {
@@ -79,13 +96,20 @@ export interface WebviewHost {
   openPanel(title: string, column?: vscode.ViewColumn): vscode.WebviewPanel;
 }
 
-/** Host one webview entry (media/<entry>.js) as a sidebar view and/or editor panel, wired to the router. */
+/**
+ * Host one webview entry (media/<entry>.js) as a sidebar view and/or editor panel, wired to the router.
+ * retainContextWhenHidden stays off (memory), so hiding a webview destroys its page: the router drops that webview's
+ * subscriptions on hide and the reloaded page subscribes again.
+ */
 export function createWebviewHost(ctx: vscode.ExtensionContext, viewId: string, entry: string, router: NexusBridgeRouter, api: HostApi = realApi()): WebviewHost {
   const provider: vscode.WebviewViewProvider = {
     resolveWebviewView(view) {
       configureWebview(api, ctx, entry, view.webview, view.title ?? viewId);
-      const attached = router.attach(transportOf(view.webview, cb => view.onDidDispose(cb)));
-      ctx.subscriptions.push(attached);
+      attachTracked(ctx, router, {
+        webview: view.webview,
+        onDidDispose: cb => view.onDidDispose(cb),
+        onDidChangeVisibility: cb => view.onDidChangeVisibility(() => cb(view.visible)),
+      });
     },
   };
   return {
@@ -94,7 +118,11 @@ export function createWebviewHost(ctx: vscode.ExtensionContext, viewId: string, 
       const media = api.Uri.joinPath(ctx.extensionUri, "media");
       const panel = api.window.createWebviewPanel(viewId, title, column ?? api.ViewColumn.Active, { enableScripts: true, localResourceRoots: [media] });
       configureWebview(api, ctx, entry, panel.webview, title);
-      ctx.subscriptions.push(router.attach(transportOf(panel.webview, cb => panel.onDidDispose(cb))));
+      attachTracked(ctx, router, {
+        webview: panel.webview,
+        onDidDispose: cb => panel.onDidDispose(cb),
+        onDidChangeVisibility: cb => panel.onDidChangeViewState(e => cb(e.webviewPanel.visible)),
+      });
       return panel;
     },
   };

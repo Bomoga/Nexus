@@ -95,6 +95,13 @@ describe("signing in", () => {
     expect(s.session.status().signedIn).toBe(true);
   });
 
+  it("accepts the callback in the form Lane 2's UriRouter hands over (nexus://auth/callback)", async () => {
+    const s = setup();
+    const { done, state } = await begin(s);
+    await s.session.handleCallback(`nexus://auth/callback?code=c&state=${state}`);
+    expect((await done).signedIn).toBe(true);
+  });
+
   it("still signs in when Auth0 issues no refresh token, and stores nothing", async () => {
     const s = setup();
     s.ctx.refreshToken = undefined;

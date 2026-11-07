@@ -118,7 +118,11 @@ export class Auth0Session {
     let params: URLSearchParams;
     try {
       const u = new URL(uri);
-      if (u.protocol !== "nexus:" || u.host !== "nexus.nexus" || u.pathname !== "/auth/callback") throw new Error("not the auth callback");
+      // Two spellings of the same route: the browser sends nexus://nexus.nexus/auth/callback, and Lane 2's UriRouter hands a
+      // handler the normalized nexus://auth/callback.
+      const direct = u.host === "nexus.nexus" && u.pathname === "/auth/callback";
+      const routed = u.host === "auth" && u.pathname === "/callback";
+      if (u.protocol !== "nexus:" || !(direct || routed)) throw new Error("not the auth callback");
       params = u.searchParams;
     } catch {
       this.deps.log?.("auth callback with an unexpected address; ignored");

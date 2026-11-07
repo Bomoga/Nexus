@@ -1,0 +1,8 @@
+/* Globe layout only. Chrome comes from the kit; the 3D scene is purple regardless of theme. */
+html, body, #root { height: 100%; }
+body { overflow: hidden; }
+.globe-app { display: flex; flex-direction: column; height: 100vh; }
+.globe-stage { position: relative; flex: 1 1 0; min-height: 0; height: 0; }
+.globe-stage > div { position: absolute; inset: 0; }
+.globe-bar { display: flex; align-items: center; gap: var(--nx-gap-2); padding: var(--nx-gap-1) var(--nx-gap-2); border-bottom: var(--nx-border-w) solid var(--nx-border); }
+.globe-bar .nx-data { margin-left: auto; color: var(--nx-muted); }

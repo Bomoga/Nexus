@@ -203,7 +203,7 @@ describe("approvals: store failures never leave the agent waiting", () => {
     const [dead] = await s.store.listApprovals();
     const err = await bounded(h["approvals.resolve"]({ approvalId: dead.id, decision: "approved" }).catch((e: unknown) => e));
     expect(err).not.toBeInstanceOf(ApprovalConflict);
-    expect((err as Error).message).toBe("This approval's session ended; there is nothing to decide.");
+    expect((err as Error).message).toBe("This approval is no longer pending (its request failed or its session ended).");
     const live = await s.approvals.create({ sessionId: s.session.id, action: { kind: "run_command", command: "npm test" }, reason: "r" });
     await s.approvals.resolve(live.id, "approved", { via: "slack", userId: "brandon" });
     expect(await h["approvals.resolve"]({ approvalId: live.id, decision: "rejected" }).catch((e: unknown) => e)).toBeInstanceOf(ApprovalConflict);

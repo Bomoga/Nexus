@@ -1,9 +1,9 @@
 ## Done
+- L2-02 Slack web client merged to lane-2 (lead applied the last two fixes after a third dispute; not run against live Slack)
 - Interface drops merged to lane-2: gate types, L2-02 slack interface + fake, L2-08 store interface + fake, L2-01 bridge interface + fake
 
 ## In flight
 - L2-08 LocalStore + search: built, in review
-- L2-02 web client: disputed twice, with Brandon for a decision (CLAUDE.md section 11)
 - L2-01 router + host: phase 2 starting
 
 ## Blocked

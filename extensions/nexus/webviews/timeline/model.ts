@@ -111,7 +111,7 @@ export interface Tick {
 export function ticksFor(nowMs: number, w: TimeWindow, t0Ms: number, width: number = PLOT_W): Tick[] {
   const wms = windowMs(w);
   const from = nowMs - wms;
-  const step = TICK_STEPS.find((s) => wms / s <= MAX_TICKS) ?? TICK_STEPS[TICK_STEPS.length - 1];
+  const step = TICK_STEPS.find((s) => wms / s < MAX_TICKS) ?? TICK_STEPS[TICK_STEPS.length - 1];
   const out: Tick[] = [];
   for (let at = t0Ms + Math.ceil((from - t0Ms) / step) * step; at <= nowMs; at += step) {
     out.push({ atMs: at, x: xFor(at, nowMs, wms, width) });

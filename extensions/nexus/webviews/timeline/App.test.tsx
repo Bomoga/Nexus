@@ -134,7 +134,7 @@ describe("timeline view", () => {
     const { bridge, reqs } = setup([...EVENTS, OLD]);
     render(<App bridge={bridge} nowMs={NOW} />);
     await loaded(4);
-    const box = screen.getByRole("combobox");
+    const box = screen.getByLabelText("Search events");
     fireEvent.change(box, { target: { value: "old" } });
     await waitFor(() => expect(reqs("events.search").length).toBe(1));
     await screen.findByRole("listbox");

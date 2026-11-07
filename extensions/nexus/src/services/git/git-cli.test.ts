@@ -283,11 +283,68 @@ describe("GitCli read side", () => {
     sh("switch", "-q", "main");
   });
 
-  it("reports truncated results through the logger", async () => {
-    const warnings: string[] = [];
-    const logged = new GitCli(root, { isolatedConfig: true, logger: { warn: m => warnings.push(m) } });
-    await logged.log();
-    expect(warnings).toEqual([]);   // small repo: nothing truncated, nothing logged
+  it("reports truncated results through the logger", { timeout: 120000 }, async () => {
+    const big = mkdtempSync(path.join(tmpdir(), "nexus-git-big-"));
+    const env = { ...process.env, GIT_CONFIG_GLOBAL: devNull, GIT_CONFIG_SYSTEM: devNull };
+    try {
+      execFileSync("git", ["init", "-q", "-b", "main"], { cwd: big, env });
+      // 20001 commits on main, then one commit with 2001 files, written in one fast-import stream.
+      const lines: string[] = [];
+      for (let i = 1; i <= 20001; i++) {
+        lines.push("commit refs/heads/main", `committer T <t@example.com> ${1762470000 + i} -0500`, "data 2", `c${i % 10}`);
+        if (i === 1) lines.push("M 644 inline f", "data 1", "x");
+      }
+      lines.push("commit refs/heads/wide", "committer T <t@example.com> 1762500000 -0500", "data 4", "wide", "from refs/heads/main");
+      for (let i = 0; i < 2001; i++) lines.push(`M 644 inline w${i}.txt`, "data 1", "w");
+      execFileSync("git", ["fast-import", "--quiet"], { cwd: big, env, input: lines.join("\n") + "\n" });
+      const warnings: string[] = [];
+      const g = new GitCli(big, { isolatedConfig: true, logger: { warn: m => warnings.push(m) } });
+      expect((await g.log()).length).toBe(20000);
+      const wide = execFileSync("git", ["rev-parse", "wide"], { cwd: big, env, encoding: "utf8" }).trim();
+      expect((await g.show(wide)).files.length).toBe(2000);
+      expect(warnings.map(w => w.replace(/[0-9a-f]{40}/, "SHA"))).toEqual([
+        "git log truncated to 20000 entries: the result is partial",
+        "git show SHA truncated to 2000 files: the file list is partial",
+      ]);
+      warnings.length = 0;
+      await new GitCli(root, { isolatedConfig: true, logger: { warn: m => warnings.push(m) } }).log();
+      expect(warnings).toEqual([]);   // small repo: nothing truncated, nothing logged
+    } finally { rmSync(big, { recursive: true, force: true }); }
+  });
+
+  it("never runs a repo's gpg.program, and still lists signed commits with log.showSignature on", async () => {
+    const marker = path.join(root, "gpg-ran");
+    const gpg = path.join(root, "fake-gpg.sh");
+    writeFileSync(gpg, `#!/bin/sh\ntouch "${marker}"\nexit 1\n`, { mode: 0o755 });
+    // A commit object with a gpgsig header, as a signed commit has. git asks gpg.program to verify it only when showing signatures.
+    const tree = sh("rev-parse", "HEAD^{tree}");
+    const body = `tree ${tree}\nparent ${shas.merge}\nauthor Signer <s@example.com> 1762480000 -0500\ncommitter Signer <s@example.com> 1762480000 -0500\ngpgsig -----BEGIN PGP SIGNATURE-----\n \n AAAA\n -----END PGP SIGNATURE-----\n\nsigned work\n`;
+    const signed = execFileSync("git", ["hash-object", "-t", "commit", "-w", "--stdin"], { cwd: root, input: body, encoding: "utf8" }).trim();
+    sh("update-ref", "refs/heads/signed", signed);
+    sh("config", "log.showSignature", "true");
+    sh("config", "gpg.program", gpg);
+    try {
+      expect((await git.log()).map(e => e.sha)).toContain(signed);
+      expect((await git.show(signed)).subject).toBe("signed work");
+      expect(existsSync(marker)).toBe(false);
+    } finally {
+      sh("config", "--unset", "log.showSignature");
+      sh("config", "--unset", "gpg.program");
+      sh("update-ref", "-d", "refs/heads/signed");
+      unlinkSync(gpg);
+    }
+  });
+
+
+  it("reads history when a file in the worktree is named like a ref", async () => {
+    write("HEAD", "a file called HEAD\n");
+    write("main", "a file called main\n");
+    try {
+      expect((await git.log()).map(e => e.sha)).toContain(shas.merge);
+    } finally {
+      unlinkSync(path.join(root, "HEAD"));
+      unlinkSync(path.join(root, "main"));
+    }
   });
 
   it("refuses an empty repository clearly", async () => {

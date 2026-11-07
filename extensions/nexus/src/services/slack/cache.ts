@@ -4,6 +4,7 @@
 // Message text is UNTRUSTED (section 14): stored as is, never executed. No vscode import, no network, never polls.
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
 import { ChatMessage as ChatMessageSchema } from "../../contracts";
 import type { ChatMessage } from "../../contracts";
@@ -19,6 +20,10 @@ const DEFAULT_PAGE = 50;
 /** Bounds on how far one call may chase Slack's pages. */
 const MAX_GAP_PAGES = 10;
 const MAX_WALK_PAGES = 20;
+/** A local echo older than this is dropped: a lost send result must not leave it forever. */
+const ECHO_TTL_MS = 2 * 60_000;
+/** A live event matching an echo's text counts as its confirmation only within this window. */
+const ECHO_MATCH_MS = 30_000;
 
 /** Compares Slack ts strings exactly ("seconds.micros") without float rounding. */
 export function compareTs(a: string, b: string): number {
@@ -38,9 +43,16 @@ export interface SlackCacheOptions {
   fetcher: Pick<SlackService, "history">;
   /** Newest messages kept per channel. Default 5000. */
   maxMessages?: number;
+  /** Test seams. */
+  now?: () => number;
+  rename?: (from: string, to: string) => void;
+  appendFile?: (file: string, data: string) => void;
 }
 
 export interface CacheStats { skippedLines: number }
+
+/** What a background refresh tells onFill listeners: a message that was not cached, or a cached one whose content changed. */
+export interface FillEvent { type: "message" | "message_changed"; message: ChatMessage }
 
 interface UpstreamState { nextCursor: string | undefined; done: boolean }
 
@@ -48,18 +60,27 @@ interface ChannelState {
   byTs: Map<string, ChatMessage>;
   lineCount: number;
   upstream?: UpstreamState;
+  /** Older messages fetched from Slack while the cache was full: served, never stored (compaction would evict them at once). */
+  carry: Map<string, ChatMessage>;
 }
+
+interface Echo { msg: ChatMessage; at: number }
+
+const isTop = (m: ChatMessage) => !m.threadTs || m.threadTs === m.ts;
 
 export class SlackCache {
   private readonly dir: string;
   private readonly fetcher: Pick<SlackService, "history">;
   private readonly maxMessages: number;
   private readonly slack: number;
+  private readonly now: () => number;
+  private readonly rename: (from: string, to: string) => void;
+  private readonly appendFile: (file: string, data: string) => void;
   private readonly channels = new Map<string, ChannelState>();
   /** Local echoes of sends not yet confirmed. Memory only: a crash must not leave a ghost message on disk. */
-  private readonly pending = new Map<string, ChatMessage[]>();
+  private readonly pending = new Map<string, Echo[]>();
   private readonly refreshing = new Map<string, Promise<void>>();
-  private readonly fillListeners = new Set<(msg: ChatMessage) => void>();
+  private readonly fillListeners = new Set<(evt: FillEvent) => void>();
   private skipped = 0;
 
   constructor(opts: SlackCacheOptions) {
@@ -67,6 +88,9 @@ export class SlackCache {
     this.fetcher = opts.fetcher;
     this.maxMessages = Math.max(1, opts.maxMessages ?? DEFAULT_MAX_MESSAGES);
     this.slack = Math.max(1, Math.floor(this.maxMessages / 10));
+    this.now = opts.now ?? Date.now;
+    this.rename = opts.rename ?? fs.renameSync;
+    this.appendFile = opts.appendFile ?? fs.appendFileSync;
     fs.mkdirSync(this.dir, { recursive: true });
   }
 
@@ -75,8 +99,8 @@ export class SlackCache {
   /** Resolves when every background gap refresh started so far has finished (tests and shutdown). */
   async idle(): Promise<void> { while (this.refreshing.size > 0) await Promise.allSettled([...this.refreshing.values()]); }
 
-  /** Called with each message a background refresh adds, so a view can show the gap without polling. */
-  onFill(listener: (msg: ChatMessage) => void): Disposable {
+  /** Called for each message a background refresh adds or changes, so a view can show it without polling. */
+  onFill(listener: (evt: FillEvent) => void): Disposable {
     this.fillListeners.add(listener);
     return { dispose: () => { this.fillListeners.delete(listener); } };
   }
@@ -84,7 +108,7 @@ export class SlackCache {
   /**
    * Newest first. No cursor: the newest cached page now (fromCache true) and a background refresh of the gap newer than the latest
    * cached ts; if nothing is cached yet, Slack is asked and awaited. A cursor (this cache's own `c:<ts>`, meaning "older than ts")
-   * pages through the cache and asks Slack only past the cached range.
+   * pages through the cache and asks Slack only past the cached range. Pages fetched while the cache is full are served, not stored.
    */
   async history(channelId: string, cursor?: string, limit = DEFAULT_PAGE): Promise<HistoryPage> {
     const state = this.load(channelId);
@@ -92,22 +116,39 @@ export class SlackCache {
     const size = Math.max(1, limit);
 
     if (boundary === undefined) {
-      const top = this.topLevel(state);
-      if (top.length === 0) {
-        await this.refresh(channelId, size);
-        return this.page(channelId, undefined, size, false);
+      if (!this.hasTop(state)) {
+        await this.refresh(channelId, size, new Set(), false);
+        return this.newestPage(channelId, state, size, false);
       }
-      void this.startRefresh(channelId, size);
-      return this.page(channelId, undefined, size, true);
+      const page = this.newestPage(channelId, state, size, true);
+      void this.startRefresh(channelId, size, new Set(page.messages.map(m => m.ts)));
+      return page;
     }
+
+    const pool = new Map<string, ChatMessage>();
+    const consider = (m: ChatMessage) => { if (isTop(m) && compareTs(m.ts, boundary) < 0) pool.set(m.ts, m); };
+    for (const m of state.byTs.values()) consider(m);
+    for (const m of state.carry.values()) consider(m);
 
     let fromCache = true;
     let guard = 0;
-    while (this.olderThan(state, boundary).length < size && !(state.upstream?.done) && guard++ < MAX_WALK_PAGES) {
+    while (pool.size < size && !state.upstream?.done && guard++ < MAX_WALK_PAGES) {
       fromCache = false;
-      await this.fetchNext(channelId, state, size);
+      const res = await this.fetchNext(channelId, state, size);
+      const room = this.maxMessages - state.byTs.size;
+      const fresh = res.filter(m => !state.byTs.has(m.ts)).length;
+      const { leftover } = this.applyBatch(channelId, res, fresh <= room);
+      for (const m of res) consider(m);
+      for (const m of leftover) if (isTop(m)) state.carry.set(m.ts, m);
     }
-    return this.page(channelId, boundary, size, fromCache);
+    this.trimCarry(state);
+
+    const sorted = [...pool.values()].sort((a, b) => compareTs(b.ts, a.ts));
+    const messages = sorted.slice(0, size);
+    const more = sorted.length > size || !state.upstream?.done;
+    const last = messages[messages.length - 1];
+    const nextCursor = more ? (last ? CURSOR_PREFIX + last.ts : cursor) : undefined;
+    return { messages: structuredClone(messages), nextCursor, fromCache };
   }
 
   /** Stores a message from any source (live event, send confirmation, gap fill). Idempotent by ts. */
@@ -115,15 +156,15 @@ export class SlackCache {
     const parsed = ChatMessageSchema.safeParse(message);
     if (!parsed.success || !CHANNEL_ID.test(message.channelId)) return;
     const msg = parsed.data;
-    if (msg.clientId !== undefined) this.dropPending(msg.channelId, msg.clientId);   // Slack's confirmed copy replaces the local echo
     if (msg.pending) {
-      const list = this.pending.get(msg.channelId) ?? [];
-      const i = msg.clientId === undefined ? -1 : list.findIndex(p => p.clientId === msg.clientId);
-      if (i >= 0) list[i] = msg; else list.push(msg);
+      const list = this.freshEchoes(msg.channelId);
+      const i = msg.clientId === undefined ? -1 : list.findIndex(p => p.msg.clientId === msg.clientId);
+      if (i >= 0) list[i] = { msg, at: this.now() }; else list.push({ msg, at: this.now() });
       this.pending.set(msg.channelId, list);
       return;
     }
-    this.put(this.load(msg.channelId), toStored(msg));   // local-only bookkeeping never goes to disk
+    this.confirmEcho(msg);
+    this.applyBatch(msg.channelId, [msg], true);
   }
 
   /** Removes a message (a deletion). */
@@ -135,9 +176,7 @@ export class SlackCache {
 
   /** Drops a local echo whose send failed. */
   dropPending(channelId: string, clientId: string): void {
-    const list = this.pending.get(channelId);
-    if (!list) return;
-    const rest = list.filter(p => p.clientId !== clientId);
+    const rest = (this.pending.get(channelId) ?? []).filter(p => p.msg.clientId !== clientId);
     if (rest.length) this.pending.set(channelId, rest); else this.pending.delete(channelId);
   }
 
@@ -147,6 +186,27 @@ export class SlackCache {
   }
 
   // ---- internals ----
+
+  /** Echoes younger than the TTL; the stale ones are dropped. */
+  private freshEchoes(channelId: string): Echo[] {
+    const cutoff = this.now() - ECHO_TTL_MS;
+    const list = (this.pending.get(channelId) ?? []).filter(e => e.at > cutoff);
+    if (list.length) this.pending.set(channelId, list); else this.pending.delete(channelId);
+    return list;
+  }
+
+  /** A confirmed message retires its echo: by clientId, else the oldest recent echo with the same text (a live event can beat the send result). */
+  private confirmEcho(msg: ChatMessage): void {
+    const list = this.freshEchoes(msg.channelId);
+    if (list.length === 0) return;
+    let i = msg.clientId === undefined ? -1 : list.findIndex(e => e.msg.clientId === msg.clientId);
+    if (i < 0 && msg.sentVia === "user" && !msg.author.isBot) {
+      const t = this.now();
+      i = list.findIndex(e => t - e.at <= ECHO_MATCH_MS && e.msg.text === msg.text && e.msg.threadTs === msg.threadTs
+        && (e.msg.author.id === "" || e.msg.author.id === msg.author.id));
+    }
+    if (i >= 0) { list.splice(i, 1); if (list.length === 0) this.pending.delete(msg.channelId); }
+  }
 
   private file(channelId: string): string {
     if (!CHANNEL_ID.test(channelId)) throw new Error("invalid channel id");
@@ -158,7 +218,7 @@ export class SlackCache {
     const known = this.channels.get(channelId);
     if (known) return known;
     const file = this.file(channelId);
-    const state: ChannelState = { byTs: new Map(), lineCount: 0 };
+    const state: ChannelState = { byTs: new Map(), lineCount: 0, carry: new Map() };
     let dirty = false;
     let raw = "";
     try { raw = fs.readFileSync(file, "utf8"); } catch { /* no file yet */ }
@@ -182,85 +242,119 @@ export class SlackCache {
     return state;
   }
 
-  private put(state: ChannelState, msg: ChatMessage): void {
-    state.byTs.set(msg.ts, msg);
-    this.append(msg.channelId, state, [JSON.stringify(msg)]);
+  /**
+   * Validates a batch and writes it with ONE append. A cached message whose content changed is replaced; unknown ones are stored only
+   * when storeNew. Returns what was added, what changed, and the unknown ones left unstored.
+   */
+  private applyBatch(channelId: string, batch: ChatMessage[], storeNew: boolean) {
+    const state = this.load(channelId);
+    const added: ChatMessage[] = [], changed: ChatMessage[] = [], leftover: ChatMessage[] = [];
+    const lines: string[] = [];
+    for (const raw of batch) {
+      const parsed = ChatMessageSchema.safeParse(raw);
+      if (!parsed.success || parsed.data.channelId !== channelId || parsed.data.pending) continue;
+      const msg = toStored(parsed.data);
+      const had = state.byTs.get(msg.ts);
+      if (had && isDeepStrictEqual(had, msg)) continue;
+      if (!had && !storeNew) { leftover.push(msg); continue; }
+      state.byTs.set(msg.ts, msg);
+      lines.push(JSON.stringify(msg));
+      (had ? changed : added).push(msg);
+    }
+    if (lines.length) this.append(channelId, state, lines);
+    return { added, changed, leftover };
   }
 
   private append(channelId: string, state: ChannelState, lines: string[]): void {
-    fs.appendFileSync(this.file(channelId), lines.join("\n") + "\n");
+    this.appendFile(this.file(channelId), lines.join("\n") + "\n");
     state.lineCount += lines.length;
-    if (state.byTs.size > this.maxMessages + this.slack || state.lineCount > this.maxMessages * 2 + 16) this.compact(channelId, state);
+    if (state.byTs.size > this.maxMessages + this.slack || state.lineCount > this.maxMessages * 2 + 16) {
+      try { this.compact(channelId, state); } catch { /* best effort: the old file is intact, the next append retries */ }
+    }
   }
 
-  /** Keeps the newest maxMessages and rewrites the file atomically (temp file, then rename). */
+  /** Keeps the newest maxMessages and replaces the file atomically (temp file, then rename). A failure leaves the old file untouched. */
   private compact(channelId: string, state: ChannelState): void {
     const keep = [...state.byTs.values()].sort((a, b) => compareTs(a.ts, b.ts)).slice(-this.maxMessages);
-    state.byTs = new Map(keep.map(m => [m.ts, m]));
     const file = this.file(channelId);
     const tmp = `${file}.tmp`;
     fs.writeFileSync(tmp, keep.map(m => JSON.stringify(m) + "\n").join(""));
-    fs.renameSync(tmp, file);
+    this.rename(tmp, file);
+    state.byTs = new Map(keep.map(m => [m.ts, m]));
     state.lineCount = keep.length;
   }
 
-  private topLevel(state: ChannelState): ChatMessage[] {
-    return [...state.byTs.values()].filter(m => !m.threadTs || m.threadTs === m.ts).sort((a, b) => compareTs(b.ts, a.ts));
+  private hasTop(state: ChannelState): boolean {
+    for (const m of state.byTs.values()) if (isTop(m)) return true;
+    return false;
   }
 
-  private olderThan(state: ChannelState, boundary: string | undefined): ChatMessage[] {
-    const top = this.topLevel(state);
-    return boundary === undefined ? top : top.filter(m => compareTs(m.ts, boundary) < 0);
-  }
-
-  private page(channelId: string, boundary: string | undefined, limit: number, fromCache: boolean): HistoryPage {
-    const state = this.load(channelId);
-    const older = this.olderThan(state, boundary);
-    const messages = older.slice(0, limit);
-    if (boundary === undefined) {
-      const echoes = (this.pending.get(channelId) ?? []).filter(p => !p.threadTs).sort((a, b) => compareTs(b.ts, a.ts));
-      messages.unshift(...echoes);
-    }
-    const more = older.length > limit || !state.upstream?.done;
-    const last = older[Math.min(limit, older.length) - 1];
+  private newestPage(channelId: string, state: ChannelState, limit: number, fromCache: boolean): HistoryPage {
+    const top = [...state.byTs.values()].filter(isTop).sort((a, b) => compareTs(b.ts, a.ts));
+    const messages = top.slice(0, limit);
+    const echoes = this.freshEchoes(channelId).map(e => e.msg).filter(m => !m.threadTs).sort((a, b) => compareTs(b.ts, a.ts));
+    messages.unshift(...echoes);
+    const more = top.length > limit || !state.upstream?.done;
+    const last = top[Math.min(limit, top.length) - 1];
     const nextCursor = more && last ? CURSOR_PREFIX + last.ts : undefined;
     return { messages: structuredClone(messages), nextCursor, fromCache };
   }
 
-  private startRefresh(channelId: string, limit: number): Promise<void> {
+  /** The carry is memory-only scroll-back. If it outgrows the cap, drop the newest (already shown); Slack's position is kept so paging never re-walks. */
+  private trimCarry(state: ChannelState): void {
+    if (state.carry.size <= this.maxMessages) return;
+    const keep = [...state.carry.values()].sort((a, b) => compareTs(b.ts, a.ts)).slice(-this.maxMessages);
+    state.carry = new Map(keep.map(m => [m.ts, m]));
+  }
+
+  private startRefresh(channelId: string, limit: number, served: Set<string>): Promise<void> {
     const running = this.refreshing.get(channelId);
     if (running) return running;
-    const p = this.refresh(channelId, limit).catch(() => undefined).finally(() => { this.refreshing.delete(channelId); });
+    const p = this.refresh(channelId, limit, served).catch(() => undefined).finally(() => { this.refreshing.delete(channelId); });
     this.refreshing.set(channelId, p);
     return p;
   }
 
-  /** Fetches Slack's newest pages until one reaches the latest cached ts (or the page cap). Stores them and tells onFill listeners. */
-  private async refresh(channelId: string, limit: number): Promise<void> {
+  /**
+   * Fetches Slack's newest pages until one reaches the latest cached ts (or the page cap). Each page is stored with one append.
+   * Listeners hear about messages that were new or changed, except those already in the page the caller received.
+   */
+  private async refresh(channelId: string, limit: number, served: Set<string>, announceAdded = true): Promise<void> {
     const state = this.load(channelId);
-    const latest = this.topLevel(state)[0]?.ts;
+    let latest: string | undefined;
+    for (const m of state.byTs.values()) if (isTop(m) && (latest === undefined || compareTs(m.ts, latest) > 0)) latest = m.ts;
     let cursor: string | undefined;
+    let reachedEnd = false;
     for (let i = 0; i < MAX_GAP_PAGES; i++) {
       const res = await this.fetcher.history(channelId, cursor, limit);
-      for (const m of res.messages) {
-        const had = state.byTs.get(m.ts);
-        this.ingest({ ...m, pending: undefined });
-        if (!had) for (const l of this.fillListeners) { try { l(m); } catch { /* isolate the listener */ } }
-      }
+      const { added, changed } = this.applyBatch(channelId, res.messages, true);
+      this.notify(added.filter(m => announceAdded && !served.has(m.ts)).map(message => ({ type: "message" as const, message })));
+      this.notify(changed.map(message => ({ type: "message_changed" as const, message })));
       cursor = res.nextCursor;
-      state.upstream ??= { nextCursor: cursor, done: !cursor };
-      if (!cursor) { state.upstream = { nextCursor: undefined, done: true }; return; }
-      const oldest = res.messages.reduce<string | undefined>((o, m) => (o === undefined || compareTs(m.ts, o) < 0 ? m.ts : o), undefined);
-      if (latest === undefined || (oldest !== undefined && compareTs(oldest, latest) <= 0) || res.messages.length === 0) return;
+      if (!cursor) { reachedEnd = true; break; }
+      let oldest: string | undefined;
+      for (const m of res.messages) if (oldest === undefined || compareTs(m.ts, oldest) < 0) oldest = m.ts;
+      if (latest === undefined || oldest === undefined || compareTs(oldest, latest) <= 0) break;
     }
+    state.upstream ??= { nextCursor: cursor, done: reachedEnd };
+    if (reachedEnd) state.upstream = { nextCursor: undefined, done: true };
   }
 
-  /** Pages past the cached range: continues Slack's own cursor chain from where this session left off (from the newest page if none). */
-  private async fetchNext(channelId: string, state: ChannelState, limit: number): Promise<void> {
+  private notify(events: FillEvent[]): void {
+    for (const evt of events) for (const l of this.fillListeners) { try { l(evt); } catch { /* isolate the listener */ } }
+  }
+
+  /** One page of Slack's own cursor chain, from where this session left off (the newest page if none). Returns its messages. */
+  private async fetchNext(channelId: string, state: ChannelState, limit: number): Promise<ChatMessage[]> {
     const up = state.upstream ?? { nextCursor: undefined, done: false };
     const res = await this.fetcher.history(channelId, up.nextCursor, limit);
-    for (const m of res.messages) this.ingest({ ...m, pending: undefined });
     state.upstream = { nextCursor: res.nextCursor, done: !res.nextCursor || res.nextCursor === up.nextCursor };
+    const valid: ChatMessage[] = [];
+    for (const m of res.messages) {
+      const parsed = ChatMessageSchema.safeParse(m);
+      if (parsed.success && parsed.data.channelId === channelId && !parsed.data.pending) valid.push(toStored(parsed.data));
+    }
+    return valid;
   }
 }
 
@@ -297,7 +391,7 @@ function wrapService(cache: SlackCache, service: SlackService): SlackService {
       if (evt.type !== "status") cache.ingest(evt.message);
       fanOut(evt);
     });
-    fill = cache.onFill(message => fanOut({ type: "message", message }));
+    fill = cache.onFill(evt => fanOut(evt));
   };
   const unsubscribe = () => { upstream?.dispose(); fill?.dispose(); upstream = fill = undefined; };
 

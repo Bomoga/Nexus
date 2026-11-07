@@ -49,7 +49,7 @@ describe("SlackCache history", () => {
     const c2 = new SlackCache({ dir, fetcher: src.svc });
     src.calls.length = 0;
     const fills: string[] = [];
-    c2.onFill(m => fills.push(m.ts));
+    c2.onFill(e => fills.push(e.message.ts));
     const second = await c2.history(CH, undefined, 10);
     expect(second.fromCache).toBe(true);
     expect(tsList(second)).toEqual([ts(3), ts(2), ts(1)]);
@@ -114,6 +114,98 @@ describe("SlackCache history", () => {
     c.ingest(msg(2, "reply", { threadTs: ts(1) }));
     const p = await c.history(CH);
     expect(tsList(p)).toEqual([ts(1)]);
+  });
+});
+
+describe("gap refresh", () => {
+  it("follows a gap of several Slack pages until it reaches the latest cached message", async () => {
+    const src = source([1, 2, 3]);
+    const c1 = new SlackCache({ dir, fetcher: src.svc });
+    await c1.history(CH, undefined, 5);
+    for (let n = 4; n <= 33; n++) src.all.set(ts(n), msg(n));
+    const c2 = new SlackCache({ dir, fetcher: src.svc });
+    src.calls.length = 0;
+    await c2.history(CH, undefined, 5);
+    await c2.idle();
+    const p = await c2.history(CH, undefined, 100);
+    expect(p.messages).toHaveLength(33);
+    expect(src.calls.length).toBeGreaterThanOrEqual(6);
+    expect(src.calls.length).toBeLessThanOrEqual(8);
+  });
+
+  it("stops after MAX_GAP_PAGES when the gap is larger than that", async () => {
+    const src = source([1]);
+    const c1 = new SlackCache({ dir, fetcher: src.svc });
+    await c1.history(CH, undefined, 5);
+    for (let n = 2; n <= 101; n++) src.all.set(ts(n), msg(n));
+    const c2 = new SlackCache({ dir, fetcher: src.svc });
+    src.calls.length = 0;
+    await c2.history(CH, undefined, 5);
+    await c2.idle();
+    expect(src.calls).toHaveLength(10);
+  });
+
+  it("applies edits seen on a refresh page and reports them as message_changed", async () => {
+    const src = source([1, 2]);
+    const c1 = new SlackCache({ dir, fetcher: src.svc });
+    await c1.history(CH, undefined, 10);
+    src.all.set(ts(2), msg(2, "edited", { replyCount: 3 }));
+    const c2 = new SlackCache({ dir, fetcher: src.svc });
+    const evts: string[] = [];
+    c2.onFill(e => evts.push(`${e.type}:${e.message.text}`));
+    await c2.history(CH, undefined, 10);
+    await c2.idle();
+    expect(evts).toEqual(["message_changed:edited"]);
+    const p = await c2.history(CH, undefined, 10);
+    expect(p.messages[0]).toMatchObject({ text: "edited", replyCount: 3 });
+  });
+
+  it("does not announce messages the caller already received in the first load", async () => {
+    const c = new SlackCache({ dir, fetcher: source([1, 2, 3]).svc });
+    const evts: string[] = [];
+    c.onFill(e => evts.push(e.message.ts));
+    await c.history(CH, undefined, 10);
+    await c.idle();
+    expect(evts).toEqual([]);
+  });
+
+  it("writes one refresh page with a single append", async () => {
+    const src = source(Array.from({ length: 20 }, (_, i) => i + 1));
+    const appends: string[] = [];
+    const c = new SlackCache({ dir, fetcher: src.svc, appendFile: (f, d) => { appends.push(d); fs.appendFileSync(f, d); } });
+    await c.history(CH, undefined, 20);
+    expect(appends).toHaveLength(1);
+    expect(appends[0]?.split("\n").filter(Boolean)).toHaveLength(20);
+  });
+});
+
+describe("paging past the cap", () => {
+  it("reaches all 200 messages with a cap of 50, with bounded Slack calls, and ends only when Slack does", async () => {
+    const src = source(Array.from({ length: 200 }, (_, i) => i + 1));
+    const c = new SlackCache({ dir, fetcher: src.svc, maxMessages: 50 });
+    const seen: string[] = [];
+    let cursor: string | undefined;
+    let pages = 0;
+    do {
+      const p = await c.history(CH, cursor, 50);
+      seen.push(...tsList(p));
+      cursor = p.nextCursor;
+      await c.idle();
+    } while (cursor && ++pages < 20);
+    expect(cursor).toBeUndefined();
+    expect(new Set(seen).size).toBe(200);
+    expect(seen).toEqual(Array.from({ length: 200 }, (_, i) => ts(200 - i)));
+    expect(src.calls.length).toBeLessThanOrEqual(12);
+    expect(fs.readFileSync(path.join(dir, `${CH}.jsonl`), "utf8").split("\n").filter(Boolean).length).toBeLessThanOrEqual(55);
+  });
+});
+
+describe("compareTs", () => {
+  it("orders by integer length before text, and fractions numerically", () => {
+    expect(compareTs("9.0", "10.0")).toBeLessThan(0);
+    expect(compareTs("100000000000.0", "99999999999.9")).toBeGreaterThan(0);
+    expect(compareTs("1.5", "1.50")).toBe(0);
+    expect(compareTs("1.05", "1.5")).toBeLessThan(0);
   });
 });
 
@@ -204,6 +296,27 @@ describe("pending echoes", () => {
   });
 });
 
+describe("echo lifetime", () => {
+  it("a live event with the echo's text retires it before the send result arrives", async () => {
+    const c = new SlackCache({ dir, fetcher: source([]).svc });
+    c.ingest(msg(99, "same words", { pending: true, clientId: "c9", author: { id: "", name: "", isBot: false } }));
+    c.ingest(msg(5, "same words"));
+    const p = await c.history(CH);
+    expect(p.messages.map(m => m.ts)).toEqual([ts(5)]);
+  });
+
+  it("drops an echo older than two minutes", async () => {
+    let t = 1_000_000;
+    const c = new SlackCache({ dir, fetcher: source([1]).svc, now: () => t });
+    c.ingest(msg(99, "lost", { pending: true, clientId: "c1" }));
+    await c.history(CH);
+    t += 119_000;
+    expect((await c.history(CH)).messages.some(m => m.pending)).toBe(true);
+    t += 2_000;
+    expect((await c.history(CH)).messages.some(m => m.pending)).toBe(false);
+  });
+});
+
 describe("storage", () => {
   const file = () => path.join(dir, `${CH}.jsonl`);
   const lines = () => fs.readFileSync(file(), "utf8").split("\n").filter(Boolean);
@@ -234,6 +347,17 @@ describe("storage", () => {
     c.ingest(msg(6));
     const re = new SlackCache({ dir, fetcher: source([]).svc });
     expect(tsList(await re.history(CH))).toEqual([ts(6), ts(4), ts(1)]);
+    expect(re.stats().skippedLines).toBe(0);
+  });
+
+  it("a crash between writing .tmp and the rename keeps the old file intact", async () => {
+    const boom = () => { throw new Error("crash"); };
+    const c = new SlackCache({ dir, fetcher: source([]).svc, maxMessages: 10, rename: boom });
+    for (let i = 1; i <= 15; i++) c.ingest(msg(i));
+    expect(lines()).toHaveLength(15);
+    lines().forEach(l => expect(() => JSON.parse(l)).not.toThrow());
+    const re = new SlackCache({ dir, fetcher: source([]).svc, maxMessages: 100 });
+    expect((await re.history(CH, undefined, 100)).messages).toHaveLength(15);
     expect(re.stats().skippedLines).toBe(0);
   });
 

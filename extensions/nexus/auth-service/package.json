@@ -1,0 +1,20 @@
+{
+  "name": "nexus-auth-service",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "Cloudflare Worker that starts and polls Auth0 CIBA requests for Nexus approvals.",
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "deploy": "npx wrangler deploy"
+  },
+  "dependencies": {
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260101.0",
+    "typescript": "~6.0.3",
+    "vitest": "^5.1.0"
+  }
+}

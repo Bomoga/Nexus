@@ -204,3 +204,66 @@ body {
 .nx-ok { color: var(--nx-ok); }
 .nx-pending { color: var(--nx-pending); }
 .nx-error { color: var(--nx-error); }
+
+.nx-tone-muted { color: var(--nx-muted); }
+.nx-tone-ok { color: var(--nx-ok); }
+.nx-tone-pending { color: var(--nx-pending); }
+.nx-tone-error { color: var(--nx-error); }
+
+.nx-table th {
+  color: var(--nx-muted);
+  font-weight: 600;
+  text-align: left;
+  text-transform: uppercase;
+}
+
+.nx-table tbody tr:hover {
+  background-color: var(--nx-hover-bg);
+}
+
+/* Tabs */
+.nx-tabs {
+  display: flex;
+  height: var(--nx-control-h);
+  border-bottom: var(--nx-border-w) solid var(--nx-border);
+}
+
+.nx-tab {
+  height: 100%;
+  padding: 0 var(--nx-pad-x);
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--nx-muted);
+  font-family: var(--nx-font-ui-family);
+  font-size: var(--nx-font-ui-sm);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.nx-tab:hover {
+  color: var(--nx-fg);
+}
+
+.nx-tab:focus-visible {
+  outline: var(--nx-border-w) solid var(--nx-focus);
+  outline-offset: -1px;
+}
+
+.nx-tab--active {
+  color: var(--nx-fg);
+  border-bottom-color: var(--nx-accent);
+}
+
+/* Empty state: one line and one action */
+.nx-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--nx-gap-2);
+  padding: var(--nx-gap-2);
+  color: var(--nx-muted);
+  font-size: var(--nx-font-ui);
+}

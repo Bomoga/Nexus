@@ -2,7 +2,7 @@
 // demo scenario (PLAN §2.12) so any view runs in a plain browser with ?fake=1. Streams replay the
 // scripted data and then keep emitting on a timer so live UI is visible.
 import { Requests, Subscriptions } from "../../src/contracts";
-import type { AgentEvent, ChatMessage, Envelope, NexusEvent, Req, RequestName, Res } from "../../src/contracts";
+import type { ActivityBucket, AgentEvent, ChatMessage, Envelope, NexusEvent, Req, RequestName, Res } from "../../src/contracts";
 import { fx, MACHINE_ID } from "../../src/contracts/fixtures";
 import { demoScenario } from "../../src/contracts/fixtures/scenario";
 import type { Transport } from "./bridgeClient";
@@ -18,6 +18,23 @@ const SHA = "3f2a9c1e4b7d8a6f5e0c9b2a1d4f6e8c7b5a3d21";
 
 function slackTs(): string {
   return (Date.now() / 1000).toFixed(6);
+}
+
+const BUCKET_MS = 15 * 60_000;
+
+/** The scripted demo events counted into 15-minute buckets per orbit (what the continuous aggregate serves). */
+function activityBuckets(from: string, to: string): ActivityBucket[] {
+  const counts = new Map<string, number>();
+  for (const e of demoScenario.events) {
+    if (e.at < from || e.at > to) continue;
+    const start = new Date(Math.floor(Date.parse(e.at) / BUCKET_MS) * BUCKET_MS).toISOString();
+    const key = `${start}\n${e.orbit}`;
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  return [...counts].map(([key, count]) => {
+    const [bucketStart, orbit] = key.split("\n");
+    return { bucketStart, orbit, count };
+  });
 }
 
 function buildHandlers(): Handlers {
@@ -93,7 +110,7 @@ function buildHandlers(): Handlers {
         .filter((e) => e.title.toLowerCase().includes(q.toLowerCase()))
         .slice(0, limit)
         .map((event) => ({ event, score: 1 })),
-    "events.activity": ({ from, to }) => fx.activity.filter((b) => b.bucketStart >= from && b.bucketStart <= to),
+    "events.activity": ({ from, to }) => activityBuckets(from, to),
     "git.commit.show": ({ sha }) => ({
       sha,
       subject: "add cart module",

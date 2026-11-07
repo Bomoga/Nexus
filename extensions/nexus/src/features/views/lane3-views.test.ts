@@ -110,6 +110,18 @@ describe("Lane3Views", () => {
     expect(commands.size).toBe(0);
   });
 
+  it("opens one plan panel per plan id with the id on <body>, and refuses an invalid id", () => {
+    const { views, opened, errors } = setup();
+    views.openPlan("plan_01");
+    views.openPlan("plan_01");
+    expect(opened).toHaveLength(1);
+    expect(opened[0].viewId).toBe("nexus.plan");
+    expect(opened[0].panel.webview.html).toContain('<body data-plan-id="plan_01">');
+    views.openPlan('x"><script>');
+    expect(opened).toHaveLength(1);
+    expect(errors).toHaveLength(1);
+  });
+
   it("opens the task editor with the task id on <body>", () => {
     const { views, opened } = setup();
     views.openTaskEditor("task_01");

@@ -73,9 +73,10 @@ describe("cameraGoal", () => {
     close(g.position, [(3 / 5) * 6.8, 0, (4 / 5) * 6.8]);
     expect(g.distance).toBeCloseTo(6.8, 6);
   });
-  test("clamps to OrbitControls limits", () => {
+  test("clamps to the near limit and the fit maximum; a camera the fit backed off stays ~15% closer, not pulled to 14", () => {
     expect(cameraGoal(world, 4.2).distance).toBe(4);
-    expect(cameraGoal(world, 30).distance).toBe(14);
+    expect(cameraGoal(world, 30).distance).toBeCloseTo(25.5, 9);
+    expect(cameraGoal(world, 100).distance).toBe(40);
   });
   test("a point at the origin keeps the goal finite", () => {
     const g = cameraGoal([0, 0, 0], 8);

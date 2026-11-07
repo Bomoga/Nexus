@@ -4,12 +4,13 @@ import { TIME_WINDOWS, eventPoint, inWindow } from "./index";
 import type { OrbitSpec } from "./index";
 import { activityPoint } from "./arcs";
 import type { Vec3 } from "./arcs";
+import { MAX_FIT_DISTANCE } from "./fit";
 
 /** The Scene's world group rotation (Euler XYZ, radians). Scene.tsx must use this same value. */
 export const WORLD_ROTATION: Readonly<Vec3> = [0.22, -0.7, 0];
 /** Tracking moves the camera to this fraction of its current distance. */
 export const TRACK_ZOOM = 0.85;
-/** OrbitControls' distance limits (Scene.tsx). */
+/** OrbitControls' distance limits (Scene.tsx); the maximum grows with the fit (scene/Fit.tsx). */
 export const MIN_DISTANCE = 4;
 export const MAX_DISTANCE = 14;
 
@@ -50,9 +51,12 @@ export function trackedWorldPoint(event: NexusEvent, layout: readonly OrbitSpec[
   return local ? toWorld(local) : undefined;
 }
 
-/** Camera position looking from the origin through `world` at TRACK_ZOOM of `currentDistance`, clamped. */
+/**
+ * Camera position looking from the origin through `world` at TRACK_ZOOM of `currentDistance` (zoom in ~15% from wherever
+ * the camera is, so a camera the fit backed off to see many orbits stays roughly there), clamped to [MIN_DISTANCE, MAX_FIT_DISTANCE].
+ */
 export function cameraGoal(world: Readonly<Vec3>, currentDistance: number): { position: Vec3; distance: number } {
-  const distance = Math.min(MAX_DISTANCE, Math.max(MIN_DISTANCE, currentDistance * TRACK_ZOOM));
+  const distance = Math.min(MAX_FIT_DISTANCE, Math.max(MIN_DISTANCE, currentDistance * TRACK_ZOOM));
   const len = Math.hypot(world[0], world[1], world[2]);
   // A point at the origin has no direction: fall back to the default camera side (+Z).
   const dir: Vec3 = len < 1e-9 ? [0, 0, 1] : [world[0] / len, world[1] / len, world[2] / len];

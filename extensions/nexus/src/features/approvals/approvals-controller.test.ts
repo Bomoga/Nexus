@@ -302,7 +302,7 @@ describe("when the session ends", () => {
     await vi.waitFor(() => expect(s.shown).toHaveLength(1));
     const id = s.shown[0].approval.id;
     await s.sessions.onProcessError(s.session.id, "agent process crashed");
-    expect(await result).toBe("rejected by a human");
+    expect(await result).toBe("the session ended (failed); nothing was approved");
     expect((await s.store.getApproval(id))!.decision).toBeUndefined();            // nobody decided: the session just ended
     await expect(s.approvals.resolve(id, "approved", human())).rejects.toThrow("session has ended");
     expect(s.updates.at(-1)!.text).toMatch(/session ended/);

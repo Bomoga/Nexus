@@ -8,6 +8,7 @@ import { QUERY_LIMIT, TIME_WINDOWS, keepNewest, visibleEvents, windowMs } from "
 import { insertLive, scriptedNow } from "../globe/model/arcs";
 import { chooseWindow, withEvent } from "../globe/model/tracking";
 import { useDriftNow } from "../globe/scene/live";
+import { keepIfSame } from "./model";
 import { Timeline } from "./Timeline";
 import type { Reveal } from "./Timeline";
 
@@ -147,7 +148,14 @@ export function App({ bridge: injected, nowMs }: AppProps) {
   const search = useCallback((q: string) => bridge.request("events.search", { q, limit: SEARCH_LIMIT }), [bridge]);
   const open = useCallback((target: NexusEvent["target"]) => bridge.request("ui.openTarget", target), [bridge]);
 
-  const visible = useMemo(() => (now === null ? [] : visibleEvents(events, now, window_)), [events, now, window_]);
+  // Keep the same array while the visible set is unchanged, so a "now" tick alone doesn't make Timeline re-lay out every mark
+  // (it shifts the mark group by the drift instead).
+  const lastVisible = useRef<NexusEvent[]>([]);
+  const visible = useMemo(() => {
+    const next = now === null ? [] : visibleEvents(events, now, window_);
+    lastVisible.current = keepIfSame(lastVisible.current, next);
+    return lastVisible.current;
+  }, [events, now, window_]);
 
   return (
     <div className="tl-app">

@@ -11,7 +11,9 @@ import { Orbits } from "./Orbits";
 import { Picking } from "./picking";
 import { Activity } from "./rings";
 import { Tracking } from "./Tracking";
+import { Fit } from "./Fit";
 import { WORLD_ROTATION } from "../model/tracking";
+import { CAMERA_FAR, outerRadius } from "../model/fit";
 
 const noop = () => undefined;
 
@@ -35,8 +37,9 @@ export function Scene({ events, now, window, onPick, tracked, onRelease, childre
   const key = familiesKey(familiesOf(events));
   const layout = useMemo(() => orbitLayout(key.split("\u0000")), [key]);
   return (
-    <Canvas camera={{ fov: 40, position: [0, 0.8, 8.2], near: 0.1, far: 100 }} dpr={[1, 2]} gl={{ antialias: true, alpha: true }}>
+    <Canvas camera={{ fov: 40, position: [0, 0.8, 8.2], near: 0.1, far: CAMERA_FAR }} dpr={[1, 2]} gl={{ antialias: true, alpha: true }}>
       <OrbitControls enablePan={false} minDistance={4} maxDistance={14} rotateSpeed={0.6} makeDefault />
+      <Fit radius={outerRadius(layout)} tracking={tracked !== undefined} />
       {onPick ? <Picking events={events} layout={layout} onPick={onPick} /> : null}
       <Tracking event={tracked} layout={layout} now={now} window={window} onRelease={onRelease ?? noop} />
       <group rotation={WORLD_ROTATION as [number, number, number]}>

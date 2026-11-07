@@ -3,12 +3,13 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { devNull, tmpdir } from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { decodeCodeRef, type CodeRef } from "../../contracts";
+import { decodeCodeRef, Requests, type CodeRef } from "../../contracts";
+import { FakeGit } from "../git/fake-git";
 import { GitCli } from "../git/git-cli";
 import { coderefRoute } from "./coderef-route";
-import { createCodeRef } from "./create";
+import { CodeRefError, createCodeRef, linesOf, MAX_SNIPPET_CHARS } from "./create";
 import { openCodeRef, type ResolveDeps } from "./resolve";
-import { formatCodeRefForSlack } from "./slack-format";
+import { formatCodeRefForSlack, MAX_MESSAGE_CHARS } from "./slack-format";
 
 let root: string;
 const sh = (...args: string[]) => execFileSync("git", args, {
@@ -130,6 +131,96 @@ describe("formatCodeRefForSlack", () => {
     expect(t.match(/```/g)).toHaveLength(2);
   });
   it("caps length", () => {
-    expect(formatCodeRefForSlack(r, "y".repeat(100000)).length).toBeLessThan(3000);
+    expect(formatCodeRefForSlack(r, "y".repeat(100000)).length).toBeLessThanOrEqual(MAX_MESSAGE_CHARS);
+  });
+});
+
+/** Wraps a git service and records every call, to prove a refusal happens before git is touched. */
+const recording = (inner: object) => {
+  const calls: string[] = [];
+  const git = new Proxy(inner, { get: (t, k, r) => { const v = Reflect.get(t, k, r); return typeof v === "function" ? (...a: unknown[]) => { calls.push(String(k)); return v.apply(t, a); } : v; } });
+  return { git: git as FakeGit, calls };
+};
+const BAD_PATHS = ["/x", "..", "../x", "a/../../x", "..\\x", "\\x", "a/./b", "./x", "a//b", "a\0b", "C:x", "C:\\x", ""];
+
+describe("module path checks run before git is touched", () => {
+  it.each(BAD_PATHS)("create refuses %j", async p => {
+    const { git: g, calls } = recording(new FakeGit());
+    await expect(createCodeRef({ git: g }, p, 1, 1)).rejects.toMatchObject({ name: "CodeRefError", code: "invalid_path" });
+    expect(calls).toEqual([]);
+  });
+  it.each(BAD_PATHS.filter(p => p !== ""))("open refuses %j", async p => {
+    const { git: g, calls } = recording(new FakeGit());
+    const d = { ...mkDeps(), git: g };
+    await expect(openCodeRef(d, { workspaceId: "ws_fake", commit: "a".repeat(40), path: p, startLine: 1, endLine: 1 })).rejects.toMatchObject({ code: "invalid_path" });
+    expect(calls).toEqual([]);
+    expect(d.calls).toEqual([]);
+  });
+  it("describes the problem generally", async () => {
+    const e = await createCodeRef({ git: new FakeGit() }, "/x", 1, 1).then(() => undefined, (x: unknown) => x as CodeRefError);
+    expect(e?.message).toMatch(/relative to the repository root/);
+  });
+});
+
+describe("created refs honour the contract", () => {
+  const files = ["a b%c.ts", "ünï/日本.ts", "q?#&=.ts", "pipe|gt>.ts"];
+  beforeAll(() => { for (const f of files) write(f, "one\ntwo\n"); write("a..b.ts", "x\n"); commit("odd names"); });
+  it.each(files)("round-trips %s", async f => {
+    const r = await createCodeRef({ git }, f, 1, 2);
+    expect(Requests["coderef.create"].res.safeParse(r).success).toBe(true);
+    expect(decodeCodeRef(r.link)).toEqual(r.ref);
+  });
+  it("refuses a name with '..' inside it, which the contract rejects", async () => {
+    await expect(createCodeRef({ git }, "a..b.ts", 1, 1)).rejects.toMatchObject({ code: "invalid_path" });
+  });
+  it("caps a huge snippet", async () => {
+    write("min.js", "x".repeat(50000) + "\n"); commit("minified");
+    const r = await createCodeRef({ git }, "min.js", 1, 1);
+    expect(r.snippet.length).toBeLessThanOrEqual(MAX_SNIPPET_CHARS + 2);
+    expect(r.snippet.endsWith("\n…")).toBe(true);
+  });
+});
+
+describe("a commit that is not an ancestor of HEAD", () => {
+  it("opens at the commit and offers current, even if the file is identical and clean", async () => {
+    sh("switch", "-q", "-c", "side");
+    write("side.txt", "s\n");
+    const side = commit("side work");
+    sh("switch", "-q", "main");
+    const d = mkDeps();
+    const res = await openCodeRef(d, { workspaceId: wsId, commit: side, path: "src/b.ts", startLine: 1, endLine: 1 });
+    expect(res).toEqual({ opened: "at_commit", stale: true });
+    expect(d.calls).toEqual([`commit ${side.slice(0, 7)} src/b.ts 1-1`, "offer"]);
+  });
+});
+
+describe("linesOf", () => {
+  it("breaks on CRLF, LF and a lone CR, and drops the tail", () => {
+    expect(linesOf("a\r\nb\nc\rd\r\n")).toEqual(["a", "b", "c", "d"]);
+    expect(linesOf("a\r\rb")).toEqual(["a", "", "b"]);
+  });
+  it("counts lone-CR lines when validating a range", async () => {
+    write("cr.txt", "a\rb\rc\r"); commit("cr file");
+    expect((await createCodeRef({ git }, "cr.txt", 2, 3)).snippet).toBe("b\nc");
+    await expect(createCodeRef({ git }, "cr.txt", 2, 4)).rejects.toThrow(/out of range/);
+  });
+});
+
+describe("slack text limits", () => {
+  const r: CodeRef = { workspaceId: "w", commit: "b".repeat(40), path: "src/a.ts", startLine: 1, endLine: 2 };
+  for (const [name, ch] of [["angle brackets", "<"], ["backticks", "`"], ["ampersands", "&"]] as const) {
+    it(`stays within the cap for 5000 ${name} with the fence intact`, () => {
+      const t = formatCodeRefForSlack(r, ch.repeat(5000));
+      expect(t.length).toBeLessThanOrEqual(MAX_MESSAGE_CHARS);
+      expect(t.endsWith("\n```")).toBe(true);
+      expect(t.match(/```/g)).toHaveLength(2);
+      expect(t).not.toMatch(/<(?!nexus:)/);
+    });
+  }
+  it("pins the label for a path with | and >", () => {
+    const t = formatCodeRefForSlack({ ...r, path: "a|<!channel>|b>.ts" }, "x");
+    const head = t.slice(0, t.indexOf("\n"));
+    expect(head).toMatch(/\|a¦&lt;!channel&gt;¦b&gt;\.ts:1-2>$/);
+    expect(head.match(/[<>|]/g)).toHaveLength(3);
   });
 });

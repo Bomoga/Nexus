@@ -49,6 +49,10 @@ export interface ProcessHostOptions {
   requestTimeoutMs?: number;
   /** Timeout for host-to-agent requests such as session.start (default 10 s). */
   hostRequestTimeoutMs?: number;
+  /** Most agent requests served at once per process; the rest are refused (default 64). */
+  maxConcurrentRequests?: number;
+  /** Longest line accepted from the child before it is killed (default 8 Mi characters). */
+  maxLineChars?: number;
 }
 
 /** These wait on a human decision or a long command, so the host never times them out. */
@@ -70,6 +74,7 @@ export class ProcessHost {
   private activeSession?: string;
   private disposed = false;
   private stopReading?: () => void;
+  private stopStderr?: () => void;
   private generation = 0;
   private readonly log: HostLogger;
   private readonly requestTimeoutMs: number;
@@ -88,8 +93,12 @@ export class ProcessHost {
     const gen = ++this.generation;
     const t = this.opts.spawn();
     this.transport = t;
-    this.stopReading = readLines(t.stdout, line => this.onLine(line));
-    if (t.stderr) readLines(t.stderr, line => this.log("debug", `agent stderr: ${redact(line).slice(0, 500)}`));
+    const inflight = new Set<string>();                      // request ids being served for THIS process (ids restart per process)
+    this.stopReading = readLines(t.stdout, line => this.onLine(t, inflight, line), {
+      maxLineChars: this.opts.maxLineChars,
+      onOverflow: () => { this.log("error", "agent line exceeded the size limit; killing the process"); t.kill(); },
+    });
+    if (t.stderr) this.stopStderr = readLines(t.stderr, line => this.log("debug", `agent stderr: ${redact(line).slice(0, 500)}`), { maxLineChars: 64 * 1024, onOverflow: () => {} });
     t.stdin.on("error", err => this.log("warn", `agent stdin error: ${err.message}`));
     t.onExit((code, signal) => this.onExit(gen, code, signal));
     this.log("info", "agent process started", { generation: gen });
@@ -132,6 +141,7 @@ export class ProcessHost {
     this.disposed = true;
     this.failPending(new Error("process host disposed"));
     this.stopReading?.();
+    this.stopStderr?.();
     const t = this.transport;
     this.transport = undefined;
     t?.kill();
@@ -168,7 +178,8 @@ export class ProcessHost {
 
   // ---- child -> host ----
 
-  private onLine(line: string): void {
+  private onLine(t: Transport, inflight: Set<string>, line: string): void {
+    if (t !== this.transport) return;                        // a replaced or dead process: ignore whatever it still says
     let raw: unknown;
     try {
       raw = JSON.parse(line);
@@ -182,7 +193,7 @@ export class ProcessHost {
       return;
     }
     const msg = env.data;
-    if (msg.t === "req") void this.serve(msg.id, msg.name, msg.body);
+    if (msg.t === "req") void this.serve(t, inflight, msg.id, msg.name, msg.body);
     else if (msg.t === "res") this.onChildResponse(msg.id, msg.ok, msg.body, msg.error);
     else this.log("debug", "ignored agent event", { name: msg.name });
   }
@@ -201,31 +212,54 @@ export class ProcessHost {
     else p.reject(new Error(`invalid ${p.name} response from agent`));
   }
 
-  private reply(id: string, ok: true, body: unknown): void;
-  private reply(id: string, ok: false, error: string): void;
-  private reply(id: string, ok: boolean, payload: unknown): void {
-    const t = this.transport;
-    if (!t) return;
+  // Replies go only to the process that asked: ids restart in a respawned child, so a late answer for the old process
+  // (a key, an approval decision) must never be delivered to the new one.
+  private reply(t: Transport, id: string, ok: true, body: unknown): void;
+  private reply(t: Transport, id: string, ok: false, error: string): void;
+  private reply(t: Transport, id: string, ok: boolean, payload: unknown): void {
+    if (t !== this.transport) {
+      this.log("debug", "dropped a reply for a replaced process", { id });
+      return;
+    }
     writeLine(t.stdin, ok ? { t: "res", id, ok: true, body: payload } : { t: "res", id, ok: false, error: payload });
   }
 
-  private async serve(id: string, name: string, body: unknown): Promise<void> {
+  private async serve(t: Transport, inflight: Set<string>, id: string, name: string, body: unknown): Promise<void> {
+    if (inflight.has(id)) {
+      this.log("warn", "duplicate agent request id", { id });
+      this.reply(t, id, false, "duplicate request id");
+      return;
+    }
+    if (inflight.size >= (this.opts.maxConcurrentRequests ?? 64)) {
+      this.log("warn", "too many concurrent agent requests", { name });
+      this.reply(t, id, false, "too many concurrent requests");
+      return;
+    }
+    inflight.add(id);
+    try {
+      await this.serveOne(t, id, name, body);
+    } finally {
+      inflight.delete(id);
+    }
+  }
+
+  private async serveOne(t: Transport, id: string, name: string, body: unknown): Promise<void> {
     const schema = (AgentRequests as Record<string, (typeof AgentRequests)[AgentRequestName] | undefined>)[name];
     if (!schema) {
       this.log("warn", "unknown agent request", { name });
-      this.reply(id, false, `unknown request ${name}`);
+      this.reply(t, id, false, `unknown request ${name}`);
       return;
     }
     const req = schema.req.safeParse(body);
     if (!req.success) {
       this.log("warn", "invalid agent request", { name });
-      this.reply(id, false, `invalid ${name} request`);
+      this.reply(t, id, false, `invalid ${name} request`);
       return;
     }
     const handler = this.opts.handlers[name as AgentRequestName] as ((b: unknown) => Promise<unknown>) | undefined;
     if (!handler) {
       this.log("warn", "no handler for agent request", { name });
-      this.reply(id, false, `no handler for ${name}`);
+      this.reply(t, id, false, `no handler for ${name}`);
       return;
     }
     try {
@@ -233,13 +267,13 @@ export class ProcessHost {
       const res = schema.res.safeParse(result);
       if (!res.success) {
         this.log("error", "handler returned an invalid response", { name });
-        this.reply(id, false, `invalid ${name} response`);
+        this.reply(t, id, false, `invalid ${name} response`);
         return;
       }
-      this.reply(id, true, res.data);
+      this.reply(t, id, true, res.data);
     } catch (e) {
       this.log("warn", "agent request failed", { name });
-      this.reply(id, false, redact(e instanceof Error ? e.message : "internal error"));
+      this.reply(t, id, false, redact(e instanceof Error ? e.message : "internal error"));
     }
   }
 
@@ -249,6 +283,7 @@ export class ProcessHost {
     if (gen !== this.generation || this.disposed) return;
     this.transport = undefined;
     this.stopReading?.();
+    this.stopStderr?.();
     this.failPending(new Error("agent process exited"));
     const sessionId = this.activeSession;
     this.log("warn", "agent process exited", { code: code ?? undefined, signal: signal ?? undefined, session: sessionId });
@@ -278,8 +313,23 @@ function withTimeout<T>(p: Promise<T>, ms: number, message: string): Promise<T> 
 
 export interface ForkOptions {
   execArgv?: string[];
+  /** Extra environment for the child (e.g. NEXUS_AGENT_RUNTIME). Nothing else of the parent's secrets is passed on. */
   env?: Record<string, string>;
 }
+
+// The child gets only what a Node process needs to start. The extension host's environment can hold API keys and
+// tokens (CLAUDE.md §3 allows env vars in development); the agent must receive a key per call, never by inheritance.
+const ENV_ALLOWLIST = new Set(["PATH", "SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT", "TEMP", "TMP", "TMPDIR", "HOME", "USERPROFILE", "LANG", "LC_ALL", "TZ"]);
+
+export function childEnvironment(parent: NodeJS.ProcessEnv, extra: Record<string, string> = {}): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const [k, v] of Object.entries(parent)) {
+    if (v !== undefined && ENV_ALLOWLIST.has(k.toUpperCase())) env[k] = v;   // Windows env names are case-insensitive
+  }
+  return { ...env, ELECTRON_RUN_AS_NODE: "1", ...extra };
+}
+
+const KILL_GRACE_MS = 2000;
 
 /**
  * Spawner for the real child: runs `entry` with the current Node/Electron binary.
@@ -289,14 +339,21 @@ export function forkAgentProcess(entry: string, opts: ForkOptions = {}): Spawner
   return () => {
     const child = spawn(process.execPath, [...(opts.execArgv ?? []), entry], {
       stdio: ["pipe", "pipe", "pipe"],
-      env: { ...process.env, ELECTRON_RUN_AS_NODE: "1", ...opts.env },
+      env: childEnvironment(process.env, opts.env),
       windowsHide: true,
     });
+    let exited = false;
+    child.once("exit", () => { exited = true; });
     return {
       stdin: child.stdin,
       stdout: child.stdout,
       stderr: child.stderr,
-      kill: () => { child.kill(); },
+      kill: () => {
+        child.kill();
+        // A child stuck in a loop ignores the polite signal; escalate so a runaway agent cannot linger.
+        const timer = setTimeout(() => { if (!exited) child.kill("SIGKILL"); }, KILL_GRACE_MS);
+        timer.unref();
+      },
       onExit: cb => { child.once("exit", cb); child.once("error", () => cb(null, null)); },
     };
   };

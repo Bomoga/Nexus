@@ -5,7 +5,7 @@ import { AgentChannel } from "../agent-process/channel";
 import { run as runEcho } from "../agent-process/echo-runtime";
 import { fx } from "../contracts/fixtures";
 import { readLines } from "../shared/jsonl";
-import { ProcessHost, forkAgentProcess, type AgentHandlers, type HostLogger, type SessionErrorInfo, type Transport } from "./process-host";
+import { ProcessHost, childEnvironment, forkAgentProcess, type AgentHandlers, type HostLogger, type SessionErrorInfo, type Transport } from "./process-host";
 
 const SECRET = "sk-ant-api03-SECRETSECRETSECRET1234567890";
 // Tests run with cwd = extensions/nexus (npm test).
@@ -47,7 +47,7 @@ function channelTransport(run: (c: AgentChannel) => Promise<void>) {
   return { transport, channel };
 }
 
-function harness(handlers: AgentHandlers = {}, extra: { requestTimeoutMs?: number; hostRequestTimeoutMs?: number } = {}) {
+function harness(handlers: AgentHandlers = {}, extra: { requestTimeoutMs?: number; hostRequestTimeoutMs?: number; maxConcurrentRequests?: number; maxLineChars?: number } = {}) {
   const logs: string[] = [];
   const log: HostLogger = (level, message, meta) => logs.push(`${level} ${message} ${JSON.stringify(meta ?? {})}`);
   const raws: ReturnType<typeof rawTransport>[] = [];
@@ -325,6 +325,70 @@ describe("ProcessHost crash handling", () => {
   });
 });
 
+describe("ProcessHost isolation and limits", () => {
+  const request = (id: string, name: string, body: unknown) => ({ t: "req", id, name, body });
+  async function accept(h: ReturnType<typeof harness>, sessionId = fx.session.id) {
+    const params = startParams();
+    params.session.id = sessionId;
+    const p = h.host.startSession(params);
+    await vi.waitFor(() => expect(h.raw().sent.some(s => s.name === "session.start")).toBe(true));
+    h.raw().push({ t: "res", id: h.raw().sent.filter(s => s.name === "session.start").at(-1)!.id, ok: true, body: { accepted: true } });
+    await p;
+  }
+
+  it("never delivers a late reply to the process that replaced the one that asked", async () => {
+    let release: (v: { apiKey: string }) => void = () => {};
+    const h = track(harness({ "credentials.get": () => new Promise(r => { release = r; }) }));
+    await accept(h);
+    h.raws[0].push(request("a1", "credentials.get", { provider: "anthropic", callId: "c1" }));
+    await vi.waitFor(() => expect(h.logs.length).toBeGreaterThan(0));
+    h.raws[0].exit(3);                                   // active session: the host respawns
+    expect(h.raws).toHaveLength(2);
+    release({ apiKey: SECRET });
+    await new Promise(r => setTimeout(r, 40));
+    expect(h.raws[1].sent.find(s => s.t === "res" && s.id === "a1")).toBeUndefined();
+    expect(JSON.stringify(h.raws[1].sent)).not.toContain("SECRETSECRET");
+    expect(h.logs.some(l => l.includes("dropped a reply for a replaced process"))).toBe(true);
+  });
+
+  it("ignores requests from a process that has already been replaced", async () => {
+    const handler = vi.fn(async () => ({ content: "", truncated: false }));
+    const h = track(harness({ "fs.read": handler }));
+    await accept(h);
+    h.raws[0].exit(3);
+    h.raws[0].push(request("late", "fs.read", { path: "a" }));
+    await new Promise(r => setTimeout(r, 20));
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  it("caps concurrent requests and refuses a duplicate in-flight id", async () => {
+    const h = track(harness({ "fs.read": () => new Promise(() => {}) }, { maxConcurrentRequests: 2, requestTimeoutMs: 60_000 }));
+    h.host.start();
+    for (const id of ["r1", "r2", "r3"]) h.raw().push(request(id, "fs.read", { path: "a" }));
+    h.raw().push(request("r1", "fs.read", { path: "a" }));
+    await vi.waitFor(() => expect(h.raw().sent.filter(s => s.t === "res")).toHaveLength(2));
+    const errs = Object.fromEntries(h.raw().sent.filter(s => s.t === "res").map(s => [s.id as string, s.error]));
+    expect(errs.r3).toBe("too many concurrent requests");
+    expect(errs.r1).toBe("duplicate request id");
+  });
+
+  it("kills a child that sends a line over the size limit", async () => {
+    const h = track(harness({}, { maxLineChars: 50 }));
+    h.host.start();
+    h.raw().push("x".repeat(200));
+    await vi.waitFor(() => expect(h.raw().killed).toBe(true));
+    expect(h.logs.some(l => l.includes("size limit"))).toBe(true);
+  });
+
+  it("childEnvironment passes an allowlist plus explicit extras, and nothing secret from the parent", () => {
+    const env = childEnvironment(
+      { PATH: "/bin", Path: "C:/x", HOME: "/h", ANTHROPIC_API_KEY: "k", SLACK_USER_TOKEN: "t", NEXUS_AGENT_RUNTIME: "./evil", NODE_OPTIONS: "--require /evil.js" },
+      { NEXUS_AGENT_RUNTIME: "./echo-runtime" },
+    );
+    expect(env).toEqual({ PATH: "/bin", Path: "C:/x", HOME: "/h", ELECTRON_RUN_AS_NODE: "1", NEXUS_AGENT_RUNTIME: "./echo-runtime" });
+  });
+});
+
 describe("ProcessHost with a real child process", () => {
   it("starts the real process, answers health, and runs ELECTRON_RUN_AS_NODE", async () => {
     const host = new ProcessHost({ spawn: forkAgentProcess(FIXTURE), handlers: {} });
@@ -346,6 +410,22 @@ describe("ProcessHost with a real child process", () => {
     hosts.push(host);
     await expect(host.startSession(startParams())).resolves.toEqual({ accepted: true });
     expect(emitted[0]).toMatchObject({ payload: { gotKey: true, electronAsNode: "1" } });
+  });
+
+  it("does not hand the parent's API keys to the child", async () => {
+    process.env.ANTHROPIC_API_KEY = "sk-ant-PARENTENVSECRET1234567890";
+    const emitted: Array<{ payload: { leakedKey: boolean; hasPath: boolean } }> = [];
+    const host = new ProcessHost({
+      spawn: forkAgentProcess(FIXTURE),
+      handlers: { "credentials.get": async () => ({ apiKey: "k" }), "event.emit": async b => { emitted.push(b as never); return { seq: 0 }; } },
+    });
+    hosts.push(host);
+    try {
+      await host.startSession(startParams());
+    } finally {
+      delete process.env.ANTHROPIC_API_KEY;
+    }
+    expect(emitted[0].payload).toMatchObject({ leakedKey: false, hasPath: true });
   });
 
   it("detects a real crash and restarts the process once", async () => {

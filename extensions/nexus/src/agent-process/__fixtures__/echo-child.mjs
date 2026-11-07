@@ -19,7 +19,7 @@ createInterface({ input: process.stdin }).on("line", async line => {
   if (msg.name === "session.cancel") return out({ t: "res", id: msg.id, ok: true, body: { cancelled: true } });
   if (msg.name === "session.start") {
     const cred = await ask("credentials.get", { provider: msg.body.session.model.provider, callId: "call_1" });
-    const emitted = await ask("event.emit", { type: "message", payload: { text: "hello", gotKey: cred.ok && cred.body.apiKey.length > 0, electronAsNode: process.env.ELECTRON_RUN_AS_NODE } });
+    const emitted = await ask("event.emit", { type: "message", payload: { text: "hello", gotKey: cred.ok && cred.body.apiKey.length > 0, electronAsNode: process.env.ELECTRON_RUN_AS_NODE, leakedKey: process.env.ANTHROPIC_API_KEY !== undefined, hasPath: (process.env.PATH ?? process.env.Path) !== undefined } });
     out({ t: "res", id: msg.id, ok: emitted.ok, body: { accepted: true } });
     if (process.env.CRASH_ON_START === "1") setTimeout(() => process.exit(3), 10);
   }

@@ -34,6 +34,15 @@ export interface PruneConfig {
   onNote?(note: string): void;
 }
 
+/**
+ * The Prune template id for a model role: one stable id per role ("nexus-agent", "nexus-brief", ...), never per request.
+ * Prune records a new version of a template whenever the prompt body changes, so editing a prompt needs no id change.
+ * Costs and versions per prompt show under Dashboard -> Templates in Prune.
+ */
+export function templateIdFor(role: ModelRole): string {
+  return `nexus-${role.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 48) || "call"}`;
+}
+
 export function inScope(scope: PruneConfig["scope"], role: ModelRole): boolean {
   return scope === "all_roles" || role !== "agent";
 }
@@ -113,7 +122,7 @@ export function wrapProvider(direct: Provider, cfg: PruneConfig): Provider {
         try {
           res = await doFetch(`${base}/chat/completions`, {
             method: "POST", signal: ac.signal,
-            headers: { authorization: `Bearer ${cfg.apiKey}`, "content-type": "application/json" },
+            headers: { authorization: `Bearer ${cfg.apiKey}`, "content-type": "application/json", "x-prune-template-id": templateIdFor(req.role) },
             body: JSON.stringify({
               model: req.modelId, messages: toOpenAiMessages(req.system, req.messages), stream: false,
               ...(req.maxTokens ? { max_tokens: req.maxTokens } : {}),

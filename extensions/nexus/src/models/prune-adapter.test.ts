@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { ModelCallReceipt } from "../contracts";
 import { FakeProvider } from "./fake-provider";
-import { PRUNE_BASE_URL, inScope, routingAllowed, toOpenAiMessages, wrapProvider, type PruneConfig } from "./prune-adapter";
+import { PRUNE_BASE_URL, inScope, routingAllowed, templateIdFor, toOpenAiMessages, wrapProvider, type PruneConfig } from "./prune-adapter";
 import type { PruneMetadata } from "./prune-receipt";
 import { collectTurn, type TurnEvent, type TurnRequest } from "./provider";
 
@@ -85,7 +85,9 @@ describe("the request", () => {
     }), PROVIDER_KEY));
     const call = s.sent[0];
     expect(call.url).toBe(`${PRUNE_BASE_URL}/chat/completions`);
-    expect(call.headers).toMatchObject({ authorization: `Bearer ${PRUNE_KEY}`, "content-type": "application/json" });
+    expect(call.headers).toMatchObject({ authorization: `Bearer ${PRUNE_KEY}`, "content-type": "application/json", "x-prune-template-id": "nexus-summary" });
+    expect(templateIdFor("approval_wording")).toBe("nexus-approval-wording");     // one stable id per role, not per request
+    expect(templateIdFor("???" as never)).toBe("nexus-call");
     expect(call.body).toMatchObject({
       model: MODEL, stream: false, max_tokens: 300,
       tools: [{ type: "function", function: { name: "read_file", description: "read", parameters: { type: "object" } } }],

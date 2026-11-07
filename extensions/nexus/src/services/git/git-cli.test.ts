@@ -362,6 +362,6 @@ describe("GitCli read side", () => {
     await expect(git.createSessionWorktree({ sessionId: "s", workspaceId: "w" })).rejects.toThrow(/no sessions directory/);
     await expect(git.removeSessionWorktree("s")).rejects.toThrow(/no sessions directory/);
     await expect(git.diff("/x", shas.first)).rejects.toThrow(/no sessions directory/);
-    await expect(git.commitIn("/x", "m", "s")).rejects.toThrow(/no sessions directory/);
+    await expect(git.commitIn("/x", "m", "s", "")).rejects.toThrow(/no sessions directory/);
   });
 });

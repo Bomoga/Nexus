@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { devNull, tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -26,7 +26,7 @@ afterEach(() => rmSync(base, { recursive: true, force: true }));
 async function agentCommit(id: string, file: string, text: string) {
   const w = await git.createSessionWorktree({ sessionId: id, workspaceId: "w" });
   write(w.worktreePath, file, text);
-  return git.commitIn(w.worktreePath, `agent ${id}`, id);
+  return git.commitIn(w.worktreePath, `agent ${id}`, id, await git.diff(w.worktreePath, w.baseCommit));
 }
 
 describe("mergeAgentBranch", () => {
@@ -76,5 +76,44 @@ describe("mergeAgentBranch", () => {
     const again = await git.mergeAgentBranch("s1");
     expect(again.ok).toBe(true);
     expect(again.message).toMatch(/already merged/);
+  });
+  it("always makes a merge commit, even when a fast-forward was possible", async () => {
+    const agent = await agentCommit("s1", "new.txt", "agent\n");
+    const before = sh(repo, "rev-parse", "HEAD");
+    const r = await git.mergeAgentBranch("s1");
+    expect(r.ok).toBe(true);
+    expect(r.mergeSha).not.toBe(agent);
+    expect(sh(repo, "rev-parse", "HEAD^1")).toBe(before);
+    expect(sh(repo, "rev-parse", "HEAD^2")).toBe(agent);
+  });
+  it("fires no hooks of the user's repository", async () => {
+    const log = path.join(base, "hooks.log");
+    await agentCommit("s1", "new.txt", "agent\n");
+    write(repo, "m.txt", "m\n"); sh(repo, "add", "-A"); sh(repo, "commit", "-q", "-m", "main");
+    for (const h of ["pre-merge-commit", "post-merge", "commit-msg", "reference-transaction", "post-checkout"]) {
+      writeFileSync(path.join(repo, ".git/hooks", h), `#!/bin/sh\necho ${h} >> "${log}"\n`);
+      chmodSync(path.join(repo, ".git/hooks", h), 0o755);
+    }
+    expect((await git.mergeAgentBranch("s1")).ok).toBe(true);
+    expect(existsSync(log)).toBe(false);
+  });
+  it("records the merge under the repo's configured identity", async () => {
+    await agentCommit("s1", "new.txt", "agent\n");
+    process.env.GIT_COMMITTER_NAME = "Env Mallory";
+    try { expect((await git.mergeAgentBranch("s1")).ok).toBe(true); } finally { delete process.env.GIT_COMMITTER_NAME; }
+    expect(sh(repo, "log", "-1", "--format=%cn <%ce>")).toBe("Human Dev <human@example.com>");
+  });
+  it("refuses to overwrite an ignored file in the user's checkout", async () => {
+    write(repo, ".gitignore", "secret.env\n"); sh(repo, "add", "-A"); sh(repo, "commit", "-q", "-m", "ignore");
+    write(repo, "secret.env", "MY_REAL_SECRET=1\n");
+    const w = await git.createSessionWorktree({ sessionId: "s1", workspaceId: "w" });
+    write(w.worktreePath, ".gitignore", "\n"); write(w.worktreePath, "secret.env", "AGENT=1\n");
+    await git.commitIn(w.worktreePath, "agent", "s1", await git.diff(w.worktreePath, w.baseCommit));
+    const head = sh(repo, "rev-parse", "HEAD");
+    const r = await git.mergeAgentBranch("s1");
+    expect(r.ok).toBe(false);
+    expect(readFileSync(path.join(repo, "secret.env"), "utf8")).toBe("MY_REAL_SECRET=1\n");
+    expect(sh(repo, "rev-parse", "HEAD")).toBe(head);
+    expect(sh(repo, "status", "--porcelain")).toBe("");
   });
 });

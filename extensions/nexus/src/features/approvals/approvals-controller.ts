@@ -118,10 +118,8 @@ export class ApprovalsController implements ApprovalRequester {
         // Nobody decided and nobody is waiting: the approval is dead. No decision is ever written for it.
         this.pending.delete(approval.id);
         this.dead.set(approval.id, approval);
-        this.deps.notify.update(approval.id, "The request could not be completed; there is nothing to approve.");
-        if (![...this.pending.values()].includes(approval.sessionId)) {
-          await sessions.setStatus(approval.sessionId, "running").catch(err => this.deps.log?.(`could not restore the session status: ${err instanceof Error ? err.message : "unknown error"}`));
-        }
+        try { this.deps.notify.update(approval.id, "The request could not be completed; there is nothing to approve."); } catch (err) { this.deps.log?.(`could not update the notification: ${err instanceof Error ? err.message : "unknown error"}`); }
+        if (![...this.pending.values()].includes(approval.sessionId)) await this.attempt("restore the session status", () => sessions.setStatus(approval.sessionId, "running"));
       }
       throw e;
     }
@@ -254,9 +252,10 @@ export class ApprovalsController implements ApprovalRequester {
       try { this.deps.notify.update(approval.id, `Decided by ${who}: ${decision}`); } catch (e) { this.deps.log?.(`could not update the notification: ${e instanceof Error ? e.message : "unknown error"}`); }
       try { this.emitChange(approval); } catch (e) { this.deps.log?.(`an approval subscriber failed: ${e instanceof Error ? e.message : "unknown error"}`); }
       if (sessionId === undefined) return;                            // not ours: nothing to wake
-      await this.deps.sessions.emit(sessionId, { type: "approval_resolved", approvalId: approval.id, decision });
+      // Each step stands alone: a failed event write must not leave the session showing "awaiting_approval" or skip waking the host.
+      await this.attempt("record the approval decision", () => this.deps.sessions.emit(sessionId, { type: "approval_resolved", approvalId: approval.id, decision }));
       // The session reads "running" again before the agent is woken, so no surface shows a working agent as waiting.
-      if (![...this.pending.values()].includes(sessionId)) await this.deps.sessions.setStatus(sessionId, "running");
+      if (![...this.pending.values()].includes(sessionId)) await this.attempt("restore the session status", () => this.deps.sessions.setStatus(sessionId, "running"));
       this.deps.host.sendEvent("approval.resolved", { approvalId: approval.id, decision });
     } catch (e) {
       // A store hiccup must never leave the agent waiting on a decision a human already made.
@@ -264,6 +263,10 @@ export class ApprovalsController implements ApprovalRequester {
     } finally {
       if (sessionId !== undefined) this.wake(approval.id, decision);
     }
+  }
+
+  private async attempt(what: string, fn: () => Promise<unknown>): Promise<void> {
+    try { await fn(); } catch (e) { this.deps.log?.(`could not ${what}: ${e instanceof Error ? e.message : "unknown error"}`); }
   }
 
   private wake(approvalId: string, decision: Decision): void {
@@ -299,7 +302,10 @@ export function approvalsBridgeHandlers(c: ApprovalsController, identity: () => 
     "approvals.list": async (r: Req<"approvals.list">): Promise<Res<"approvals.list">> => c.list({ sessionId: r.sessionId, pendingOnly: r.pendingOnly }),
     "approvals.resolve": async (r: Req<"approvals.resolve">): Promise<Res<"approvals.resolve">> => {
       const res = await c.resolve(r.approvalId, r.decision, { via: "app", userId: identity() });
-      if (!res.won) throw new ApprovalConflict(res.approval);          // the router maps this to error code "conflict" with the winner
+      if (!res.won) {
+        if (!res.approval.decision) throw new Error("This approval is no longer pending.");   // refused, not lost: nobody decided it
+        throw new ApprovalConflict(res.approval);                        // the router maps this to error code "conflict" with the winner
+      }
       return res.approval;
     },
   };

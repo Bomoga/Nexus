@@ -3,7 +3,7 @@ import type { ApprovalRequest } from "../../contracts";
 import { fx } from "../../contracts/fixtures";
 import { SessionsController } from "../sessions/sessions-controller";
 import { FakeGit, MemoryGate, MemoryStore, fakeClock } from "../testing/memory-ports";
-import { ApprovalsController } from "./approvals-controller";
+import { ApprovalConflict, ApprovalsController, approvalsBridgeHandlers } from "./approvals-controller";
 
 // Hang-path audit (S5-T4): when the store throws on I/O, the agent's waiting gate must be released (or refused with an
 // error), never left pending forever. Every await goes through `bounded`, so a hang fails the test instead of the run.
@@ -55,6 +55,8 @@ describe("approvals: store failures never leave the agent waiting", () => {
     vi.spyOn(s.store, "putSession").mockImplementation(boom);
     s.shown[0].choose("approved");
     expect(await bounded(result)).toBe("ran");
+    expect(s.sessions.activeSession?.status).toBe("running");        // the failed event write must not leave it showing "awaiting_approval"
+    expect(s.hostEvents).toHaveLength(1);
   });
 
   it("waitForDecision: a failing store read rejects instead of hanging, and a later decision does not break anything", async () => {
@@ -131,6 +133,44 @@ describe("approvals: store failures never leave the agent waiting", () => {
     expect((await s.store.getSession(s.session.id))!.status).toBe("running");
     expect(internals(s).creating.size).toBe(0);
     expect(internals(s).pending.size).toBe(0);
+  });
+
+  it("create: a parked decision settled after the failing read still returns the session to running when appending the event also fails", async () => {
+    const s = await setup();
+    const real = s.store.getApproval.bind(s.store);
+    let reads = 0;
+    vi.spyOn(s.store, "getApproval").mockImplementation(async id => {
+      if (++reads > 1) return real(id);
+      await s.approvals.resolve(id, "approved", { via: "slack", userId: "brandon" });
+      vi.spyOn(s.store, "appendAgentEvent").mockImplementation(boom);
+      throw new Error("store I/O failed");
+    });
+    await expect(bounded(create(s))).rejects.toThrow("store I/O failed");
+    expect(s.sessions.activeSession?.status).toBe("running");
+    expect(s.hostEvents).toHaveLength(1);
+  });
+
+  it("create: a throwing notification update in the dead path neither skips the status restore nor replaces the store error", async () => {
+    const s = await setup();
+    s.flags.updateThrows = true;
+    vi.spyOn(s.store, "getApproval").mockImplementationOnce(boom);
+    await expect(bounded(create(s))).rejects.toThrow("store I/O failed");
+    expect(s.sessions.activeSession?.status).toBe("running");
+    expect(s.logs.some(l => l.includes("could not update the notification"))).toBe(true);
+  });
+
+  it("bridge: resolving a dead approval says it is no longer pending (not a lost race); a real lost race is still an ApprovalConflict", async () => {
+    const s = await setup();
+    const h = approvalsBridgeHandlers(s.approvals, () => "adrian");
+    vi.spyOn(s.store, "getApproval").mockImplementationOnce(boom);
+    await expect(bounded(create(s))).rejects.toThrow("store I/O failed");
+    const [dead] = await s.store.listApprovals();
+    const err = await bounded(h["approvals.resolve"]({ approvalId: dead.id, decision: "approved" }).catch((e: unknown) => e));
+    expect(err).not.toBeInstanceOf(ApprovalConflict);
+    expect((err as Error).message).toBe("This approval is no longer pending.");
+    const live = await s.approvals.create({ sessionId: s.session.id, action: { kind: "run_command", command: "npm test" }, reason: "r" });
+    await s.approvals.resolve(live.id, "approved", { via: "slack", userId: "brandon" });
+    expect(await h["approvals.resolve"]({ approvalId: live.id, decision: "rejected" }).catch((e: unknown) => e)).toBeInstanceOf(ApprovalConflict);
   });
 
   it("settle: a throwing notification update or subscriber cannot skip waking the agent", async () => {

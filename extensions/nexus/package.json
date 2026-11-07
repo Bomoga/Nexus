@@ -177,6 +177,11 @@
           "type": "string",
           "default": "",
           "description": "Optional API audience to request in the access token."
+        },
+        "nexus.ciba.serviceUrl": {
+          "type": "string",
+          "default": "",
+          "description": "Base URL of the Nexus auth service. Phone approval (Auth0 push) is off until this is set and you are signed in."
         }
       }
     },

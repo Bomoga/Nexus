@@ -82,6 +82,19 @@ describe("activity", () => {
     expect(total).toBe(5200);
   });
 
+  it("orders remote rows like the local path, whatever the database collation returned", async () => {
+    // an en_US collation can return "feature/x" before "feature-y" and "Main" after "lane-1"
+    const rows = [
+      { bucket: "2026-11-07T10:00:00Z", orbit: "lane-1", count: "1" },
+      { bucket: "2026-11-07T10:00:00Z", orbit: "Main", count: "1" },
+      { bucket: "2026-11-07T10:00:00Z", orbit: "feature/x", count: "1" },
+      { bucket: "2026-11-07T10:00:00Z", orbit: "feature-y", count: "1" },
+    ];
+    const activity = createActivity({ query: { query: async () => ({ rows }) }, localEvents: async () => [] });
+    const orbits = (await activity("2026-11-07T10:00:00Z", "2026-11-07T11:00:00Z")).map(b => b.orbit);
+    expect(orbits).toEqual(["Main", "feature-y", "feature/x", "lane-1"]);
+  });
+
   it("serves events.activity through the bridge", async () => {
     const b = new FakeBridgeServer();
     registerActivity(b, createActivity({ localEvents: localFrom(EVENTS) }));

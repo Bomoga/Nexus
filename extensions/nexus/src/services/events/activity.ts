@@ -52,7 +52,13 @@ function mapRows(rows: Record<string, unknown>[]): ActivityBucket[] {
     if (bucketStart === undefined || count === undefined) throw new Error("malformed activity row");
     out.push(ActivityBucket.parse({ bucketStart, orbit: row.orbit, count }));
   }
-  return out;
+  // Same order as the local path (code units), not the database's collation, so both sources give identical output.
+  return out.sort((a, b) => (a.bucketStart < b.bucketStart ? -1 : a.bucketStart > b.bucketStart ? 1 : 0) || byOrbit(a.orbit, b.orbit));
+}
+
+/** Orders orbit names by UTF-16 code units, the same way on the remote and the local path. */
+function byOrbit(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
 }
 
 const floorBucket = (ms: number): number => Math.floor(ms / BUCKET_MS) * BUCKET_MS;
@@ -86,7 +92,7 @@ async function localBuckets(deps: ActivityDeps, fromMs: number, toMs: number): P
     if (cur) cur.count++; else counts.set(key, { start, orbit: e.orbit, count: 1 });
   }
   return [...counts.values()]
-    .sort((a, b) => a.start - b.start || (a.orbit < b.orbit ? -1 : a.orbit > b.orbit ? 1 : 0))
+    .sort((a, b) => a.start - b.start || byOrbit(a.orbit, b.orbit))
     .map(b => ({ bucketStart: new Date(b.start).toISOString(), orbit: b.orbit, count: b.count }));
 }
 

@@ -1,4 +1,4 @@
-import type { AgentEvent, AgentSession, ApprovalRequest, DecidedBy, NexusEvent, SwarmReview, Task, TaskPlan, Thread } from "../contracts";
+import type { AgentEvent, AgentSession, ApprovalRequest, DecidedBy, ModelCallReceipt, NexusEvent, SwarmReview, Task, TaskPlan, Thread } from "../contracts";
 import type { AgentReqOut, AgentResIn } from "../agent/process-host";
 
 // What Lane 1's controllers need from the rest of the extension host. These are narrow, Lane-1-owned ports: Lane 2's
@@ -34,6 +34,9 @@ export interface StorePort {
   putReview(review: SwarmReview): Promise<void>;
   /** The latest review for an approval, if any. */
   getReviewForApproval(approvalId: string): Promise<SwarmReview | undefined>;
+  putReceipt(receipt: ModelCallReceipt): Promise<void>;
+  /** Receipts oldest first, for one session or all. */
+  listReceipts(sessionId?: string): Promise<ModelCallReceipt[]>;
   putPlan(plan: TaskPlan): Promise<void>;
   getPlan(id: string): Promise<TaskPlan | undefined>;
 }

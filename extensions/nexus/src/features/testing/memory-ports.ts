@@ -1,4 +1,4 @@
-import type { AgentEvent, AgentSession, ApprovalRequest, DecidedBy, NexusEvent, SwarmReview, Task, TaskPlan, Thread } from "../../contracts";
+import type { AgentEvent, AgentSession, ApprovalRequest, DecidedBy, ModelCallReceipt, NexusEvent, SwarmReview, Task, TaskPlan, Thread } from "../../contracts";
 import type { ApprovalRequester } from "../sessions/sessions-controller";
 import type { Clock, DecideResult, GatePort, GateRequestName, GitPort, SessionWorktree, SlackPort, StorePort } from "../ports";
 import type { AgentReqOut, AgentResIn } from "../../agent/process-host";
@@ -29,6 +29,7 @@ export class MemoryStore implements StorePort {
   readonly nexusEvents: NexusEvent[] = [];
   readonly reviews = new Map<string, SwarmReview[]>();          // by approval id, oldest first
   readonly plans = new Map<string, TaskPlan>();
+  readonly receipts: ModelCallReceipt[] = [];
   /** Test hook: make the next appendAgentEvent calls fail. */
   failAppends = 0;
 
@@ -64,6 +65,8 @@ export class MemoryStore implements StorePort {
     this.reviews.set(r.approvalId, list);
   }
   async getReviewForApproval(approvalId: string) { const r = this.reviews.get(approvalId)?.at(-1); return r && structuredClone(r); }
+  async putReceipt(r: ModelCallReceipt) { if (!this.receipts.some(x => x.callId === r.callId)) this.receipts.push(structuredClone(r)); }
+  async listReceipts(sessionId?: string) { return this.receipts.filter(r => !sessionId || r.sessionId === sessionId).map(r => structuredClone(r)); }
   async putPlan(p: TaskPlan) { this.plans.set(p.id, structuredClone(p)); }
   async getPlan(id: string) { const p = this.plans.get(id); return p && structuredClone(p); }
 }

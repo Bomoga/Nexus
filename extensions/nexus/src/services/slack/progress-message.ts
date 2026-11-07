@@ -217,7 +217,10 @@ export function createProgressMessages(deps: ProgressMessagesDeps): ProgressMess
       if (latest.slackProgress) { adopt(latest, latest.slackProgress); return latest; }
       const text = `⬡ Nexus agent started on ${safe(latest.branch, 100)} · ${safe(`${latest.model.provider}/${latest.model.modelId}`, 100)}`;
       const posted = await deps.slack.postAsBot({ channelId: task.source.channelId, threadTs: task.source.threadTs, text });
-      const updated: AgentSession = { ...latest, slackProgress: { channelId: task.source.channelId, threadTs: task.source.threadTs, messageTs: posted.ts } };
+      // The post took a network round trip: the session may have moved on (failed, awaiting approval). Re-read it and add only
+      // the message reference, so this write never puts back an older status.
+      const now = (await deps.getSession(session.id)) ?? latest;
+      const updated: AgentSession = { ...now, slackProgress: { channelId: task.source.channelId, threadTs: task.source.threadTs, messageTs: posted.ts } };
       adopt(updated, updated.slackProgress!);   // kept even if the store write fails, so a repeat start never posts again
       for (let attempt = 0; attempt < 2; attempt++) {
         try { await deps.putSession(updated); return updated; } catch { /* retried once */ }
@@ -280,6 +283,8 @@ export function createProgressMessages(deps: ProgressMessagesDeps): ProgressMess
     },
 
     async finish(session, summary) {
+      // A start still posting must land first, so the finished session edits its message instead of being missed.
+      await starting.get(session.id)?.catch(() => undefined);
       try {
         const t = await lookup(session, true);
         if (!t || t.finished) return;

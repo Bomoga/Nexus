@@ -4,15 +4,19 @@
 - L3-02 globe core (attempt 2 confirmed by review; merged T+3:40)
 - L3-08 Slack view part 1 (confirmed on first review; merged T+3:45)
 - L3-01 first drop (component stubs + fakeBridge) merged early at T+3:25 so L3-02/L3-08 could start
+- L3-01 shared kit (attempt 2 confirmed by review; merged T+4:00). Integration fixes at merge: chat tests import createFakeTransport from shared/fakeBridge; globe/chat local env.d.ts replaced by shared/env.d.ts; globe loads fixtures lazily so production bundles carry no demo data (checked: 0 demo strings in chat/globe main bundles).
+- Wave 1 verified in a browser on ?fake=1: globe renders 159 scripted events with no console errors; Slack view shows channels, history and the status line.
 
 ## In flight
-- L3-01 shared kit: attempt 2 (bridge timeouts, validate-before-subscribe, lazy fake, shared ambient types) in re-review
+- (none) — wave 2 next: L3-03 arcs/rings/live → L3-04 picking (one slot, sequential), L3-09 threads + composer, L3-13 task editor
+- style.test.tsx is ready (13 tests, pass with css enabled) and parked at C:\dev\nexus-hello\pending\ until vitest.config.ts has `test.css: true`
 
 ## Follow-ups (from reviews, not yet scheduled)
 - Fake bridge live streams don't echo the fake's own writes (approvals.resolve, slack.post, tasks.*); slack.subscribe ignores channelIds.
 - Chat (for L3-09): older-page load errors are silent; paging stalls if the first page doesn't overflow; Slack mrkdwn (`<url|label>`, `<@U…>`, `&amp;`) shown raw — who normalizes, Lane 2 or the view?; not-a-member dot uses amber (reserved for pending approval) and its tooltip isn't keyboard-reachable; no error boundary in main.tsx.
 - Globe: rename model `useInstancing` (not a hook) to `shouldInstance`; tilts repeat after 5 families; InstancedMesh remounts when the count changes.
-- After L3-01 merges: delete webviews/globe/env.d.ts and webviews/chat/env.d.ts in favour of the kit's shared webviews/shared/env.d.ts.
+- Kit: dispose() leaves pending requests unsettled and sends no unsub; the lazy fake import has no .catch; two bridge tests don't pin pending-entry deletion and timer clearing on reply; active tab line overlaps the container border.
+- Globe scene rendering has no test (a broken split in Scene.tsx compiled and passed all tests during the merge; caught by hand).
 
 ## Blocked
 - Opening links from webviews: no contract request for external URLs (ui.openTarget only takes commit/session/thread). Asked Lane 1 for e.g. ui.openExternal; chat links render as buttons that do nothing until then.

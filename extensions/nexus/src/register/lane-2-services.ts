@@ -133,7 +133,7 @@ export function buildLane2(i: Lane2Inputs): Lane2Built {
       // Token Vault first (signed in and Slack connected in Auth0); any miss falls back to the pasted token. A miss is remembered
       // for a minute, so a teammate who pastes tokens does not pay an Auth0 round trip on every Slack call.
       if (i.tokenVault && now() >= vaultQuietUntil) {
-        let vaulted: Awaited<ReturnType<NonNullable<Lane2Inputs["tokenVault"]>["getUserToken"]>> = null;
+        let vaulted: Awaited<ReturnType<NonNullable<Lane2Inputs["tokenVault"]>["getUserToken"]>>;
         try { vaulted = await i.tokenVault.getUserToken(); } catch { vaulted = null; }
         if (vaulted) {
           if (vaultMissed) { vaultMissed = false; i.log("Token Vault gives the Slack token again"); }

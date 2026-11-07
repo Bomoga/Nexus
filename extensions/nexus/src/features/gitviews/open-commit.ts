@@ -68,7 +68,7 @@ export async function openCommit(deps: OpenCommitDeps, shaArg?: string): Promise
   }
   const parent = commit.parents[0];   // a merge commit diffs against its first parent
   const parents = commit.parents.length ? commit.parents.map(short).join(" ") : "none";
-  const title = escapeCodicons(`${commit.subject} · ${commit.author} · ${formatTime(commit.at)} · parents ${parents}`);
+  const title = `${commit.subject} · ${commit.author} · ${formatTime(commit.at)} · parents ${parents}`; // the title is plain text (never renders icons), so it is not escaped
   const items: CommitPickItem[] = commit.files.map(f => ({
     label: escapeCodicons(f.path), description: `${f.status} +${f.additions} -${f.deletions}`, path: f.path, status: f.status,
   }));

@@ -554,7 +554,7 @@ This governs how every Claude Code session commits, pushes, and merges while bui
 ```
 main                       always builds and launches; protected; receives only lane PRs
  ├─ lane-1 / lane-2 / lane-3        one per lane, long-lived, owned by that lane's lead
- │    └─ lane-N/<task-id>           one per worker task, in its own worktree (section 11)
+ │    └─ lane-N-wt/<task-id>           one per worker task, in its own worktree (section 11)
  └─ tags: cp-0, cp-1, cp-2, cp-3    checkpoints; the fallback video is recorded from a tag
 ```
 
@@ -612,7 +612,7 @@ Each lane is **one lead session** that the lane's human commands, running **suba
 
 - Each worker task gets its own branch and worktree, created by the lead from the current lane branch, **with a sparse checkout** so the worktree holds only what Nexus work needs, not the whole VS Code source:
   ```
-  git worktree add --no-checkout ../nexus-wt/<task-id> -b lane-N/<task-id> lane-N
+  git worktree add --no-checkout ../nexus-wt/<task-id> -b lane-N-wt/<task-id> lane-N
   cd ../nexus-wt/<task-id>
   git sparse-checkout set extensions/nexus docs progress CLAUDE.md
   git checkout
@@ -642,7 +642,7 @@ Workers start with no memory of the lead's conversation, so every brief stands o
 
 ```
 TASK <id>: <one-line imperative title>
-LANE: lane-N    BRANCH: lane-N/<id>    WORKTREE: ../nexus-wt/<id> (sparse: extensions/nexus)
+LANE: lane-N    BRANCH: lane-N-wt/<id>    WORKTREE: ../nexus-wt/<id> (sparse: extensions/nexus)
 GOAL: <2-4 sentences: what exists when this is done, from the user's or caller's view>
 OWNS (may edit only these): <paths/globs under extensions/nexus>
 READ FIRST: CLAUDE.md sections <n>, src/contracts/<files>, <specific existing files>
@@ -663,7 +663,7 @@ REPORT (final message, exactly these headings):
 ### The lead's merge procedure, per task
 
 1. Run the brief's acceptance command and the lane's full unit suite inside the task's worktree. Red means it goes back to the worker with the output.
-2. Dispatch a **reviewer** with only the brief, `git diff lane-N...lane-N/<id>`, and the test output. The reviewer answers `confirmed` or `disputed`, with notes. It checks:
+2. Dispatch a **reviewer** with only the brief, `git diff lane-N...lane-N-wt/<id>`, and the test output. The reviewer answers `confirmed` or `disputed`, with notes. It checks:
    - the diff stays inside OWNS;
    - it does what GOAL says, for the contracts named, including their semantics notes (section 5);
    - the tests exercise real behavior: no deleted, skipped, or weakened tests, no mocking the very thing under test, no special-casing of the test environment;
@@ -671,7 +671,7 @@ REPORT (final message, exactly these headings):
    - section 14's rails: no secret in code or logs, webviews never import Node or receive secrets, Slack and repo text treated as untrusted, agent tool calls still pass through the gate;
    - commit messages follow section 10.
 3. `disputed`: the notes go back to a worker (attempt 2), or to the human after attempt 2.
-4. `confirmed`: `git merge --no-ff lane-N/<id>` into `lane-N`, re-run the unit suite, push, then remove the worktree and delete the task branch.
+4. `confirmed`: `git merge --no-ff lane-N-wt/<id>` into `lane-N`, re-run the unit suite, push, then remove the worktree and delete the task branch.
 5. Update `progress/lane-N.md`.
 6. Before any PR to `main`: run the launch check in the main checkout (full fork compiles, launches, Nexus loads).
 
@@ -757,7 +757,7 @@ What the Repro git history showed, and what this file does about each:
 | What happened at ShellHacks | Rule here |
 |---|---|
 | Contracts were built about four times by three people (an early package, a "mirror" in another lane, a rebuild, then fix-ups), and copied code had to be deleted later. | One owner commits contracts and fixtures at hour 0; nobody branches until `cp-0`; workers can't touch contracts; fixtures remove any reason to mirror. |
-| The plan said four lanes; reality had `lane-4-fallback`, `lane-5`, and over a dozen `lane-5-*` branches. | Exactly three lane branches plus `lane-N/<task-id>` worker branches; the lane-going-dark rule replaces improvised fallback lanes. |
+| The plan said four lanes; reality had `lane-4-fallback`, `lane-5`, and over a dozen `lane-5-*` branches. | Exactly three lane branches plus `lane-N-wt/<task-id>` worker branches; the lane-going-dark rule replaces improvised fallback lanes. |
 | One shared progress log caused merge conflicts. | One progress file per lane, written only by that lane; per-lane contribution fragments instead of one shared `package.json` block. |
 | Commits appeared under a bare "Claude" author and a bot merged branches. | Commits use the human lane owner's identity; only lane leads merge, by PR. |
 | `CLAUDE.md` was untracked during the event, so each person had their own copy. | `CLAUDE.md` is tracked at the repo root from `cp-0`; personal notes go in a gitignored `CLAUDE.local.md`. |

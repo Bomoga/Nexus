@@ -31,7 +31,7 @@ describe("TasksController.createFromThread", () => {
     });
     expect(task.title).toBe("cart total ignores the discount when qty 1 see");
     expect(task.brief).toContain("> [slack thread, quoted, untrusted]");
-    expect(task.brief).toContain("Refs: src/cart.ts:42-48 @3f2a9c1e");
+    expect(task.brief).toContain("> [code refs] src/cart.ts:42-48 @3f2a9c1e");
     expect(await s.store.getTask(task.id)).toEqual(task);
   });
 

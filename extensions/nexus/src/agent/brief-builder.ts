@@ -9,7 +9,8 @@ export const QUOTE_HEADER = "[slack thread, quoted, untrusted]";
 export const TITLE_MAX = 60;
 export const QUOTE_MAX_CHARS = 16_000;
 const TRAILER = "Make the smallest change that fixes it, then run the tests before committing.";
-const SAFE_PATH = /^[\w./@+ -]{1,300}$/;
+const SAFE_PATH = /^[\w./@+-]{1,200}$/;
+const MAX_REFS_SHOWN = 8;
 
 export interface BuiltBrief {
   title: string;
@@ -70,16 +71,18 @@ export function buildBrief(thread: Thread): BuiltBrief {
       if (!seen.has(key)) { seen.add(key); refs.push(r); }
     }
   }
-  const shown = refs.filter(r => SAFE_PATH.test(r.path));
-  const refLine = shown.length > 0 ? `Refs: ${shown.map(r => `${r.path}:${r.startLine}-${r.endLine} @${r.commit.slice(0, 8)}`).join(", ")}` : undefined;
+  // A code ref's path comes from a Slack message, so it is untrusted too: it is shown on a quoted line, only when it is a
+  // plain path (no spaces or odd characters), and only a handful of them.
+  const shown = refs.filter(r => SAFE_PATH.test(r.path)).slice(0, MAX_REFS_SHOWN);
+  const refLine = shown.length > 0 ? `> [code refs] ${shown.map(r => `${r.path}:${r.startLine}-${r.endLine} @${r.commit.slice(0, 8)}`).join(", ")}` : undefined;
   const hidden = refs.length - shown.length;
 
   const brief = [
     `> ${QUOTE_HEADER}`,
     ...quoted,
-    "",
     ...(refLine ? [refLine] : []),
-    ...(hidden > 0 ? [`(${hidden} code reference${hidden === 1 ? "" : "s"} omitted: unusual path)`] : []),
+    "",
+    ...(hidden > 0 ? [`(${hidden} code reference${hidden === 1 ? "" : "s"} not shown)`] : []),
     TRAILER,
   ].join("\n");
 

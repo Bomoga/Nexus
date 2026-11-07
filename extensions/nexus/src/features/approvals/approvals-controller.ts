@@ -216,11 +216,17 @@ export class ApprovalsController implements ApprovalRequester {
     const sessionId = this.pending.get(approval.id);
     if (sessionId === undefined) return;                              // not ours: nothing to wake
     this.pending.delete(approval.id);
-    await this.deps.sessions.emit(sessionId, { type: "approval_resolved", approvalId: approval.id, decision });
-    // The session reads "running" again before the agent is woken, so no surface shows a working agent as waiting.
-    if (![...this.pending.values()].includes(sessionId)) await this.deps.sessions.setStatus(sessionId, "running");
-    this.deps.host.sendEvent("approval.resolved", { approvalId: approval.id, decision });
-    this.wake(approval.id, decision);
+    try {
+      await this.deps.sessions.emit(sessionId, { type: "approval_resolved", approvalId: approval.id, decision });
+      // The session reads "running" again before the agent is woken, so no surface shows a working agent as waiting.
+      if (![...this.pending.values()].includes(sessionId)) await this.deps.sessions.setStatus(sessionId, "running");
+      this.deps.host.sendEvent("approval.resolved", { approvalId: approval.id, decision });
+    } catch (e) {
+      // A store hiccup must never leave the agent waiting on a decision a human already made.
+      this.deps.log?.(`could not record the approval decision: ${e instanceof Error ? e.message : "unknown error"}`);
+    } finally {
+      this.wake(approval.id, decision);
+    }
   }
 
   private wake(approvalId: string, decision: Decision): void {

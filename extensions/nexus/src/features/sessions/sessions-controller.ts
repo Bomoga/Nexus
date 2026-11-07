@@ -157,14 +157,15 @@ export class SessionsController implements SessionEvents {
   /** ProcessHost.onSessionFinished */
   async onFinished(outcome: SessionFinished): Promise<void> {
     if (this.active?.session.id !== outcome.sessionId) return;
-    if (outcome.reason) await this.emit(outcome.sessionId, { type: "error", message: redact(outcome.reason) });
+    const reason = outcome.reason;
+    if (reason) await this.attempt("record the error", () => this.emit(outcome.sessionId, { type: "error", message: redact(reason) }));
     await this.finalize(outcome.sessionId, outcome.outcome);
   }
 
   /** ProcessHost.onSessionError: a crash loses the runtime's conversation, so the session fails rather than silently restarting. */
   async onProcessError(sessionId: string, message: string): Promise<void> {
     if (this.active?.session.id !== sessionId) return;
-    await this.emit(sessionId, { type: "error", message: redact(message) });
+    await this.attempt("record the error", () => this.emit(sessionId, { type: "error", message: redact(message) }));
     await this.finalize(sessionId, "failed");
   }
 

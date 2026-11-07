@@ -4,6 +4,8 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import type { ChatMessage } from "../../src/contracts";
+import { createBridgeClient } from "../shared";
+import { createFakeTransport } from "../shared/fakeBridge";
 import { App } from "./App";
 import { History } from "./History";
 import { confirms } from "./outbox";
@@ -249,6 +251,24 @@ describe("confirms", () => {
       confirms({ ...entry, confirmedTs: m.ts }, m),
       confirms({ ...entry, confirmedTs: m.ts }, { ...m, channelId: "C_BUILD" }),
     ]).toEqual([false, false, true, true, false]);
+  });
+});
+
+describe("against the kit's fake host", () => {
+  test("the fake echoes the clientId on the post reply and on the slack.subscribe copy; the send shows once", async () => {
+    const client = createBridgeClient(createFakeTransport({ liveIntervalMs: 0 }));
+    const seen: ChatMessage[] = [];
+    const off = client.subscribe("slack.subscribe", { channelIds: ["C_DEMO"] }, (evt) => {
+      if (evt.type === "message") seen.push(evt.message);
+    });
+    const { container } = render(<History bridge={client} channelId="C_DEMO" />);
+    await screen.findByText(/cart total ignores the discount/);
+    send("via the fake");
+    await waitFor(() => expect(seen).toHaveLength(1));
+    expect(seen[0].clientId).toMatch(/^nx-/);
+    await waitFor(() => expect(container.querySelector(".chat-row--pending")).toBeNull());
+    expect(screen.getAllByText("via the fake")).toHaveLength(1);
+    off();
   });
 });
 

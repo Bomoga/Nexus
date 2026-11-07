@@ -53,9 +53,10 @@ function buildHandlers(): Handlers {
     }),
     "slack.thread": () => thread,
     "slack.users": ({ ids }) => demoScenario.users.filter((u) => !ids || ids.includes(u.id)),
-    "slack.post": ({ channelId, text, threadTs }) => {
+    // Echoes the clientId on the reply (and on the slack.subscribe copy, see post below), as the real host does.
+    "slack.post": ({ channelId, text, threadTs, clientId }) => {
       const ts = slackTs();
-      return { id: `${channelId}:${ts}`, channelId, ts, threadTs, author: { id: "U_ADRIAN", name: "adrian", isBot: false }, text, codeRefs: [], sentVia: "user" };
+      return { id: `${channelId}:${ts}`, channelId, ts, threadTs, author: { id: "U_ADRIAN", name: "adrian", isBot: false }, text, codeRefs: [], sentVia: "user", clientId };
     },
     "tasks.createFromThread": () => ({ ...fx.task, status: "draft" }),
     "tasks.get": ({ taskId }) => tasks.find((t) => t.id === taskId) ?? fx.task,
@@ -120,6 +121,8 @@ export function createFakeTransport(opts: FakeOptions = {}): Transport {
   const handlers = buildHandlers() as unknown as Record<string, (body: unknown) => unknown>;
   const listeners = new Set<(env: Envelope) => void>();
   const timers = new Map<string, ReturnType<typeof setInterval>>();
+  // Open slack.subscribe subscriptions and their channels, so a post is delivered back like Slack would.
+  const slackSubs = new Map<string, string[]>();
   const emit = (env: Envelope) => queueMicrotask(() => listeners.forEach((l) => l(env)));
   const evt = (id: string, body: unknown) => emit({ t: "evt", id, body });
 
@@ -151,6 +154,7 @@ export function createFakeTransport(opts: FakeOptions = {}): Transport {
         break;
       }
       case "slack.subscribe": {
+        slackSubs.set(id, (body as { channelIds: string[] }).channelIds);
         evt(id, { type: "status", status: demoScenario.slackStatus });
         every(() => {
           const ts = slackTs();
@@ -185,10 +189,20 @@ export function createFakeTransport(opts: FakeOptions = {}): Transport {
         const parsed = def?.req.safeParse(env.body);
         if (!def || !handler) emit({ t: "res", id: env.id, ok: false, error: { code: "not_found", message: `unknown request ${env.name}` } });
         else if (!parsed?.success) emit({ t: "res", id: env.id, ok: false, error: { code: "invalid_request", message: "bad body" } });
-        else emit({ t: "res", id: env.id, ok: true, body: handler(parsed.data) });
+        else {
+          const body = handler(parsed.data);
+          emit({ t: "res", id: env.id, ok: true, body });
+          if (env.name === "slack.post") {
+            const message = body as ChatMessage;
+            slackSubs.forEach((channelIds, subId) => {
+              if (channelIds.includes(message.channelId)) evt(subId, { type: "message", message });
+            });
+          }
+        }
       } else if (env.t === "sub") {
         if (env.name in Subscriptions) startSubscription(env.id, env.name, env.body);
       } else if (env.t === "unsub") {
+        slackSubs.delete(env.id);
         const timer = timers.get(env.id);
         if (timer) clearInterval(timer);
         timers.delete(env.id);

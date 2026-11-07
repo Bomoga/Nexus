@@ -5,6 +5,7 @@ import { spawn as nodeSpawn, type ChildProcess, type SpawnOptions } from "node:c
 import { constants as osc } from "node:os";
 import type { AgentSession } from "../../contracts";
 import type { GitService } from "../git/types";
+import { binaryPathsInDiff } from "../git/worktrees";
 import { absolutePath, isAllowlisted, isGitBinary, splitCommand, tail, trimCutStart, trimCutEnd, windowsPlan } from "./commands";
 import { listTree, readCapped, resolveIn, writeFileAt } from "./fs";
 import type { ApprovalsHook, Gate, GateRequest, GateRequestName, GateResponse } from "./types";
@@ -132,10 +133,12 @@ export function createGate(deps: GateDeps): Gate {
     },
     "git.commit": async (session: AgentSession, body: GateRequest<"git.commit">): Promise<GateResponse<"git.commit">> => {
       const before = await deps.git.diff(session.worktreePath, session.baseCommit);
-      const approvalId = await ask(session, { kind: "commit", message: body.message }, "The agent wants to commit its changes.", deps.redact(before));
+      const binary = binaryPathsInDiff(before);
+      const preview = deps.redact(before) + (binary.length ? `\nbinary files: ${deps.redact(binary.join(", "))}\n` : "");
+      const approvalId = await ask(session, { kind: "commit", message: body.message }, "The agent wants to commit its changes.", preview);
       // The human approved this diff: commit only if it is still the diff.
       if ((await deps.git.diff(session.worktreePath, session.baseCommit)) !== before) throw new Error("the worktree changed during approval; the commit was refused");
-      return { sha: await deps.git.commitIn(session.worktreePath, body.message, session.id), approvalId };
+      return { sha: await deps.git.commitIn(session.worktreePath, body.message, session.id, before), approvalId };
     },
   };
 

@@ -188,7 +188,7 @@ describe("git", () => {
     expect(pending[0]!.diffPreview).toBe("+change\n");
     pending[0]!.resolve("approved");
     const r = await p;
-    expect(spy).toHaveBeenCalledWith(dir, "fix cart", session.id);
+    expect(spy).toHaveBeenCalledWith(dir, "fix cart", session.id, "+change\n");
     expect(r.approvalId).toBe("apr_1");
     expect(r.sha).toBe("a".repeat(40));
   });
@@ -314,6 +314,16 @@ describe("hardening", () => {
     pending[0]!.resolve("approved");
     expect(String(await p)).toMatch(/changed during approval/);
     expect(spy).not.toHaveBeenCalled();
+  });
+
+  it("lists binary files on the commit card", async () => {
+    git.setDiff(dir, "diff --git a/x.bin b/x.bin\nnew file mode 100644\nindex 0000000..1111111\nGIT binary patch\nliteral 1\n");
+    vi.spyOn(git, "commitIn").mockResolvedValue("d".repeat(40));
+    const p = gate().request(session, "git.commit", { message: "m" });
+    await flush();
+    expect(pending[0]!.diffPreview).toMatch(/\nbinary files: x\.bin\n$/);
+    pending[0]!.resolve("approved");
+    await p;
   });
 
   it("redacts the commit diffPreview", async () => {

@@ -6,9 +6,15 @@
 - L3-01 first drop (component stubs + fakeBridge) merged early at T+3:25 so L3-02/L3-08 could start
 - L3-01 shared kit (attempt 2 confirmed by review; merged T+4:00). Integration fixes at merge: chat tests import createFakeTransport from shared/fakeBridge; globe/chat local env.d.ts replaced by shared/env.d.ts; globe loads fixtures lazily so production bundles carry no demo data (checked: 0 demo strings in chat/globe main bundles).
 - Wave 1 verified in a browser on ?fake=1: globe renders 159 scripted events with no console errors; Slack view shows channels, history and the status line.
+- Lead: Slack and Approvals sidebar views declared in contributes/lane-3.json; package.json regenerated (contributes:check clean).
+- L3-03 globe arcs, activity rings, live inserts (attempt 2 disputed only for literal NUL bytes in model/arcs.ts; Elkin approved a lead fix: separators now "\n"; merged T+5).
+- L3-13 task editor (attempt 2 disputed only for §14 labels while the optimizer state is unknown; Elkin approved a lead fix: unknown optimizer ⇒ "data use unknown" + LEAVES MACHINE, fields locked during START, regression test proven to fail without the fix; merged T+5).
+- After both merges: 134 tests / 11 files, typechecks, lint, build of chat/globe/task, contributes:check all green; 0 fixture strings in production bundles; 0 NUL bytes. Browser check on ?fake=1: task editor renders; globe live count rises with cubes/diamonds on the activity rings.
 
 ## In flight
-- (none) — wave 2 next: L3-03 arcs/rings/live → L3-04 picking (one slot, sequential), L3-09 threads + composer, L3-13 task editor
+- L3-09 Slack threads + composer: attempt 2 disputed (unsent/failed echoes lost or shown with RETRY after a channel/thread switch or pane close; MAKE TASK result shown on the wrong thread). Waiting on Elkin's decision.
+- Next after L3-09: L3-04 globe picking + detail strip; then wave 4 (L3-05 search/tracking, L3-11 session view, L3-10 code refs).
+- Lead merge checklist now includes a NUL-byte scan (literal NULs slipped in twice and make git treat files as binary).
 - style.test.tsx is ready (13 tests, pass with css enabled) and parked at C:\dev\nexus-hello\pending\ until vitest.config.ts has `test.css: true`
 
 ## Follow-ups (from reviews, not yet scheduled)

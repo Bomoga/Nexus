@@ -2,7 +2,7 @@ import { useLayoutEffect, useMemo, useRef } from "react";
 import { MeshBasicMaterial, Object3D, SphereGeometry } from "three";
 import type { InstancedMesh } from "three";
 import type { NexusEvent, TimeWindow } from "../../../src/contracts";
-import { eventPoint, useInstancing } from "../model";
+import { eventPoint, shouldInstance } from "../model";
 import type { OrbitSpec } from "../model";
 import { PURPLE_HI } from "./colors";
 
@@ -38,7 +38,7 @@ export function Markers({ events, layout, now, window }: MarkersProps) {
     return out;
   }, [events, layout, now, window]);
 
-  return useInstancing(placed.length) ? <Instanced placed={placed} /> : <Individual placed={placed} />;
+  return shouldInstance(placed.length) ? <Instanced placed={placed} /> : <Individual placed={placed} />;
 }
 
 function Individual({ placed }: { placed: readonly Placed[] }) {

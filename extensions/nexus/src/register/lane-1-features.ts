@@ -11,6 +11,7 @@ import { secretKeyFor } from "../features/accounts/accounts-service";
 import type { ModelPicker } from "../features/accounts/model-picker";
 import { approvalsHookFor } from "../features/adapters/approvals-hook";
 import type { ApprovalHook, NotifyPort } from "../features/approvals/approvals-controller";
+import { makeConfiguredCibaHook } from "../features/approvals/ciba-wiring";
 import type { Auth0Session } from "../features/auth/auth0-signin";
 import { lane1Commands } from "../features/commands";
 import { composeLane1, type Lane1 } from "../features/compose";
@@ -85,6 +86,18 @@ export function registerFeatures(context: vscode.ExtensionContext, accounts: Acc
   const optimizer = new OptimizerService({ state: context.globalState, store: l2.store, getPruneKey: () => Promise.resolve(context.secrets.get(secretKeyFor("prune"))) });
   const entry = join(context.extensionPath, "out", "agent-process", "main.js");
 
+  // Phone approval (CIBA): inert unless nexus.ciba.serviceUrl is set and the user is signed in. The controller exists only after composeLane1, so it is reached lazily.
+  const ref: { lane?: Lane1 } = {};
+  const cibaHook = makeConfiguredCibaHook({
+    serviceUrl: () => vscode.workspace.getConfiguration("nexus.ciba").get<string>("serviceUrl", ""),
+    auth,
+    getController: () => {
+      if (!ref.lane) throw new Error("approvals are not ready yet");
+      return ref.lane.approvals;
+    },
+    log,
+  });
+
   const lane = composeLane1({
     store: l2.store, git: l2.git, slack: l2.slack, clock, machineId: vscode.env.machineId,
     makeGate: approvals => l2.makeGate(approvalsHookFor(approvals)) as GatePort,
@@ -98,8 +111,10 @@ export function registerFeatures(context: vscode.ExtensionContext, accounts: Acc
     identity,
     workspaceId: () => `ws_${(vscode.workspace.workspaceFolders?.[0]?.name ?? "default").toLowerCase().replace(/[^a-z0-9]+/g, "_")}`,
     agentModel: () => picker.selected("agent"),
-    auth, extraApprovalHooks: l2.approvalHooks, log,
+    auth, extraApprovalHooks: [...l2.approvalHooks, cibaHook], log,
   });
+
+  ref.lane = lane;
 
   const ui = {
     info: (m: string) => void vscode.window.showInformationMessage(m),

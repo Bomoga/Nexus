@@ -98,7 +98,8 @@ describe("bridgeClient", () => {
     // @ts-expect-error channelIds must be an array
     expect(() => createBridgeClient(transport).subscribe("slack.subscribe", { channelIds: "C1" }, (e) => got.push(e))).toThrow(BridgeError);
     expect(posted).toEqual([]);
-    push({ t: "evt", id: "s1", body: { type: "status" } });
+    // A schema-valid event: if a dead subscription had been registered, it would deliver this.
+    push({ t: "evt", id: "s1", body: { type: "status", status: { connected: true, postsAs: null, userTokenSource: "none", botName: "b" } } });
     expect(got).toEqual([]);
   });
 

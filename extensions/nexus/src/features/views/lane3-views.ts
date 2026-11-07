@@ -7,6 +7,7 @@ export const HOME_PANEL = "nexus.home";
 export const TIMELINE_PANEL = "nexus.timeline";
 export const SESSION_PANEL = "nexus.session";
 export const TASK_PANEL = "nexus.task";
+export const PLAN_PANEL = "nexus.plan";
 export const CHAT_VIEW = "nexus.chat";
 export const APPROVALS_VIEW = "nexus.approvals";
 
@@ -49,6 +50,7 @@ export class Lane3Views {
   private timeline: PanelLike | undefined;
   private readonly sessions = new Map<string, PanelLike>();
   private readonly tasks = new Map<string, PanelLike>();
+  private readonly plans = new Map<string, PanelLike>();
 
   constructor(private readonly deps: Lane3Deps) {}
 
@@ -97,6 +99,15 @@ export class Lane3Views {
       return;
     }
     this.keyed(this.tasks, taskId, TASK_PANEL, "task", "Task", "task-id");
+  }
+
+  /** A TaskPlan review panel (no command yet: Lane 1 calls this when a plan is proposed). One panel per plan id. */
+  openPlan(planId: string): void {
+    if (!isPanelId(planId)) {
+      this.deps.showError("Can't open the plan: invalid plan id.");
+      return;
+    }
+    this.keyed(this.plans, planId, PLAN_PANEL, "plan", "Plan", "plan-id");
   }
 
   dispose(): void {

@@ -34,7 +34,7 @@ function setup(overrides: Overrides = {}) {
       void Promise.resolve(o(env.body)).then((r) => {
         const failed = typeof r === "object" && r !== null && "ok" in r && (r as { ok: unknown }).ok === false;
         const res: Envelope = failed
-          ? { t: "res", id: env.id, ok: false, error: { code: ((r as { code?: string }).code ?? "invalid_request") as "invalid_request", message: (r as { message: string }).message } }
+          ? { t: "res", id: env.id, ok: false, error: { code: ((r as unknown as { code?: string }).code ?? "invalid_request") as "invalid_request", message: (r as unknown as { message: string }).message } }
           : { t: "res", id: env.id, ok: true, body: r };
         handlers.forEach((h) => h(res));
       });

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ChatMessage } from "../../src/contracts";
-import { Button, EmptyState, StatusLine, getBridge } from "../shared";
+import { Button, EmptyState, StatusLine, friendlyError, getBridge } from "../shared";
 import type { BridgeClient } from "../shared";
 import { Composer, EchoBar, echoClass } from "./Composer";
 import { mergeMessages, usePostsAs, useSlackLive, useUsers } from "./live";
@@ -31,6 +31,7 @@ export function ThreadPane({ bridge, channelId, threadTs, onClose, onOpenLink, r
   // Slack's copies only; open sends come from the outbox (see useOutboxRows).
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [load, setLoad] = useState<Load>("loading");
+  const [loadFailure, setLoadFailure] = useState("");
   const [attempt, setAttempt] = useState(0);
   // MAKE TASK state per thread: a result lands on the thread that asked, never on the one open later.
   const [makes, setMakes] = useState<Record<string, Make>>({});
@@ -60,7 +61,11 @@ export function ThreadPane({ bridge, channelId, threadTs, onClose, onOpenLink, r
         setMessages((cur) => mergeMessages(t.messages, cur));
         setLoad("ready");
       })
-      .catch(() => live && setLoad("failed"));
+      .catch((e: unknown) => {
+        if (!live) return;
+        setLoadFailure(friendlyError(e, "slack"));
+        setLoad("failed");
+      });
     return () => {
       live = false;
     };
@@ -110,7 +115,7 @@ export function ThreadPane({ bridge, channelId, threadTs, onClose, onOpenLink, r
       {make === "done" ? <StatusLine tone="ok">task drafted</StatusLine> : null}
       {make === "failed" ? <StatusLine tone="error">could not make a task</StatusLine> : null}
       {load === "failed" ? (
-        <EmptyState message="could not load thread" action={{ label: "RETRY", onClick: () => setAttempt((n) => n + 1) }} />
+        <EmptyState message={loadFailure} action={{ label: "RETRY", onClick: () => setAttempt((n) => n + 1) }} />
       ) : (
         <div
           ref={scroller}

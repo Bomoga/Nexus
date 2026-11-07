@@ -335,7 +335,7 @@ describe("echo matching and drafts", () => {
       },
     });
     render(<History bridge={host.client} channelId="C_DEMO" />);
-    await screen.findByText("could not load history");
+    await screen.findByText(/^slack/);
     expect(screen.queryByRole("textbox")).toBeNull();
   });
 

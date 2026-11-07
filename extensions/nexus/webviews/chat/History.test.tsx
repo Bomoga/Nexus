@@ -190,7 +190,7 @@ describe("History", () => {
       },
     }).client;
     render(<History bridge={client} channelId="C1" />);
-    await screen.findByText("could not load history");
+    await screen.findByText(/^slack/);
     fail = false;
     fireEvent.click(screen.getByText("RETRY"));
     await screen.findByText("message 1");

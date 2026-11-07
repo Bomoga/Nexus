@@ -198,6 +198,23 @@ describe("CibaClient", () => {
     expect(await run(client)).toEqual({ status: "no_answer", reason: "timeout" });
   });
 
+  it("never sleeps past the deadline, even when Retry-After is huge", async () => {
+    const { client, sleeps } = setup([json(start), new Response("{}", { status: 429, headers: { "retry-after": "3600" } }), json({ status: "pending" })], { timeoutMs: 10_000 });
+    expect(await run(client)).toEqual({ status: "no_answer", reason: "timeout" });
+    expect(Math.max(...sleeps)).toBeLessThanOrEqual(10_000);
+  });
+
+  it("gives up after repeated malformed 200 responses", async () => {
+    const weird = () => json({ status: "weird" });
+    const { client, calls } = setup([json(start), weird(), weird(), weird(), weird(), weird()]);
+    expect(await run(client)).toEqual({ status: "no_answer", reason: "error" });
+    expect(calls.filter(c => c.url.endsWith("/ciba/poll")).length).toBeLessThanOrEqual(3);
+  });
+
+  it("keeps a session part in the label even for an id with no allowed characters", () => {
+    expect(bindingMessage({ ...approval, sessionId: "éè!!" }).endsWith(" _")).toBe(true);
+  });
+
   it("fetches a fresh access token per call", async () => {
     let n = 0;
     const { client, calls } = setup([json(start), json({ status: "pending" }), json({ status: "rejected" })], { getAccessToken: async () => `t${++n}` });

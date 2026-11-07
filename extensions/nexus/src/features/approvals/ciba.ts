@@ -41,7 +41,7 @@ export const LABEL_MAX = 20;
 
 /** Short action word + last 8 characters of the session id (no model-written text); always at most 20 characters. */
 export function bindingMessage(approval: Pick<ApprovalRequest, "sessionId" | "action">): string {
-  const session = approval.sessionId.replace(/[^A-Za-z0-9_.,:#-]/g, "").slice(-8);
+  const session = approval.sessionId.replace(/[^A-Za-z0-9_.,:#-]/g, "").slice(-8) || "_";
   return `${ACTION_WORD[approval.action.kind]} ${session}`.slice(0, LABEL_MAX);
 }
 
@@ -98,7 +98,7 @@ export class CibaClient {
       const deadline = begun + Math.min(this.deps.timeoutMs ?? 5 * 60_000, expiresMs);
       let failures = 0;
       for (;;) {
-        await sleep(intervalMs, signal);
+        await sleep(Math.max(0, Math.min(intervalMs, deadline - now())), signal);   // never wait past the deadline
         const halt = await stop();
         if (halt) return halt;
         if (now() >= deadline) return NO("timeout");
@@ -116,9 +116,9 @@ export class CibaClient {
           if (++failures >= maxFailures) return NO("error");
           continue;
         }
-        failures = 0;
         switch (polled.data.status) {
           case "pending":
+            failures = 0;
             if (typeof polled.data.retryAfter === "number" && polled.data.retryAfter > 0) intervalMs = polled.data.retryAfter * 1000;
             break;
           case "expired": return NO("expired");

@@ -16,14 +16,35 @@ import type { LocalStore, OutboxEntry } from "./local-store";
 import type { DecideResult, EventStore, StatusEvent, StoreStatus, Unsubscribe } from "./store";
 import { isTransientError } from "./tiger-store";
 
+/** What a remote must offer for owner decisions to converge (TigerStore does). Without it a lost owner decision is only corrected locally. */
+export interface DecisionOverride {
+  overrideDecision(id: string, decision: "approved" | "rejected", decidedBy: DecidedBy, at: string): Promise<ApprovalRequest>;
+}
+
+/**
+ * Thrown by decideApproval when the shared store cannot answer and this machine is not the one running the session's agent.
+ * Nothing was decided anywhere. `code` is "offline".
+ */
+export class ApprovalOfflineError extends Error {
+  readonly code = "offline";
+  constructor() { super("The shared store is unreachable; only the machine running this agent can decide while offline."); }
+}
+
 export interface CombinedStoreOptions {
+  /** This machine's id. It owns a session (and so its approvals) when it equals the session's `machineId`. */
+  machineId: string;
   local: LocalStore;
-  remote: EventStore;
+  remote: EventStore & Partial<DecisionOverride>;
   /** How long a remote read may take before the local copy answers instead. Default 1500. */
   readBudgetMs?: number;
   /** How long a remote write may take before it counts as failed (and stays queued). Default 10000. */
   writeBudgetMs?: number;
-  /** How long the remote conditional UPDATE for an approval decision may take before the decision falls back to local. Default 5000. */
+  /**
+   * How long the remote conditional UPDATE for an approval decision may take before this machine stops waiting. Default 11000:
+   * longer than the Tiger pool's own 10 s query_timeout, so a query the pool would itself fail reports that failure instead of
+   * us giving up on an UPDATE that may still be applying. Shorter budgets are allowed (tests), but each timeout leaves the UPDATE
+   * in flight; its late result is reconciled either way.
+   */
   decideBudgetMs?: number;
   now?: () => string;
 }
@@ -64,10 +85,12 @@ const ms = (iso: string) => Date.parse(iso);
 
 export class CombinedStore implements EventStore {
   private readonly local: LocalStore;
-  private readonly remote: EventStore;
+  private readonly remote: EventStore & Partial<DecisionOverride>;
   private readonly readBudget: number;
   private readonly writeBudget: number;
   private readonly decideBudget: number;
+  private readonly machineId: string;
+  private deadLetterListeners = new Set<(letter: DeadLetter) => void>();
   private deadLetterList: DeadLetter[] = [];
   private readonly now: () => string;
 
@@ -82,7 +105,8 @@ export class CombinedStore implements EventStore {
     this.remote = opts.remote;
     this.readBudget = opts.readBudgetMs ?? 1500;
     this.writeBudget = opts.writeBudgetMs ?? 10_000;
-    this.decideBudget = opts.decideBudgetMs ?? 5000;
+    this.decideBudget = opts.decideBudgetMs ?? 11_000;
+    this.machineId = opts.machineId;
     this.now = opts.now ?? (() => new Date().toISOString());
   }
 
@@ -131,33 +155,103 @@ export class CombinedStore implements EventStore {
 
   /**
    * Always tries the remote conditional UPDATE first, whatever the cached online flag says: a slow read must never turn decisions
-   * local-only, because only the remote UPDATE makes the first answer win across machines. Only when that attempt itself fails
-   * does it fall back to decideWhenRemoteUnreachable.
+   * local-only, because only the remote UPDATE makes the first answer win across machines. When the remote answers, that answer
+   * is final and mirrored locally. When it cannot (unreachable, over budget, row missing or unparseable), see
+   * decideWhenRemoteUnreachable. An UPDATE that is over budget keeps running; its late answer is reconciled when it settles.
    */
   async decideApproval(id: string, decision: "approved" | "rejected", decidedBy: DecidedBy, at: string): Promise<DecideResult> {
+    const attempt = this.attemptRemoteDecide(id, decision, decidedBy, at);
     let result: DecideResult | undefined;
+    let overBudget = false;
     try {
-      await this.sendPendingApprovalPuts(id);   // the approval must exist remotely; unrelated backlog is not waited for
-      result = await withBudget(this.remote.decideApproval(id, decision, decidedBy, at), this.decideBudget);
+      result = await withBudget(attempt, this.decideBudget);
       this.setOnline(true);
     } catch (err) {
+      overBudget = err instanceof BudgetExceeded;
       if (isTransientError(err)) this.setOnline(false);
     }
     if (result) {
-      await this.mirrorApproval(result.approval);
+      await this.reconcileAnswer(result);
+      this.schedule();   // the remote is reachable: send the backlog
       return { approval: clone(result.approval), won: result.won };
     }
-    return this.decideWhenRemoteUnreachable(id, decision, decidedBy, at);
+    const fallback = this.decideWhenRemoteUnreachable(id, decision, decidedBy, at);
+    if (overBudget) {
+      // The UPDATE may still land. Once the local fallback has finished (an owner's local decision must exist before we
+      // compare), take its late answer into account.
+      void Promise.allSettled([attempt, fallback]).then(async ([late]) => {
+        if (late.status === "fulfilled") await this.reconcileAnswer(late.value);
+      }).catch(() => undefined);
+    } else {
+      attempt.catch(() => undefined);
+    }
+    return fallback;
+  }
+
+  private async attemptRemoteDecide(id: string, decision: "approved" | "rejected", decidedBy: DecidedBy, at: string): Promise<DecideResult> {
+    await this.sendPendingApprovalPuts(id);   // the approval must exist remotely; unrelated backlog is not waited for
+    return this.remote.decideApproval(id, decision, decidedBy, at);
   }
 
   /**
-   * POLICY POINT. The remote could not decide (unreachable, timed out, or it does not know the approval). Today the decision is
-   * made locally and queued; if it loses remotely later, the flush corrects the local copy. Swap this function to change the policy.
+   * POLICY POINT. The remote could not decide. The machine running the session's agent is the final authority for that session's
+   * approvals, so an agent never acts on a decision that can later lose:
+   *  - the OWNER decides locally (that wakes its agent) and queues the decision; if Tiger holds a different one when it flushes,
+   *    the owner's decision is written over it, so every machine converges on what the agent did;
+   *  - anyone else decides nothing, anywhere, and gets an ApprovalOfflineError.
+   * Swap this function to change the policy.
    */
   private async decideWhenRemoteUnreachable(id: string, decision: "approved" | "rejected", decidedBy: DecidedBy, at: string): Promise<DecideResult> {
+    if (!(await this.isOwner(id))) throw new ApprovalOfflineError();
     const r = await this.local.decideApproval(id, decision, decidedBy, at);
     const corrected = this.corrected(r.approval);
     return { approval: corrected, won: r.won && corrected === r.approval };
+  }
+
+  /** True when this machine runs the approval's session. Looks the approval and session up locally, then remotely; unknown means no. */
+  private async isOwner(approvalId: string): Promise<boolean> {
+    const approval = (await this.local.getApproval(approvalId)) ?? (await this.lookupRemote(() => this.remote.getApproval(approvalId)));
+    if (!approval) return false;
+    const session = (await this.local.getSession(approval.sessionId)) ?? (await this.lookupRemote(() => this.remote.getSession(approval.sessionId)));
+    return session?.machineId === this.machineId;
+  }
+
+  /** A remote lookup that never throws and never touches the online flag. */
+  private async lookupRemote<T>(fn: () => Promise<T>): Promise<T | undefined> {
+    try { return await withBudget(fn(), this.readBudget); } catch { return undefined; }
+  }
+
+  /**
+   * Takes the remote's answer for an approval into the local copy. The owner is the exception: if its agent already acted on a local
+   * decision that differs from the remote winner, the owner's decision is written over the winner instead of adopting it.
+   */
+  private async reconcileAnswer(result: DecideResult): Promise<void> {
+    const winner = result.approval;
+    const local = await this.local.getApproval(winner.id);
+    if (local?.decision && winner.decision) {
+      if (local.decision === winner.decision) {
+        this.ackDecideEntries(winner.id);   // Tiger holds the decision the agent acted on; the queued copy is redundant
+        return;
+      }
+      const override = this.remote.overrideDecision?.bind(this.remote);
+      if (override && local.decidedBy && local.decidedAt && await this.isOwner(winner.id)) {
+        await withBudget(override(winner.id, local.decision, local.decidedBy, local.decidedAt), this.writeBudget);
+        this.ackDecideEntries(winner.id);
+        return;
+      }
+    }
+    await this.mirrorApproval(winner);
+  }
+
+  private ackDecideEntries(approvalId: string): void {
+    const ids = this.local.pendingOutbox().filter(e => e.table === "approvals" && e.op === "decide" && recordKey(e.table, e.record) === approvalId).map(e => e.id);
+    if (ids.length) this.local.ackOutbox(ids, this.now());
+  }
+
+  /** Called with each write the remote refused for good (so the lead can notify). Returns an unsubscribe. */
+  onDeadLetter(listener: (letter: DeadLetter) => void): Unsubscribe {
+    this.deadLetterListeners.add(listener);
+    return () => { this.deadLetterListeners.delete(listener); };
   }
 
   // ---- events ----
@@ -258,19 +352,22 @@ export class CombinedStore implements EventStore {
    * remote refuses for good is recorded as a dead letter and removed, so it cannot stall everything behind it. Returns whether it was sent.
    */
   private async deliver(entry: OutboxEntry): Promise<boolean> {
-    let decided: DecideResult | undefined;
     try {
-      decided = await withBudget(this.send(entry), this.writeBudget);
+      const decided = await withBudget(this.send(entry), this.writeBudget);
+      // A decision queued while the remote was unreachable lost: the owner's overrides it, anyone else adopts the winner.
+      // Done before the ack so a transient failure of the override leaves the entry queued.
+      if (decided && !decided.won) await withBudget(this.reconcileAnswer(decided), this.writeBudget);
     } catch (err) {
       if (isTransientError(err)) throw err;
       const code = (err as { code?: unknown } | null)?.code;
-      this.deadLetterList.push({ table: entry.table, op: entry.op, key: recordKey(entry.table, entry.record), reason: typeof code === "string" ? code : "rejected", at: this.now() });
+      const letter: DeadLetter = { table: entry.table, op: entry.op, key: recordKey(entry.table, entry.record), reason: typeof code === "string" ? code : "refused", at: this.now() };
+      this.deadLetterList.push(letter);
       if (this.deadLetterList.length > 100) this.deadLetterList.shift();
       this.local.ackOutbox([entry.id], this.now());
+      for (const l of [...this.deadLetterListeners]) safely(() => l({ ...letter }));
       return false;
     }
     this.local.ackOutbox([entry.id], this.now());
-    if (decided && !decided.won) await this.mirrorApproval(decided.approval);   // a decision made offline lost: take the winner's
     return true;
   }
 

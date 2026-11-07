@@ -73,6 +73,10 @@ ON CONFLICT (id) DO UPDATE SET
   decideApproval: `UPDATE approvals SET decision = $2, decided_by = $3::jsonb, decided_at = $4::timestamptz
 WHERE id = $1 AND decision IS NULL
 RETURNING *`,
+  // Owner decisions only (see TigerStore.overrideDecision): unlike decideApproval it has no "decision IS NULL" guard.
+  overrideDecision: `UPDATE approvals SET decision = $2, decided_by = $3::jsonb, decided_at = $4::timestamptz
+WHERE id = $1
+RETURNING *`,
   upsertReview: `INSERT INTO swarm_reviews (id, session_id, approval_id, swarm_type, status, verdict, summary, judges, at, duration_ms, data_left_machine)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::timestamptz, $10, $11)
 ON CONFLICT (id) DO UPDATE SET session_id = EXCLUDED.session_id, approval_id = EXCLUDED.approval_id, swarm_type = EXCLUDED.swarm_type,
@@ -130,6 +134,10 @@ export function isTransientError(err: unknown): boolean {
 
 /** A failure that retrying cannot fix (a row that does not parse, an approval that does not exist). */
 export class PermanentStoreError extends Error {}
+/** The approval has no row at all. */
+export class ApprovalNotFoundError extends PermanentStoreError { readonly code = "approval_not_found"; }
+/** The approval has a row, but it does not parse against the contract (so nothing can safely act on it). */
+export class ApprovalUnparseableError extends PermanentStoreError { readonly code = "approval_unparseable"; }
 const json = (value: unknown): string | null => (value === undefined || value === null ? null : JSON.stringify(value));
 const orNull = <T>(value: T | undefined): T | null => (value === undefined ? null : value);
 
@@ -208,18 +216,37 @@ export class TigerStore implements EventStore {
   async getApproval(id: string) { return (await this.rowsOf(SQL.selectApproval, [id], r => this.approvalOf(r)))[0]; }
   async listApprovals() { return this.rowsOf(SQL.listApprovals, [], r => this.approvalOf(r)); }
 
-  /** First answer wins: the conditional UPDATE sets the decision only while undecided; otherwise the existing winner is returned. */
+  /**
+   * First answer wins: the conditional UPDATE sets the decision only while undecided; otherwise the existing winner is returned.
+   * Throws ApprovalNotFoundError (no such row) or ApprovalUnparseableError (a row exists but does not parse) -- two different
+   * problems, and neither is a reason for anyone but the session's owner to decide on their own.
+   */
   async decideApproval(id: string, decision: "approved" | "rejected", decidedBy: DecidedBy, at: string): Promise<DecideResult> {
     const res = await this.run(SQL.decideApproval, [id, decision, json(decidedBy), at]);
     if (res.rowCount === 1) {
       const approval = this.approvalOf(res.rows[0]);
-      if (!approval) throw new PermanentStoreError(`approval ${id} was decided but its row does not parse`);
+      if (!approval) throw new ApprovalUnparseableError(`approval ${id} was decided but its row does not parse`);
       this.emitApproval(approval);
       return { approval, won: true };
     }
-    const winner = await this.getApproval(id);
-    if (!winner) throw new PermanentStoreError(`unknown approval ${id}`);
+    const rows = (await this.run(SQL.selectApproval, [id])).rows;
+    if (rows.length === 0) throw new ApprovalNotFoundError(`unknown approval ${id}`);
+    const winner = this.approvalOf(rows[0]);
+    if (!winner) throw new ApprovalUnparseableError(`approval ${id} exists but its row does not parse`);
     return { approval: winner, won: false };
+  }
+
+  /**
+   * Writes a decision over whatever is there. ONLY for the owner of an approval's session: the machine whose agent has already
+   * acted on this decision, so that every machine converges on what the agent actually did. Never call it for anyone else.
+   */
+  async overrideDecision(id: string, decision: "approved" | "rejected", decidedBy: DecidedBy, at: string): Promise<ApprovalRequest> {
+    const res = await this.run(SQL.overrideDecision, [id, decision, json(decidedBy), at]);
+    if (res.rowCount !== 1) throw new ApprovalNotFoundError(`unknown approval ${id}`);
+    const approval = this.approvalOf(res.rows[0]);
+    if (!approval) throw new ApprovalUnparseableError(`approval ${id} was overridden but its row does not parse`);
+    this.emitApproval(approval);
+    return approval;
   }
 
   // ---- events ----

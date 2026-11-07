@@ -7,7 +7,7 @@ import { CODEREF_SCHEME } from "../../contracts";
 
 export interface Disposable { dispose(): void }
 
-/** Receives the normalized nexus://<route>/... string. Returns false if it did not act. */
+/** Receives the normalized nexus://<route>/... string, path segments percent-encoded (decode each once). Returns false if it did not act. */
 export type UriRouteHandler = (uri: string) => boolean | void | Promise<boolean | void>;
 
 const EXTENSION_ID = "nexus.nexus";

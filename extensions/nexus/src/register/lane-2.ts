@@ -5,6 +5,7 @@ import { registerAppPing } from "../bridge/host";
 import { handleAuthUri } from "../features/auth/current";
 import { redact } from "../shared/redact";
 import { checkRelativePath, CodeRefError } from "../services/coderef/create";
+import { plainNotificationText } from "../services/coderef/notify-text";
 import { UriRouter } from "../services/coderef/uri-handler";
 import { LocalStore } from "../services/events/local-store";
 import { GitCli } from "../services/git/git-cli";
@@ -85,7 +86,7 @@ export function registerLane2(context: vscode.ExtensionContext): Lane2Wiring {
 
   // Code references: nexus:// links from Slack or anywhere else, and the command. A link that cannot be opened says why.
   const showCodeRefFailure = (e: unknown) => {
-    void vscode.window.showErrorMessage(e instanceof CodeRefError ? `Nexus: ${e.message}` : "Nexus: could not open that code reference.");
+    void vscode.window.showErrorMessage(e instanceof CodeRefError ? `Nexus: ${plainNotificationText(e.message)}` : "Nexus: could not open that code reference.");
     if (!(e instanceof CodeRefError)) log("code reference open failed", e instanceof Error ? e.name : undefined);
   };
   context.subscriptions.push(
@@ -137,12 +138,12 @@ export function registerLane2(context: vscode.ExtensionContext): Lane2Wiring {
       await lane2.slack.stop();
       await startSlack();
       const s = await lane2.slack.status();
-      void vscode.window.showInformationMessage(s.postsAs ? `Nexus: Slack connected; you post as ${s.postsAs.name}.` : "Nexus: Slack tokens saved, but the user token could not be verified.");
+      void vscode.window.showInformationMessage(s.postsAs ? `Nexus: Slack connected; you post as ${plainNotificationText(s.postsAs.name)}.` : "Nexus: Slack tokens saved, but the user token could not be verified.");
     }),
     vscode.commands.registerCommand("nexus.showIdentity", async () => {
       const s = await lane2.slack.status();
       void vscode.window.showInformationMessage(s.postsAs
-        ? `Nexus posts what you type as ${s.postsAs.name} (${s.userTokenSource} token). Live events: ${s.connected ? "connected" : "not connected"}.`
+        ? `Nexus posts what you type as ${plainNotificationText(s.postsAs.name)} (${s.userTokenSource} token). Live events: ${s.connected ? "connected" : "not connected"}.`
         : "Nexus has no verified Slack user token: run Nexus: Connect Slack.");
     }),
   );
@@ -182,9 +183,9 @@ function makeCodeRefEditor(context: vscode.ExtensionContext, folder: vscode.Work
     openAtCommit: (commit, path, startLine, endLine) => show(vscode.Uri.from({ scheme: AT_COMMIT_SCHEME, path: `/${path}`, query: commit }), startLine, endLine),
     offerCurrent: (path, startLine, endLine) => {
       void (async () => {
-        const choice = await vscode.window.showInformationMessage(`Nexus: showing ${path} as it was when it was shared; it has changed since.`, "Open Current Version");
+        const choice = await vscode.window.showInformationMessage(`Nexus: showing ${plainNotificationText(path)} as it was when it was shared; it has changed since.`, "Open Current Version");
         if (choice === "Open Current Version") {
-          try { await openLive(path, startLine, endLine); } catch { void vscode.window.showErrorMessage(`Nexus: ${path} is not in the working copy.`); }
+          try { await openLive(path, startLine, endLine); } catch { void vscode.window.showErrorMessage(`Nexus: ${plainNotificationText(path)} is not in the working copy.`); }
         }
       })();
     },

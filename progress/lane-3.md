@@ -13,8 +13,9 @@
 
 - Morning run (scheduled, Elkin asleep): merged origin/main into lane-3 (35 lane-2 commits: bridge router + webview host, slack web client, local event store) — clean, 291 tests green, pushed.
 
-## Blocked — DECISION FOR ELKIN: L3-09 (Slack threads + composer)
-- Not merged. Branch lane-3-wt/L3-09, worktree C:\dev\nexus-wt\L3-09. Commits: 085b63ed (attempt 1), dd52edc0 (attempt 2), 7a988ac1 (approved fix round: app-owned outbox store, MAKE TASK keyed by thread). All 129 tests pass; the four bugs from last night are fixed for their tested scenarios (their regression tests fail on dd52edc0).
+## L3-09 (Slack threads + composer): attempt 2 MERGED (Elkin chose option A in the morning)
+- Merged dd52edc0 into lane-3 (7f26b4f6). The only conflict was chat.css, where both L3-09 and L3-10 had appended rules; kept both, and fixed the 10 px bot label to the 11 px token. 985 tests green. The worktree is removed; branch lane-3-wt/L3-09 is kept (7a988ac1 has the outbox-store ideas) for the clientId redo once PR #9 is on main.
+- History of the decision, kept for the redo. Commits: 085b63ed (attempt 1), dd52edc0 (attempt 2), 7a988ac1 (approved fix round: app-owned outbox store, MAKE TASK keyed by thread). All 129 tests pass; the four bugs from last night are fixed for their tested scenarios (their regression tests fail on dd52edc0).
 - The fix round was DISPUTED (Opus reviewer, reproduced with probes in a scratch copy):
   1. NEW silent loss (regression vs dd52edc0): dropConfirmed (live.ts:157-167) matches identity + text with no ts bound, so an OLDER message of ours with the same text ("ok", "thanks") deletes a genuinely failed send and its RETRY — on return to the channel, or even with no navigation when the page loads after the failure. Fix: only our own copy with ts ≥ the echo's send time (minus skew) confirms it, one copy confirms at most one echo.
   2. Bug (b) still open for restored PENDING echoes: Slack delivers while away, user returns, pending echo shown beside the real message; the 30 s timeout then turns it into RETRY → double post.
@@ -34,7 +35,8 @@
 
 - Poll at ~T+12: merged origin/main (Lane 1 PR #10: swarm review reads the council's judge turns, auth callback routed to the extension id). Clean, with no shared-file changes. 878 tests / 59 files, typechecks, build, contributes:check green; pushed.
 
-## NEEDS ELKIN: Lane 1 contracts change waiting (branch origin/lane-1-contracts, commit 322a386a, Adrian)
+## Lane 1 contracts change: PR #9 (https://github.com/Bomoga/Nexus/pull/9) APPROVED by Elkin; waiting on Brandon's approval and the merge
+- Test-merged into lane-3: 950 tests pass. One follow-up for us when it lands: webviews/shared/fakeBridge.ts needs a `"ui.openExternal": () => ({})` handler, or the webview typecheck fails.
 - It adds an optional `clientId` on ChatMessage (the host echoes the sender's id) and `ui.openExternal` {url: https only}, which are our two asks. It also moves nexus:// links to the `nexus.nexus` authority (old links are still read), makes decodeCodeRef non-throwing, and maps `lane-N-wt/<id>` branches to orbit lane-N.
 - Contract PRs need both other engineers' approval (CODEOWNERS), so Elkin has to review and approve it. I couldn't check whether a PR is open (gh isn't on this shell's PATH).
 - Once it's on main, it unblocks: L3-09's robust fix (match pending echoes by clientId instead of guessing; makes options B/C viable), chat links opening via ui.openExternal, and receipt OPEN (the Prune verify URL).
@@ -47,12 +49,16 @@
 
 - Poll at ~T+14: merged origin/main (Lane 2: Vite webview host, git interface + fake, nexus:// URI router, code-ref links with the extension-id authority, store test fixes). Clean. 946 tests / 65 files, typechecks, build of all six views, contributes:check green; pushed. No new Lane 3 tasks started: waves 4-5 are done except L3-15 (skipped), and the approval-conflict fix below is waiting on Elkin.
 
-## FIX BEFORE THE DEMO — approval conflicts in views merged earlier (found by the L3-12 review)
-- The real host (src/features/approvals/approvals-controller.ts:265 + wire-bridge.ts:8) answers approvals.resolve on a lost race with BridgeError code "conflict", NOT the winner (protocol.ts:46's comment says otherwise; worth telling Adrian). L3-11 session view (webviews/session/App.tsx) and L3-10 BotMessage (webviews/chat/BotMessage.tsx) both assume a returned winner, so in demo step 6 (teammate approves from the phone first) the presenter's click shows a red error and the buttons stay live. Fix like L3-12: on code "conflict", re-fetch (approvals.list) and show the winner. Small lead task, one commit per view.
+## Approval conflicts in views merged earlier: FIXED (morning, Elkin approved; 7d332fe4, 14003d22, 79c31e17; Opus review confirmed)
+- Session view: on "conflict" it re-lists and shows the winner; a decided approval is final (putApproval everywhere).
+- Slack BotMessage: on "conflict" it shows the winner. On mount it looks the approval id up in the store: buttons appear only when the store knows the approval and it's pending; an already-decided one shows its decision after a reload; an unknown id gets "approval not known on this machine" and no buttons (the Lane 3 half of the bot-spoof fix). A late empty lookup never hides buttons a live event already showed. "already decided elsewhere" shows when a lost race has no winner yet.
+- 991 tests green; the 5 new tests fail on the old code.
+- Left for later (from the review): one approvals.list call per approval message (fine at demo scale; an approvals.get would be better); no automatic retry after a failed lookup.
+- Original finding: the real host (src/features/approvals/approvals-controller.ts:265 + wire-bridge.ts:8) answers approvals.resolve on a lost race with BridgeError code "conflict", NOT the winner (protocol.ts:46's comment says otherwise; worth telling Adrian). L3-11 session view (webviews/session/App.tsx) and L3-10 BotMessage (webviews/chat/BotMessage.tsx) both assume a returned winner, so in demo step 6 (teammate approves from the phone first) the presenter's click shows a red error and the buttons stay live. Fix like L3-12: on code "conflict", re-fetch (approvals.list) and show the winner. Small lead task, one commit per view.
 - Also from that review: RE-RUN uses the 30 s default bridge timeout while a council run can take 45 s (a false "timed out" error); approvals of ended (failed/done) sessions show as pending with live buttons that fail with "internal error" (use pendingOnly:true to tell them apart).
 
 ## In flight
-- (none). Wave 5 is done except L3-15 (skipped above). Next per the playbook: wave 6 (L3-06 activity strip, L3-14 task-plan review, L3-16 empty/error states). L3-06 and L3-14 have only a header line in PLAN and depend on Lane 2/Lane 1 work in the same wave.
+- (none). Hourly polls turned off at Elkin's request (he's awake). Next lead work: wiring the views and commands in src/register/lane-3.ts, then a launch check in the fork for cp-1. Wave 5 is done except L3-15 (skipped above). Next per the playbook: wave 6 (L3-06 activity strip, L3-14 task-plan review, L3-16 empty/error states). L3-06 and L3-14 have only a header line in PLAN and depend on Lane 2/Lane 1 work in the same wave.
 
 ## Webview host: RESOLVED by Lane 2 (main 0fb28e17, merged into lane-3 at ~T+14)
 - Brandon's host now reads media/<entry>/index.html (our Vite output) and loads its module scripts (with the nonce) and stylesheets; script-src includes cspSource, so our lazy chunks (fakeBridge/fixtures) load too. No Lane 3 build change needed.

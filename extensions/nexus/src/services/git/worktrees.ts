@@ -80,6 +80,11 @@ async function ownedWorktree(ctx: GitContext, worktreePath: string): Promise<{ d
   if (await commonDir(ctx, dir) !== common || path.dirname(gitDir) !== path.join(common, "worktrees")) {
     throw new Error("refused: the worktree does not belong to this repository");
   }
+  // ...and at its OWN entry: git's back-link from the entry to this directory's .git, so a .git file pointing at another
+  // session's entry is refused.
+  let back: string;
+  try { back = readFileSync(path.join(gitDir, "gitdir"), "utf8").trim(); } catch { throw new Error("refused: the worktree's git entry has no back-link"); }
+  if (real(path.dirname(back)) !== dir) throw new Error("refused: the worktree's .git points at another worktree's entry");
   return { dir, sessionId, gitDir };
 }
 
@@ -115,7 +120,9 @@ export async function removeSessionWorktree(ctx: GitContext, sessionId: string):
   if (ahead.stdout.trim() === "0") await ctx.run(ctx.repoRoot, ["branch", "-D", branch]);
 }
 
-const DIFF_FLAGS = ["--no-ext-diff", "--no-textconv", "--no-color", "--no-renames", "--full-index", "--binary", "--src-prefix=a/", "--dst-prefix=b/"];
+// --ignore-submodules=none and --submodule=short: a gitlink always shows, with its full id, whatever .gitmodules or the
+// user's diff config says, so a submodule can never reach a commit without appearing in the approved diff.
+const DIFF_FLAGS = ["--no-ext-diff", "--no-textconv", "--no-color", "--no-renames", "--full-index", "--binary", "--ignore-submodules=none", "--submodule=short", "--src-prefix=a/", "--dst-prefix=b/"];
 
 /**
  * Stages the worktree's contents into a temporary index that starts from the branch's HEAD tree, so nothing touches the
@@ -167,9 +174,13 @@ export function binaryPathsInDiff(diffText: string): string[] {
   return out;
 }
 
+const SCISSORS = /^.*-{3,}\s*>8\s*-{3,}.*$/m;
+
 export async function commitIn(ctx: GitContext, worktreePath: string, message: string, sessionId: string, approvedDiff: string): Promise<FullSha> {
   const { branch } = await resolveAgentBranch(ctx, sessionId);
   if (typeof message !== "string" || message.includes("\0") || message.trim().length === 0) throw new Error("invalid commit message");
+  // git's trailer parser stops at a scissors line, so a model-written message could forge the Nexus-Agent trailer or hide it.
+  if (SCISSORS.test(message)) throw new Error("refused: the commit message contains a scissors line");
   if (typeof approvedDiff !== "string") throw new Error("invalid approved diff");
   const { dir, sessionId: dirId, gitDir } = await ownedWorktree(ctx, worktreePath);
   if (dirId !== sessionId) throw new Error("refused: the worktree belongs to a different session");

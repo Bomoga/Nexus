@@ -49,14 +49,37 @@ export async function mergeAgentBranch(ctx: GitContext, sessionId: string): Prom
   return { ok: true, mergeSha: sha, message: `merged ${branch} into ${head}` };
 }
 
-/** Paths the branch changed since the merge base that exist in the user's checkout as untracked, ignored files (a .env, say): git would replace them silently. */
+/**
+ * Paths the branch would write over an untracked, ignored file in the user's checkout (a .env, say): git would replace it
+ * silently. Compared case-folded (macOS checkouts are case-insensitive), and including a file that sits where the branch
+ * needs a directory, a directory the branch replaces with a file, and anything inside an ignored directory.
+ */
 async function ignoredFilesTheMergeWouldReplace(ctx: GitContext, branch: string): Promise<string[]> {
   const run = (args: string[]) => ctx.run(ctx.repoRoot, args).then(r => r.stdout);
   const base = (await run(["merge-base", "HEAD", `refs/heads/${branch}`])).trim();
   const touched = (await run(["diff", "--name-only", "-z", "--no-renames", base, `refs/heads/${branch}`, "--"])).split("\0").filter(Boolean);
-  const found: string[] = [];
-  for (let i = 0; i < touched.length; i += 200) {
-    found.push(...(await run(["ls-files", "--others", "--ignored", "--exclude-standard", "-z", "--", ...touched.slice(i, i + 200)])).split("\0").filter(Boolean));
+  if (touched.length === 0) return [];
+  // --directory collapses an ignored directory (node_modules/) into one entry, so the list stays small.
+  const ignored = (await run(["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z"])).split("\0").filter(Boolean);
+  const fold = (p: string) => p.normalize("NFC").toLowerCase();
+  const files = new Map<string, string>();
+  const dirs = new Map<string, string>();
+  for (const p of ignored) {
+    if (p.endsWith("/")) dirs.set(fold(p.slice(0, -1)), p); else files.set(fold(p), p);
   }
-  return found;
+  const found = new Set<string>();
+  for (const t of touched) {
+    const f = fold(t);
+    const hit = files.get(f) ?? dirs.get(f);                                       // same path, file or directory
+    if (hit) found.add(hit);
+    const parts = f.split("/");
+    for (let i = 1; i < parts.length; i++) {
+      const prefix = parts.slice(0, i).join("/");
+      const asFile = files.get(prefix);                                            // an ignored file where a directory must go
+      if (asFile) found.add(asFile);
+      const asDir = dirs.get(prefix);                                              // writing inside an ignored directory
+      if (asDir) found.add(asDir);
+    }
+  }
+  return [...found];
 }

@@ -116,4 +116,37 @@ describe("mergeAgentBranch", () => {
     expect(sh(repo, "rev-parse", "HEAD")).toBe(head);
     expect(sh(repo, "status", "--porcelain")).toBe("");
   });
+
+  async function refusedWith(setup: () => void, agentFiles: Record<string, string>, keep: Record<string, string>) {
+    setup();
+    const w = await git.createSessionWorktree({ sessionId: "s1", workspaceId: "w" });
+    write(w.worktreePath, ".gitignore", "\n");
+    for (const [f, text] of Object.entries(agentFiles)) write(w.worktreePath, f, text);
+    await git.commitIn(w.worktreePath, "agent", "s1", await git.diff(w.worktreePath, w.baseCommit));
+    const head = sh(repo, "rev-parse", "HEAD");
+    expect((await git.mergeAgentBranch("s1")).ok).toBe(false);
+    for (const [f, text] of Object.entries(keep)) expect([f, readFileSync(path.join(repo, f), "utf8")]).toEqual([f, text]);
+    expect(sh(repo, "rev-parse", "HEAD")).toBe(head);
+  }
+
+  it("refuses when the branch differs from an ignored file only by letter case", async () => {
+    await refusedWith(() => {
+      write(repo, ".gitignore", "secret.env\ndata/\n"); sh(repo, "add", "-A"); sh(repo, "commit", "-q", "-m", "ignore");
+      write(repo, "secret.env", "MINE\n");
+    }, { "Secret.env": "AGENT\n" }, { "secret.env": "MINE\n" });
+  });
+
+  it("refuses when the branch writes inside an ignored directory, matched case-insensitively", async () => {
+    await refusedWith(() => {
+      write(repo, ".gitignore", "data/\n"); sh(repo, "add", "-A"); sh(repo, "commit", "-q", "-m", "ignore");
+      write(repo, "data/x", "MINE\n");
+    }, { "Data/x": "AGENT\n" }, { "data/x": "MINE\n" });
+  });
+
+  it("refuses when the branch needs a directory where the user has an ignored file", async () => {
+    await refusedWith(() => {
+      write(repo, ".gitignore", "cache\n"); sh(repo, "add", "-A"); sh(repo, "commit", "-q", "-m", "ignore");
+      write(repo, "cache", "MINE\n");
+    }, { "cache/x": "AGENT\n" }, { "cache": "MINE\n" });
+  });
 });

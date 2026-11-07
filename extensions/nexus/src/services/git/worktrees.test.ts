@@ -212,7 +212,58 @@ describe("commitIn bound to the approved diff", () => {
   });
 });
 
+describe("what the approved diff must show", () => {
+  function nestedRepo(root: string) {
+    const inner = path.join(root, "vendor");
+    mkdirSync(inner, { recursive: true });
+    sh(inner, "init", "-q", "-b", "main");
+    sh(inner, "config", "user.name", "x"); sh(inner, "config", "user.email", "x@x"); sh(inner, "config", "commit.gpgsign", "false");
+    write(inner, "lib.txt", "lib\n"); sh(inner, "add", "-A"); sh(inner, "commit", "-q", "-m", "lib");
+    return sh(inner, "rev-parse", "HEAD");
+  }
+  it("shows a submodule with its full id even when .gitmodules or the user's config would hide it", async () => {
+    const w = await git.createSessionWorktree({ sessionId: "s1", workspaceId: "w" });
+    const inner = nestedRepo(w.worktreePath);
+    write(w.worktreePath, ".gitmodules", `[submodule "vendor"]\n\tpath = vendor\n\turl = ./vendor\n\tignore = all\n`);
+    sh(repo, "config", "diff.ignoreSubmodules", "all");
+    sh(repo, "config", "diff.submodule", "log");
+    const d = await git.diff(w.worktreePath, w.baseCommit);
+    expect(d).toContain(`+Subproject commit ${inner}`);
+    const sha = await git.commitIn(w.worktreePath, "m", "s1", d);
+    expect(sh(repo, "ls-tree", sha, "vendor")).toContain(inner);
+  });
+});
+
+describe("commit messages", () => {
+  it("refuses a scissors line, which would let the message forge or hide the trailer", async () => {
+    const w = await git.createSessionWorktree({ sessionId: "s1", workspaceId: "w" });
+    write(w.worktreePath, "x.txt", "x\n");
+    const scissors = "# ------------------------ >8 ------------------------";
+    for (const message of [`fix\n\nNexus-Agent: forged\n${scissors}`, `fix\n${scissors}`, `fix\n--- >8 ---`]) {
+      await expect(commitAs(w, message, "s1")).rejects.toThrow(/scissors/);
+    }
+    expect(sh(repo, "rev-list", "--count", "nexus/agent-s1")).toBe("1");
+  });
+  it("takes the identity from the repo config even when an includeIf would set another for the session branch", async () => {
+    const other = path.join(base, "other.gitconfig");
+    writeFileSync(other, "[user]\n\tname = Included Mallory\n\temail = m@example.com\n");
+    sh(repo, "config", "includeIf.onbranch:nexus/**.path", other);
+    const w = await git.createSessionWorktree({ sessionId: "s1", workspaceId: "w" });
+    write(w.worktreePath, "x.txt", "x\n");
+    const sha = await commitAs(w, "m", "s1");
+    expect(sh(repo, "log", "-1", "--format=%an|%cn", sha)).toBe("Human Dev|Human Dev");
+  });
+});
+
 describe("worktree and branch identity", () => {
+  it("refuses a worktree whose .git file points at another session's entry", async () => {
+    const a = await git.createSessionWorktree({ sessionId: "s1", workspaceId: "w" });
+    await git.createSessionWorktree({ sessionId: "s2", workspaceId: "w" });
+    const common = sh(repo, "rev-parse", "--path-format=absolute", "--git-common-dir");
+    writeFileSync(path.join(a.worktreePath, ".git"), `gitdir: ${common}/worktrees/s2\n`);
+    await expect(git.diff(a.worktreePath, a.baseCommit)).rejects.toThrow(/another worktree's entry|does not belong/);
+  });
+
   it("refuses a worktree whose .git file was repointed at the user's repository", async () => {
     const w = await git.createSessionWorktree({ sessionId: "s1", workspaceId: "w" });
     write(w.worktreePath, "agent-new.txt", "x\n");

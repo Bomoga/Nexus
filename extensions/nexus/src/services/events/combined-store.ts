@@ -12,6 +12,7 @@ import type {
   AgentEvent, AgentSession, ApprovalRequest, DecidedBy, EventQuery, EventSearchHit, ModelCallReceipt,
   NexusEvent, SwarmReview, Task, TaskPlan,
 } from "../../contracts";
+import { BridgeError } from "../../bridge/types";
 import type { LocalStore, OutboxEntry } from "./local-store";
 import type { DecideResult, EventStore, StatusEvent, StoreStatus, Unsubscribe } from "./store";
 import { isTransientError } from "./tiger-store";
@@ -22,12 +23,25 @@ export interface DecisionOverride {
 }
 
 /**
- * Thrown by decideApproval when the shared store cannot answer and this machine is not the one running the session's agent.
- * Nothing was decided anywhere. `code` is "offline".
+ * Thrown by decideApproval when the shared store could not confirm a decision and this machine is not the one running the session's
+ * agent. Nothing was decided locally and nothing is queued. The remote UPDATE may still have committed (a timeout does not cancel it
+ * server-side); if so its result is mirrored here when it settles. A BridgeError with code "offline", so a webview shows it as such.
  */
-export class ApprovalOfflineError extends Error {
-  readonly code = "offline";
-  constructor() { super("The shared store is unreachable; only the machine running this agent can decide while offline."); }
+export class ApprovalOfflineError extends BridgeError {
+  constructor() { super("offline", "Could not reach the shared store in time; the decision may still apply. Only the machine running this agent can decide while offline."); this.name = "ApprovalOfflineError"; }
+}
+
+/** Thrown when the shared store answered but refused this decision (a constraint or data error, a missing or unreadable row) and this machine is not the session's owner. */
+export class ApprovalRefusedError extends BridgeError {
+  constructor() { super("conflict", "The shared store refused this decision."); this.name = "ApprovalRefusedError"; }
+}
+
+/** Emitted when the session owner's decision was written over a different decision already in Tiger. Ids and decision values only. */
+export interface DecisionOverridden { approvalId: string; from: "approved" | "rejected"; to: "approved" | "rejected"; at: string }
+
+/** An id that cannot tell machines apart: empty, blank, or the placeholder vscode.env.machineId returns when telemetry is off. */
+export function isUsableMachineId(id: string | undefined): id is string {
+  return typeof id === "string" && id.trim() !== "" && !id.startsWith("someValue.");
 }
 
 export interface CombinedStoreOptions {
@@ -41,7 +55,7 @@ export interface CombinedStoreOptions {
   writeBudgetMs?: number;
   /**
    * How long the remote conditional UPDATE for an approval decision may take before this machine stops waiting. Default 11000:
-   * longer than the Tiger pool's own 10 s query_timeout, so a query the pool would itself fail reports that failure instead of
+   * longer than the Tiger pool's own 10 s query_timeout (the pool's up-to-5 s wait for a connection comes on top of it), so a query the pool would itself fail reports that failure instead of
    * us giving up on an UPDATE that may still be applying. Shorter budgets are allowed (tests), but each timeout leaves the UPDATE
    * in flight; its late result is reconciled either way.
    */
@@ -91,6 +105,9 @@ export class CombinedStore implements EventStore {
   private readonly decideBudget: number;
   private readonly machineId: string;
   private deadLetterListeners = new Set<(letter: DeadLetter) => void>();
+  private overrideListeners = new Set<(o: DecisionOverridden) => void>();
+  /** False when this machine's id cannot tell it apart from others: then it is never the owner of anything. */
+  private readonly canOwn: boolean;
   private deadLetterList: DeadLetter[] = [];
   private readonly now: () => string;
 
@@ -107,6 +124,7 @@ export class CombinedStore implements EventStore {
     this.writeBudget = opts.writeBudgetMs ?? 10_000;
     this.decideBudget = opts.decideBudgetMs ?? 11_000;
     this.machineId = opts.machineId;
+    this.canOwn = isUsableMachineId(opts.machineId);
     this.now = opts.now ?? (() => new Date().toISOString());
   }
 
@@ -160,22 +178,28 @@ export class CombinedStore implements EventStore {
    * decideWhenRemoteUnreachable. An UPDATE that is over budget keeps running; its late answer is reconciled when it settles.
    */
   async decideApproval(id: string, decision: "approved" | "rejected", decidedBy: DecidedBy, at: string): Promise<DecideResult> {
+    // The owner's local decision is what its agent acted on: a later click (a stale button) is never a new write anywhere.
+    const existing = await this.local.getApproval(id);
+    if (existing?.decision && await this.isOwner(id)) return { approval: this.corrected(existing), won: false };
+
     const attempt = this.attemptRemoteDecide(id, decision, decidedBy, at);
     let result: DecideResult | undefined;
+    let cause: "unreachable" | "refused" = "unreachable";
     let overBudget = false;
     try {
       result = await withBudget(attempt, this.decideBudget);
       this.setOnline(true);
     } catch (err) {
       overBudget = err instanceof BudgetExceeded;
-      if (isTransientError(err)) this.setOnline(false);
+      if (isTransientError(err)) this.setOnline(false); else cause = "refused";
     }
     if (result) {
-      await this.reconcileAnswer(result);
+      const overridden = await this.reconcileAnswer(result);
       this.schedule();   // the remote is reachable: send the backlog
-      return { approval: clone(result.approval), won: result.won };
+      // After an owner override, report what Tiger now holds, not the winner that was just overwritten.
+      return overridden ? { approval: clone(overridden), won: false } : { approval: clone(result.approval), won: result.won };
     }
-    const fallback = this.decideWhenRemoteUnreachable(id, decision, decidedBy, at);
+    const fallback = this.decideWhenRemoteUnreachable(id, decision, decidedBy, at, cause);
     if (overBudget) {
       // The UPDATE may still land. Once the local fallback has finished (an owner's local decision must exist before we
       // compare), take its late answer into account.
@@ -189,20 +213,21 @@ export class CombinedStore implements EventStore {
   }
 
   private async attemptRemoteDecide(id: string, decision: "approved" | "rejected", decidedBy: DecidedBy, at: string): Promise<DecideResult> {
-    await this.sendPendingApprovalPuts(id);   // the approval must exist remotely; unrelated backlog is not waited for
+    await this.sendPendingApprovalEntries(id);   // the approval (and any decision already queued for it) goes first; unrelated backlog is not waited for
     return this.remote.decideApproval(id, decision, decidedBy, at);
   }
 
   /**
-   * POLICY POINT. The remote could not decide. The machine running the session's agent is the final authority for that session's
+   * POLICY POINT. The remote could not confirm a decision (`unreachable`: no answer in time, or `refused`: it answered with an error). The machine running the session's agent is the final authority for that session's
    * approvals, so an agent never acts on a decision that can later lose:
    *  - the OWNER decides locally (that wakes its agent) and queues the decision; if Tiger holds a different one when it flushes,
    *    the owner's decision is written over it, so every machine converges on what the agent did;
-   *  - anyone else decides nothing, anywhere, and gets an ApprovalOfflineError.
+   *  - anyone else decides nothing locally and queues nothing; they get an error. (A timed-out UPDATE may still commit on the server;
+   *    its late answer is mirrored here when it settles.)
    * Swap this function to change the policy.
    */
-  private async decideWhenRemoteUnreachable(id: string, decision: "approved" | "rejected", decidedBy: DecidedBy, at: string): Promise<DecideResult> {
-    if (!(await this.isOwner(id))) throw new ApprovalOfflineError();
+  private async decideWhenRemoteUnreachable(id: string, decision: "approved" | "rejected", decidedBy: DecidedBy, at: string, cause: "unreachable" | "refused"): Promise<DecideResult> {
+    if (!(await this.isOwner(id))) throw cause === "refused" ? new ApprovalRefusedError() : new ApprovalOfflineError();
     const r = await this.local.decideApproval(id, decision, decidedBy, at);
     const corrected = this.corrected(r.approval);
     return { approval: corrected, won: r.won && corrected === r.approval };
@@ -210,10 +235,11 @@ export class CombinedStore implements EventStore {
 
   /** True when this machine runs the approval's session. Looks the approval and session up locally, then remotely; unknown means no. */
   private async isOwner(approvalId: string): Promise<boolean> {
+    if (!this.canOwn) return false;
     const approval = (await this.local.getApproval(approvalId)) ?? (await this.lookupRemote(() => this.remote.getApproval(approvalId)));
     if (!approval) return false;
     const session = (await this.local.getSession(approval.sessionId)) ?? (await this.lookupRemote(() => this.remote.getSession(approval.sessionId)));
-    return session?.machineId === this.machineId;
+    return isUsableMachineId(session?.machineId) && session.machineId === this.machineId;
   }
 
   /** A remote lookup that never throws and never touches the online flag. */
@@ -225,22 +251,31 @@ export class CombinedStore implements EventStore {
    * Takes the remote's answer for an approval into the local copy. The owner is the exception: if its agent already acted on a local
    * decision that differs from the remote winner, the owner's decision is written over the winner instead of adopting it.
    */
-  private async reconcileAnswer(result: DecideResult): Promise<void> {
+  private async reconcileAnswer(result: DecideResult): Promise<ApprovalRequest | undefined> {
     const winner = result.approval;
     const local = await this.local.getApproval(winner.id);
     if (local?.decision && winner.decision) {
       if (local.decision === winner.decision) {
         this.ackDecideEntries(winner.id);   // Tiger holds the decision the agent acted on; the queued copy is redundant
-        return;
+        return undefined;
       }
       const override = this.remote.overrideDecision?.bind(this.remote);
       if (override && local.decidedBy && local.decidedAt && await this.isOwner(winner.id)) {
-        await withBudget(override(winner.id, local.decision, local.decidedBy, local.decidedAt), this.writeBudget);
+        const now = await withBudget(override(winner.id, local.decision, local.decidedBy, local.decidedAt), this.writeBudget);
         this.ackDecideEntries(winner.id);
-        return;
+        const note: DecisionOverridden = { approvalId: winner.id, from: winner.decision, to: local.decision, at: this.now() };
+        for (const l of [...this.overrideListeners]) safely(() => l({ ...note }));
+        return now;
       }
     }
     await this.mirrorApproval(winner);
+    return undefined;
+  }
+
+  /** Called when the owner's decision replaced a different decision in Tiger, so the overwritten human decision leaves a trace. */
+  onOverride(listener: (override: DecisionOverridden) => void): Unsubscribe {
+    this.overrideListeners.add(listener);
+    return () => { this.overrideListeners.delete(listener); };
   }
 
   private ackDecideEntries(approvalId: string): void {
@@ -374,10 +409,10 @@ export class CombinedStore implements EventStore {
   /** Writes the remote refused for good and dropped from the queue (this run of the extension). Keys only, never record contents. */
   deadLetters(): DeadLetter[] { return this.deadLetterList.map(d => ({ ...d })); }
 
-  /** Sends just this approval's own queued puts, out of order (the remote has no foreign keys and the writes are idempotent). */
-  private async sendPendingApprovalPuts(id: string): Promise<void> {
+  /** Sends just this approval's own queued puts and decisions, in order, ahead of the conditional UPDATE (the remote has no foreign keys and the writes are idempotent). */
+  private async sendPendingApprovalEntries(id: string): Promise<void> {
     for (const entry of this.local.pendingOutbox()) {
-      if (entry.table === "approvals" && entry.op === "put" && recordKey(entry.table, entry.record) === id) await this.deliver(entry);
+      if (entry.table === "approvals" && recordKey(entry.table, entry.record) === id) await this.deliver(entry);
     }
   }
 

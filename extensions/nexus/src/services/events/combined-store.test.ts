@@ -4,8 +4,9 @@ import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { fx } from "../../contracts/fixtures";
 import type { ApprovalRequest, NexusEvent } from "../../contracts";
-import { ApprovalOfflineError, CombinedStore } from "./combined-store";
-import type { DeadLetter } from "./combined-store";
+import { BridgeError } from "../../bridge/types";
+import { ApprovalOfflineError, ApprovalRefusedError, CombinedStore } from "./combined-store";
+import type { DeadLetter, DecisionOverridden } from "./combined-store";
 import { ApprovalUnparseableError } from "./tiger-store";
 import { LocalStore } from "./local-store";
 import type { AgentSession, DecidedBy } from "../../contracts";
@@ -442,9 +443,88 @@ describe("CombinedStore approvals", () => {
       b.link.down = true;
       const err = await b.store.decideApproval(approval.id, "approved", by("U_B"), T1).catch((e: unknown) => e);
       expect(err).toBeInstanceOf(ApprovalOfflineError);
-      expect(err).toMatchObject({ code: "offline", message: "The shared store is unreachable; only the machine running this agent can decide while offline." });
+      expect(err).toMatchObject({ code: "offline", message: "Could not reach the shared store in time; the decision may still apply. Only the machine running this agent can decide while offline." });
+      expect(err).toBeInstanceOf(BridgeError);
       expect((await b.local.getApproval(approval.id))?.decision).toBeUndefined();
       expect(b.local.pendingOutbox()).toEqual([]);
+    });
+
+    it("a fast refusal while online is not called 'unreachable'", async () => {
+      const remote = sharedRemote();
+      const { b } = await pair(remote, "a");
+      b.link.reject = name => name === "decideApproval" ? Object.assign(new Error("duplicate key"), { code: "23505" }) : undefined;
+      const err = await b.store.decideApproval(approval.id, "approved", by("U_B"), T1).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(BridgeError);
+      expect(err).toMatchObject({ code: "conflict", message: "The shared store refused this decision." });
+      expect((await b.store.status()).online).toBe(true);
+    });
+
+    it("a machine id that cannot tell machines apart never owns anything", async () => {
+      for (const id of ["", "   ", "someValue.machineId"]) {
+        const remote = sharedRemote();
+        const m = machine(remote, { machineId: id });
+        await m.store.putSession(sessionOf(id));   // the session carries the same unusable id
+        await m.store.putApproval(approval);
+        await m.store.idle();
+        m.link.down = true;
+        await expect(m.store.decideApproval(approval.id, "approved", by("U_A"), T1), `machine id ${JSON.stringify(id)}`).rejects.toBeInstanceOf(ApprovalOfflineError);
+        expect((await m.local.getApproval(approval.id))?.decision).toBeUndefined();
+      }
+      // a usable machine does not own a session recorded with an unusable id either
+      const remote = sharedRemote();
+      const m = machine(remote, { machineId: "m_real" });
+      await m.store.putSession(sessionOf("someValue.machineId"));
+      await m.store.putApproval(approval);
+      await m.store.idle();
+      m.link.down = true;
+      await expect(m.store.decideApproval(approval.id, "approved", by("U_A"), T1)).rejects.toBeInstanceOf(ApprovalOfflineError);
+    });
+
+    it("a stale second click by the owner is not a win and never writes to Tiger", async () => {
+      const remote = sharedRemote();
+      const { a } = await pair(remote, "a");
+      const sent: string[] = [];
+      a.link.reject = (name, args) => { if (name === "decideApproval" || name === "overrideDecision") sent.push(`${name}:${String(args[1])}`); return undefined; };
+      a.link.down = true;
+      expect(await a.store.decideApproval(approval.id, "approved", by("U_A"), T1)).toMatchObject({ won: true });
+      a.link.down = false;   // back online, nothing flushed yet
+      const stale = await a.store.decideApproval(approval.id, "rejected", by("U_A"), T2);
+      expect(stale).toMatchObject({ won: false, approval: { decision: "approved" } });
+      await a.store.flushOutbox();
+      expect(sent.filter(x => !x.endsWith(":approved"))).toEqual([]);   // "rejected" was never attempted anywhere
+      expect(sent).toContain("decideApproval:approved");
+      expect(await remote.getApproval(approval.id)).toMatchObject({ decision: "approved" });
+    });
+
+    it("a non-owner whose decision was overridden mirrors the owner's decision and never overrides back", async () => {
+      const remote = sharedRemote();
+      const { a, b } = await pair(remote, "a");
+      a.link.down = true;
+      await a.store.decideApproval(approval.id, "approved", by("U_A"), T2);
+      await b.store.decideApproval(approval.id, "rejected", by("U_B"), T1);
+      a.link.down = false;
+      await a.store.flushOutbox();
+      expect(remote.overrides).toEqual([approval.id]);
+      const again = await b.store.decideApproval(approval.id, "rejected", by("U_B"), T2);
+      expect(again).toMatchObject({ won: false, approval: { decision: "approved", decidedBy: by("U_A") } });
+      expect(await b.store.getApproval(approval.id)).toMatchObject({ decision: "approved" });
+      expect(remote.overrides).toEqual([approval.id]);   // still just the owner's one
+      expect(await remote.getApproval(approval.id)).toMatchObject({ decision: "approved" });
+    });
+
+    it("an owner override leaves a trace with ids and decisions only", async () => {
+      const remote = sharedRemote();
+      const { a, b } = await pair(remote, "a");
+      const seen: DecisionOverridden[] = [];
+      a.store.onOverride(o => seen.push(o));
+      a.link.down = true;
+      await a.store.decideApproval(approval.id, "approved", by("U_A"), T2);
+      await b.store.decideApproval(approval.id, "rejected", by("U_B"), T1);
+      a.link.down = false;
+      await a.store.flushOutbox();
+      expect(seen).toHaveLength(1);
+      expect(Object.keys(seen[0]).sort()).toEqual(["approvalId", "at", "from", "to"]);
+      expect(seen[0]).toMatchObject({ approvalId: approval.id, from: "rejected", to: "approved" });
     });
 
     it("an unknown session, or an unknown approval, means not the owner", async () => {
@@ -461,7 +541,7 @@ describe("CombinedStore approvals", () => {
       const remote = sharedRemote();
       const { a, b } = await pair(remote, "a");
       remote.unparseable.add(approval.id);
-      await expect(b.store.decideApproval(approval.id, "approved", by("U_B"), T1)).rejects.toBeInstanceOf(ApprovalOfflineError);
+      await expect(b.store.decideApproval(approval.id, "approved", by("U_B"), T1)).rejects.toBeInstanceOf(ApprovalRefusedError);
       expect((await b.local.getApproval(approval.id))?.decision).toBeUndefined();
       expect(await a.store.decideApproval(approval.id, "approved", by("U_A"), T1)).toMatchObject({ won: true });
     });

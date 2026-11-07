@@ -496,6 +496,26 @@ describe("CombinedStore approvals", () => {
       expect(await remote.getApproval(approval.id)).toMatchObject({ decision: "approved" });
     });
 
+    it("two owner clicks in the same instant: one win, one wake, and Tiger ends at the decision the agent acted on", async () => {
+      const remote = sharedRemote();
+      const { a } = await pair(remote, "a");
+      let calls = 0;
+      // zero latency: the first UPDATE resets the connection; unserialised, the second answers before the first click's local fallback lands
+      a.link.reject = name => (name === "decideApproval" && ++calls === 1 ? Object.assign(new Error("read ECONNRESET"), { code: "ECONNRESET" }) : undefined);
+      const wakes: string[] = [];
+      a.store.subscribeApprovals(x => { if (x.id === approval.id && x.decision) wakes.push(x.decision); });
+      const [first, second] = await Promise.all([
+        a.store.decideApproval(approval.id, "approved", by("U_A"), T1),
+        a.store.decideApproval(approval.id, "rejected", by("U_A"), T2),
+      ]);
+      expect([first.won, second.won]).toEqual([true, false]);
+      expect([first.approval.decision, second.approval.decision]).toEqual(["approved", "approved"]);
+      expect(wakes).toEqual(["approved"]);
+      await a.store.flushOutbox();
+      expect(await remote.getApproval(approval.id)).toMatchObject({ decision: "approved" });
+      expect(await a.store.getApproval(approval.id)).toMatchObject({ decision: "approved" });
+    });
+
     it("a non-owner whose decision was overridden mirrors the owner's decision and never overrides back", async () => {
       const remote = sharedRemote();
       const { a, b } = await pair(remote, "a");

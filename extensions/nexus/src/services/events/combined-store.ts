@@ -115,6 +115,8 @@ export class CombinedStore implements EventStore {
   private flushing: Promise<FlushResult> | undefined;
   /** Remote winners that overrule a local decision made offline. In memory: after a restart the remote read supplies the winner. */
   private corrections = new Map<string, ApprovalRequest>();
+  /** The decision in progress per approval id, so this machine decides one approval at a time. */
+  private readonly deciding = new Map<string, Promise<unknown>>();
   private approvalListeners = new Set<(approval: ApprovalRequest) => void>();
 
   constructor(opts: CombinedStoreOptions) {
@@ -178,6 +180,17 @@ export class CombinedStore implements EventStore {
    * decideWhenRemoteUnreachable. An UPDATE that is over budget keeps running; its late answer is reconciled when it settles.
    */
   async decideApproval(id: string, decision: "approved" | "rejected", decidedBy: DecidedBy, at: string): Promise<DecideResult> {
+    // One decision per approval at a time on this machine: two clicks in the same instant must not both see it undecided, both
+    // reach the remote, and both report a win. The second waits and then sees the first one's outcome.
+    const previous = this.deciding.get(id) ?? Promise.resolve();
+    const run = previous.catch(() => undefined).then(() => this.decideOne(id, decision, decidedBy, at));
+    const tail = run.catch(() => undefined);
+    this.deciding.set(id, tail);
+    void tail.then(() => { if (this.deciding.get(id) === tail) this.deciding.delete(id); });
+    return run;
+  }
+
+  private async decideOne(id: string, decision: "approved" | "rejected", decidedBy: DecidedBy, at: string): Promise<DecideResult> {
     // The owner's local decision is what its agent acted on: a later click (a stale button) is never a new write anywhere.
     const existing = await this.local.getApproval(id);
     if (existing?.decision && await this.isOwner(id)) return { approval: this.corrected(existing), won: false };
@@ -459,8 +472,12 @@ export class CombinedStore implements EventStore {
     if (current && !current.decision) {
       await quiet("decide", () => this.local.decideApproval(winner.id, decision, decidedBy, decidedAt));
     } else if (current && (current.decision !== decision || current.decidedBy?.userId !== decidedBy.userId || current.decidedBy?.via !== decidedBy.via)) {
-      this.corrections.set(winner.id, clone(winner));
-      for (const l of [...this.approvalListeners]) safely(() => l(clone(winner)));
+      // The owner's own decision is what its agent acted on: never replace it here (its queued decision overrides Tiger on flush).
+      if (await this.isOwner(winner.id)) return;
+      // Anyone else shows the winner, durably (it survives a restart) and without queuing it back to the shared store.
+      const mirrored = await this.local.mirrorDecision(winner.id, decision, decidedBy, decidedAt);
+      if (!mirrored) { this.corrections.set(winner.id, clone(winner)); for (const l of [...this.approvalListeners]) safely(() => l(clone(winner))); }
+      else this.corrections.delete(winner.id);
     }
   }
 

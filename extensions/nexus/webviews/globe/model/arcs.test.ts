@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { NexusEvent } from "../../../src/contracts";
-import { ACTIVITY_OFFSET, ARC_LIFT, SCALE_IN_MS, activityPoint, arcControl, arcPoint, insertLive, mergeEndpoints, scaleIn, shapeOf } from "./arcs";
+import { ACTIVITY_OFFSET, ARC_LIFT, SCALE_IN_MS, activityPoint, arcControl, arcPoint, eventPointInto, insertLive, mergeEndpoints, scaleIn, shapeOf } from "./arcs";
 import { NOW_ANGLE, eventPoint, orbitPoint, windowMs } from "./index";
 
 const H = 3_600_000;
@@ -112,5 +112,26 @@ describe("scaleIn", () => {
     expect(scaleIn(SCALE_IN_MS / 2)).toBeLessThan(1);
     expect(scaleIn(SCALE_IN_MS)).toBe(1);
     expect(scaleIn(10_000)).toBe(1);
+  });
+});
+
+describe("eventPointInto", () => {
+  it("matches eventPoint (with and without offset) and returns its out array", () => {
+    const out: [number, number, number] = [0, 0, 0];
+    for (const off of [0, ACTIVITY_OFFSET]) {
+      for (const h of [0, 1.5, 20, 35]) {
+        const at = NOW - h * H;
+        const r = eventPointInto(out, lane, at, NOW, windowMs("36h"), off);
+        expect(r).toBe(out);
+        eventPoint(lane, at, NOW, "36h", off).forEach((v, i) => expect(out[i]).toBeCloseTo(v, 10));
+      }
+    }
+  });
+  it("drifts: the same event moves back as now advances", () => {
+    const a: [number, number, number] = [0, 0, 0];
+    const b: [number, number, number] = [0, 0, 0];
+    eventPointInto(a, main, NOW, NOW, windowMs("36h"));
+    eventPointInto(b, main, NOW, NOW + H, windowMs("36h"));
+    expect(a).not.toEqual(b);
   });
 });

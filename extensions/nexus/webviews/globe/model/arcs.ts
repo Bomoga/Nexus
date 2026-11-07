@@ -1,6 +1,6 @@
 // Pure arc / activity-ring / live-insert math (CLAUDE.md §7). No DOM, no three.
-import type { EventKind, NexusEvent, TimeWindow } from "../../../src/contracts";
-import { eventPoint, inWindow } from "./index";
+import type { NexusEvent, TimeWindow } from "../../../src/contracts";
+import { NOW_ANGLE, eventPoint, inWindow } from "./index";
 import type { OrbitSpec } from "./index";
 
 export type Vec3 = [number, number, number];
@@ -18,7 +18,7 @@ export const ARC_SEGMENTS = 24;
 export type MarkerShape = "sphere" | "cube" | "diamond" | "arc";
 
 /** How an event kind is drawn; kinds the globe does not draw (tag, branch) return undefined. */
-export function shapeOf(kind: EventKind): MarkerShape | undefined {
+export function shapeOf(kind: NexusEvent["kind"]): MarkerShape | undefined {
   switch (kind) {
     case "commit": return "sphere";
     case "agent_session": return "cube";
@@ -71,7 +71,7 @@ export function activityPoint(orbit: Ring, atMs: number, nowMs: number, w: TimeW
  * A live event joins the loaded list (newest first). Returns the same array when the id is already loaded
  * or the event is outside the window, so callers can skip a state update.
  */
-export function insertLive(loaded: readonly NexusEvent[], incoming: NexusEvent, nowMs: number, w: TimeWindow): readonly NexusEvent[] {
+export function insertLive(loaded: NexusEvent[], incoming: NexusEvent, nowMs: number, w: TimeWindow): NexusEvent[] {
   if (!inWindow(Date.parse(incoming.at), nowMs, w)) return loaded;
   if (loaded.some((e) => e.id === incoming.id)) return loaded;
   const next = [...loaded, incoming];
@@ -83,4 +83,21 @@ export function insertLive(loaded: readonly NexusEvent[], incoming: NexusEvent, 
 export function scaleIn(ageMs: number): number {
   if (!(ageMs > 0)) return 0;
   return ageMs >= SCALE_IN_MS ? 1 : ageMs / SCALE_IN_MS;
+}
+
+/**
+ * Allocation-free eventPoint: writes the event's position on `orbit` (plus `radiusOffset`) into `out`.
+ * Same math as `eventPoint`; used from the per-frame drift loops.
+ */
+export function eventPointInto(out: Vec3, orbit: Ring, atMs: number, nowMs: number, windowMillis: number, radiusOffset = 0): Vec3 {
+  const age = Math.max(0, nowMs - atMs);
+  const angle = NOW_ANGLE + (age / windowMillis) * Math.PI * 2;
+  const r = orbit.radius + radiusOffset;
+  const x = Math.cos(angle) * r;
+  const c = Math.cos(orbit.tilt);
+  const s = Math.sin(orbit.tilt);
+  out[0] = x * c;
+  out[1] = x * s;
+  out[2] = Math.sin(angle) * r;
+  return out;
 }

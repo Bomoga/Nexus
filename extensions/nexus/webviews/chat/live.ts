@@ -7,7 +7,8 @@ import type { BridgeClient } from "../shared";
 
 export const PENDING_PREFIX = "pending:";
 
-const SELF = { id: "nexus-self", name: "you", isBot: false } as const;
+/** The Slack identity posts are made as (slack.status postsAs). */
+export interface Self { userId: string; name: string }
 
 const byTs = (a: ChatMessage, b: ChatMessage) => parseFloat(a.ts) - parseFloat(b.ts) || a.ts.localeCompare(b.ts);
 
@@ -32,13 +33,13 @@ export function newClientId(): string {
 
 export interface Outgoing { channelId: string; threadTs?: string; text: string; clientId: string }
 
-export function makePending(o: Outgoing): ChatMessage {
+export function makePending(o: Outgoing, self?: Self): ChatMessage {
   return {
     id: `${PENDING_PREFIX}${o.clientId}`,
     channelId: o.channelId,
     ts: (Date.now() / 1000).toFixed(6),
     ...(o.threadTs ? { threadTs: o.threadTs } : {}),
-    author: SELF,
+    author: { id: self?.userId ?? "nexus-self", name: self?.name ?? "you", isBot: false },
     text: o.text,
     codeRefs: [],
     sentVia: "user",
@@ -49,27 +50,26 @@ export function makePending(o: Outgoing): ChatMessage {
 const sameTarget = (a: ChatMessage, b: ChatMessage) => a.channelId === b.channelId && (a.threadTs ?? "") === (b.threadTs ?? "");
 
 /**
- * Applies a message from slack.subscribe. A user message that matches an in-flight pending echo (same
- * channel, thread and text) is Slack's confirmed copy of it and takes its place.
+ * The echo (pending, or failed because the bridge timed out on a slow post) that a subscription message is
+ * Slack's confirmed copy of. Only our own posting identity can match: another person's identical text must
+ * never consume our echo, and with no known identity there is no fallback (the post reply confirms instead).
  */
-export function applyIncoming(list: ChatMessage[], incoming: ChatMessage): ChatMessage[] {
-  const known = list.some((m) => keyOf(m) === keyOf(incoming));
-  let rest = list;
-  if (!known && incoming.sentVia === "user" && !incoming.author.isBot) {
-    const i = list.findIndex((m) => m.pending && !m.failed && m.text === incoming.text && sameTarget(m, incoming));
-    if (i >= 0) rest = list.filter((_, j) => j !== i);
-  }
-  return mergeMessages(rest, [incoming]);
+export function matchEcho(list: ChatMessage[], incoming: ChatMessage, self: Self | undefined): ChatMessage | undefined {
+  if (!self || incoming.author.id !== self.userId || incoming.sentVia !== "user" || incoming.author.isBot) return undefined;
+  if (list.some((m) => keyOf(m) === keyOf(incoming))) return undefined;
+  const same = (m: ChatMessage) => m.text === incoming.text && sameTarget(m, incoming);
+  return list.find((m) => m.pending && !m.failed && same(m)) ?? list.find((m) => m.failed && same(m));
 }
 
-/**
- * The slack.post reply is the confirmed copy of the pending echo with that clientId. If the echo is already
- * gone, the subscription's copy replaced it first and there is nothing to add.
- */
+/** Applies a message from slack.subscribe; a matching echo (see matchEcho) is replaced by it. */
+export function applyIncoming(list: ChatMessage[], incoming: ChatMessage, self?: Self): ChatMessage[] {
+  const echo = matchEcho(list, incoming, self);
+  return mergeMessages(echo ? list.filter((m) => m !== echo) : list, [incoming]);
+}
+
+/** The slack.post reply is the confirmed copy of the echo with that clientId; it is always kept (de-duped by ts). */
 export function confirmPending(list: ChatMessage[], clientId: string, confirmed: ChatMessage): ChatMessage[] {
-  const id = `${PENDING_PREFIX}${clientId}`;
-  if (!list.some((m) => m.id === id)) return list;
-  return mergeMessages(list.filter((m) => m.id !== id), [confirmed]);
+  return mergeMessages(list.filter((m) => m.id !== `${PENDING_PREFIX}${clientId}`), [confirmed]);
 }
 
 export function failPending(list: ChatMessage[], clientId: string): ChatMessage[] {
@@ -94,66 +94,117 @@ export function useSlackLive(
       if (evt.message.channelId !== channelId) return;
       handler.current(evt.message, evt.type);
     });
-    return () => off?.();
+    return off;
   }, [client, channelId]);
+}
+
+/** The identity we post as, from slack.status; undefined while unknown (or when Slack would post as the app). */
+export function usePostsAs(client: BridgeClient): Self | undefined {
+  const [self, setSelf] = useState<Self | undefined>();
+  useEffect(() => {
+    let live = true;
+    client
+      .request("slack.status", {})
+      .then((st) => live && setSelf(st.postsAs ? { userId: st.postsAs.userId, name: st.postsAs.name } : undefined))
+      .catch(() => undefined);
+    return () => {
+      live = false;
+    };
+  }, [client]);
+  return self;
 }
 
 export interface Outbox {
   send(text: string): void;
   retry(message: ChatMessage): void;
+  /** Failed echoes of a target (kept even when the user was elsewhere when the post failed). */
+  failedFor(channelId: string, threadTs?: string): ChatMessage[];
+  /** slack.subscribe message into a list: replaces a matching echo and forgets it. */
+  incoming(list: ChatMessage[], message: ChatMessage): ChatMessage[];
 }
+
+const targetKey = (channelId: string, threadTs?: string) => `${channelId}/${threadTs ?? ""}`;
 
 /**
  * Optimistic sending into a message list: the echo shows pending at once, then the post reply (or the
- * subscription's copy, see applyIncoming) replaces it; a rejected post marks it failed for retry.
+ * subscription's copy, see matchEcho) replaces it; a rejected post marks it failed for retry. The target is
+ * captured when the user sends, never read later.
  */
 export function useOutbox(
   client: BridgeClient,
   target: { channelId: string; threadTs?: string },
   setMessages: Dispatch<SetStateAction<ChatMessage[]>>,
+  self: Self | undefined,
   onSent?: () => void,
 ): Outbox {
+  const { channelId, threadTs } = target;
   const current = useRef(target);
   current.current = target;
+  const selfRef = useRef(self);
+  selfRef.current = self;
   const onSentRef = useRef(onSent);
   onSentRef.current = onSent;
+  const failed = useRef(new Map<string, Map<string, ChatMessage>>());
+
+  const forget = useCallback((m: ChatMessage) => {
+    const id = clientIdOf(m);
+    if (id) failed.current.get(targetKey(m.channelId, m.threadTs))?.delete(id);
+  }, []);
 
   const post = useCallback(
-    (o: Outgoing) => {
-      const stillHere = () => current.current.channelId === o.channelId && current.current.threadTs === o.threadTs;
+    (echo: ChatMessage, clientId: string) => {
+      const here = () => current.current.channelId === echo.channelId && current.current.threadTs === echo.threadTs;
       client
-        .request("slack.post", { channelId: o.channelId, text: o.text, ...(o.threadTs ? { threadTs: o.threadTs } : {}), clientId: o.clientId })
+        .request("slack.post", { channelId: echo.channelId, text: echo.text, ...(echo.threadTs ? { threadTs: echo.threadTs } : {}), clientId })
         .then((confirmed) => {
-          if (stillHere()) setMessages((l) => confirmPending(l, o.clientId, confirmed));
+          forget(echo);
+          if (here()) setMessages((l) => confirmPending(l, clientId, confirmed));
         })
         .catch(() => {
-          if (stillHere()) setMessages((l) => failPending(l, o.clientId));
+          const k = targetKey(echo.channelId, echo.threadTs);
+          const map = failed.current.get(k) ?? new Map<string, ChatMessage>();
+          map.set(clientId, { ...echo, pending: false, failed: true });
+          failed.current.set(k, map);
+          if (here()) setMessages((l) => failPending(l, clientId));
         });
     },
-    [client, setMessages],
+    [client, setMessages, forget],
   );
 
   const send = useCallback(
     (text: string) => {
-      const o: Outgoing = { channelId: current.current.channelId, threadTs: current.current.threadTs, text, clientId: newClientId() };
-      setMessages((l) => mergeMessages(l, [makePending(o)]));
+      const clientId = newClientId();
+      const echo = makePending({ channelId, threadTs, text, clientId }, selfRef.current);
+      setMessages((l) => mergeMessages(l, [echo]));
       onSentRef.current?.();
-      post(o);
+      post(echo, clientId);
     },
-    [post, setMessages],
+    [post, setMessages, channelId, threadTs],
   );
 
   const retry = useCallback(
     (m: ChatMessage) => {
       const clientId = clientIdOf(m);
       if (!clientId) return;
+      forget(m);
       setMessages((l) => repending(l, clientId));
-      post({ channelId: m.channelId, threadTs: m.threadTs, text: m.text, clientId });
+      post({ ...m, pending: true, failed: false }, clientId);
     },
-    [post, setMessages],
+    [post, setMessages, forget],
   );
 
-  return { send, retry };
+  const failedFor = useCallback((c: string, t?: string) => [...(failed.current.get(targetKey(c, t))?.values() ?? [])], []);
+
+  const incoming = useCallback(
+    (list: ChatMessage[], m: ChatMessage) => {
+      const echo = matchEcho(list, m, selfRef.current);
+      if (echo) forget(echo);
+      return applyIncoming(list, m, selfRef.current);
+    },
+    [forget],
+  );
+
+  return { send, retry, failedFor, incoming };
 }
 
 /** Resolves display names and (safe) avatars for authors not asked about yet; `resetKey` clears the cache. */

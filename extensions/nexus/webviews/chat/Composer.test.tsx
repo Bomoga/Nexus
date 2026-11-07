@@ -75,8 +75,8 @@ describe("posting from the channel view", () => {
     expect(host.posts[0].threadTs).toBeUndefined();
     expect(host.posts[0].clientId.length).toBeGreaterThan(0);
 
-    // Slack's copy arrives on the subscription before the post reply.
-    const ts = host.slackTs(1);
+    // Slack's copy arrives on the subscription before the post reply, with the same ts the reply will carry.
+    const ts = "1762490000.000001";
     act(() => host.emit({ type: "message", message: { id: `C_DEMO:${ts}`, channelId: "C_DEMO", ts, author: { id: "U_ADRIAN", name: "adrian", isBot: false }, text: "shipping it", codeRefs: [], sentVia: "user" } }));
     await waitFor(() => expect(container.querySelectorAll(".chat-text").length).toBe(2));
     expect(container.querySelector(".chat-row--pending")).toBeNull();
@@ -192,5 +192,157 @@ describe("posting from the thread pane", () => {
     host.release();
     await waitFor(() => expect(container.querySelector(".chat-row--pending")).toBeNull());
     expect(screen.getAllByText("on it")).toHaveLength(1);
+  });
+});
+
+describe("echo matching and drafts", () => {
+  const ready = async (host: ReturnType<typeof createTestHost>, channelId = "C_DEMO") => {
+    const view = render(<History bridge={host.client} channelId={channelId} />);
+    if (channelId === "C_DEMO") await screen.findByText(/cart total ignores the discount/);
+    else await screen.findByText("no messages yet");
+    await settle();
+    return view;
+  };
+  const say = (host: ReturnType<typeof createTestHost>, n: number, author: ChatMessage["author"], text: string, channelId = "C_DEMO") => {
+    const ts = host.slackTs(n);
+    act(() => host.emit({ type: "message", message: { id: `${channelId}:${ts}`, channelId, ts, author, text, codeRefs: [], sentVia: "user" } }));
+  };
+  const adrian = { id: "U_ADRIAN", name: "adrian", isBot: false };
+  const send = (text: string) => {
+    type(text);
+    fireEvent.keyDown(box(), { key: "Enter" });
+  };
+
+  test("another person's identical text does not consume our pending echo, which our own reply confirms", async () => {
+    const host = createTestHost();
+    host.holdPosts();
+    const { container } = await ready(host);
+    send("ok");
+    await screen.findByText("ok");
+    say(host, 10, brandon, "ok");
+    await waitFor(() => expect(screen.getAllByText("ok")).toHaveLength(2));
+    expect(container.querySelectorAll(".chat-row--pending")).toHaveLength(1);
+    host.release();
+    await waitFor(() => expect(container.querySelector(".chat-row--pending")).toBeNull());
+    expect(screen.getAllByText("ok")).toHaveLength(2);
+  });
+
+  test("another person's identical text does not hide a failed send", async () => {
+    const host = createTestHost();
+    host.holdPosts();
+    host.failNextPost();
+    await ready(host);
+    send("ok");
+    await screen.findByText("ok");
+    say(host, 11, brandon, "ok");
+    await waitFor(() => expect(screen.getAllByText("ok")).toHaveLength(2));
+    host.release();
+    await screen.findByText("RETRY");
+    expect(screen.getAllByText("ok")).toHaveLength(2);
+  });
+
+  test("a subscription copy of a send the bridge already marked failed clears the failed row", async () => {
+    const host = createTestHost();
+    host.failNextPost();
+    await ready(host);
+    send("late");
+    await screen.findByText("RETRY");
+    say(host, 12, adrian, "late");
+    await waitFor(() => expect(screen.queryByText("RETRY")).toBeNull());
+    expect(screen.getAllByText("late")).toHaveLength(1);
+    expect(host.posts).toHaveLength(1);
+  });
+
+  test("the pending echo shows our real posting name", async () => {
+    const host = createTestHost();
+    host.holdPosts();
+    const { container } = await ready(host);
+    send("who am i");
+    await screen.findByText("who am i");
+    expect(container.querySelector(".chat-row--pending .chat-name")?.textContent).toBe("Adrian");
+  });
+
+  test("a draft typed in one channel is not posted to another", async () => {
+    const host = createTestHost();
+    const { rerender } = await ready(host);
+    type("private note");
+    rerender(<History bridge={host.client} channelId="C_OTHER" />);
+    await screen.findByText("no messages yet");
+    expect(box().value).toBe("");
+    fireEvent.keyDown(box(), { key: "Enter" });
+    fireEvent.click(screen.getByText("SEND"));
+    await settle();
+    expect(host.posts).toHaveLength(0);
+  });
+
+  test("a draft typed in one thread is not posted to another", async () => {
+    const host = createTestHost();
+    const { rerender } = render(<ThreadPane bridge={host.client} channelId="C_DEMO" threadTs="1762485300.000100" onClose={() => undefined} />);
+    await screen.findByText("can an agent take this?");
+    type("private note");
+    rerender(<ThreadPane bridge={host.client} channelId="C_DEMO" threadTs="1762400000.000100" onClose={() => undefined} />);
+    await settle();
+    expect(box().value).toBe("");
+    fireEvent.keyDown(box(), { key: "Enter" });
+    await settle();
+    expect(host.posts).toHaveLength(0);
+  });
+
+  test("a send that fails after switching away shows its failed row with RETRY on return", async () => {
+    const host = createTestHost();
+    host.holdPosts();
+    host.failNextPost();
+    const { rerender } = await ready(host);
+    send("slow one");
+    await screen.findByText("slow one");
+    rerender(<History bridge={host.client} channelId="C_OTHER" />);
+    await screen.findByText("no messages yet");
+    host.release();
+    await settle();
+    expect(screen.queryByText("RETRY")).toBeNull();
+    rerender(<History bridge={host.client} channelId="C_DEMO" />);
+    await screen.findByText("RETRY");
+    expect(screen.getByText("slow one")).toBeTruthy();
+    expect(host.posts[0].channelId).toBe("C_DEMO");
+  });
+
+  test("an empty channel shows pending and failed echoes", async () => {
+    const host = createTestHost();
+    host.holdPosts();
+    host.failNextPost();
+    const { container } = await ready(host, "C_OTHER");
+    send("first");
+    await screen.findByText("first");
+    expect(container.querySelector(".chat-row--pending")).not.toBeNull();
+    host.release();
+    await screen.findByText("RETRY");
+  });
+
+  test("no composer when the history could not be loaded", async () => {
+    const host = createTestHost({
+      history: () => {
+        throw new Error("offline");
+      },
+    });
+    render(<History bridge={host.client} channelId="C_DEMO" />);
+    await screen.findByText("could not load history");
+    expect(screen.queryByRole("textbox")).toBeNull();
+  });
+
+  test("double Enter and double click send once", async () => {
+    const host = createTestHost();
+    host.holdPosts();
+    await ready(host);
+    type("once");
+    fireEvent.keyDown(box(), { key: "Enter" });
+    fireEvent.keyDown(box(), { key: "Enter" });
+    await settle();
+    expect(host.posts).toHaveLength(1);
+    type("twice");
+    const sendBtn = screen.getByText("SEND");
+    fireEvent.click(sendBtn);
+    fireEvent.click(sendBtn);
+    await settle();
+    expect(host.posts).toHaveLength(2);
   });
 });

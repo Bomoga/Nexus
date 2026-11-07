@@ -2,8 +2,8 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { createBridgeClient } from "../shared";
+import { createTestHost } from "./testHost";
 import { createFakeTransport } from "../shared/fakeBridge";
-import type { BridgeClient } from "../shared";
 import type { ChatMessage } from "../../src/contracts";
 import { History } from "./History";
 import { formatTime } from "./MessageRow";
@@ -19,14 +19,7 @@ interface Page { messages: ChatMessage[]; nextCursor?: string; fromCache: boolea
 
 function fakeClient(pages: Record<string, Page>) {
   const history = vi.fn(async (body: { cursor?: string }) => pages[body.cursor ?? "first"]);
-  const client = {
-    request: vi.fn(async (name: string, body: never) => {
-      if (name === "slack.history") return history(body);
-      if (name === "slack.users") return [];
-      throw new Error(`unexpected ${name}`);
-    }),
-    subscribe: vi.fn(),
-  } as unknown as BridgeClient;
+  const client = createTestHost({ history }).client;
   return { client, history };
 }
 
@@ -119,16 +112,13 @@ describe("History", () => {
 
   test("uses a data: avatar from slack.users but ignores remote avatar URLs", async () => {
     const m = [msg(1), msg(2, { author: { id: "U2", name: "brandon", isBot: false } })];
-    const client = {
-      request: vi.fn(async (name: string) =>
-        name === "slack.history"
-          ? { messages: m, fromCache: false }
-          : [
-              { id: "U1", name: "adrian", displayName: "Adrian", isBot: false, avatarUrl: "data:image/png;base64,AAAA" },
-              { id: "U2", name: "brandon", displayName: "Brandon", isBot: false, avatarUrl: "https://avatars.slack-edge.com/x.png" },
-            ]),
-      subscribe: vi.fn(),
-    } as unknown as BridgeClient;
+    const client = createTestHost({
+      history: () => ({ messages: m, fromCache: false }),
+      users: () => [
+        { id: "U1", name: "adrian", displayName: "Adrian", isBot: false, avatarUrl: "data:image/png;base64,AAAA" },
+        { id: "U2", name: "brandon", displayName: "Brandon", isBot: false, avatarUrl: "https://avatars.slack-edge.com/x.png" },
+      ],
+    }).client;
     const { container } = render(<History bridge={client} channelId="C1" />);
     await screen.findByText("message 2");
     await waitFor(() => expect(container.querySelectorAll("img.chat-avatar").length).toBe(1));
@@ -149,10 +139,7 @@ describe("History", () => {
     const gate = new Promise<Page>((r) => (release = r));
     const pages: Record<string, Page> = { first: { messages: [msg(3), msg(2)], nextCursor: "c2", fromCache: false } };
     const history = vi.fn(async (body: { cursor?: string }) => (body.cursor ? gate : pages.first));
-    const client = {
-      request: vi.fn(async (name: string, body: never) => (name === "slack.history" ? history(body) : [])),
-      subscribe: vi.fn(),
-    } as unknown as BridgeClient;
+    const client = createTestHost({ history }).client;
     const { container } = render(<History bridge={client} channelId="C1" />);
     await screen.findByText("message 3");
     const scroller = container.querySelector(".chat-history") as HTMLElement;
@@ -183,10 +170,7 @@ describe("History", () => {
       if (fail) throw new Error("offline");
       return { messages: [msg(1)], fromCache: false };
     });
-    const client = {
-      request: vi.fn(async (name: string, body: never) => (name === "slack.history" ? history(body) : [])),
-      subscribe: vi.fn(),
-    } as unknown as BridgeClient;
+    const client = createTestHost({ history }).client;
     const { container } = render(<History bridge={client} channelId="C1" />);
     await screen.findByText("message 3");
     fireEvent.scroll(container.querySelector(".chat-history") as HTMLElement);
@@ -199,14 +183,12 @@ describe("History", () => {
 
   test("a failed initial load shows RETRY, and retrying loads the history", async () => {
     let fail = true;
-    const client = {
-      request: vi.fn(async (name: string) => {
-        if (name !== "slack.history") return [];
+    const client = createTestHost({
+      history: () => {
         if (fail) throw new Error("offline");
         return { messages: [msg(1)], fromCache: false };
-      }),
-      subscribe: vi.fn(),
-    } as unknown as BridgeClient;
+      },
+    }).client;
     render(<History bridge={client} channelId="C1" />);
     await screen.findByText("could not load history");
     fail = false;
@@ -246,10 +228,7 @@ describe("History", () => {
       if (body.channelId === "C1") return body.cursor ? gateA : { messages: [msg(2)], nextCursor: "a2", fromCache: false };
       return body.cursor ? gateB : { messages: [msg(12, { id: "C2:x", channelId: "C2", ts: "1762486000.000100" })], nextCursor: "b2", fromCache: false };
     });
-    const client = {
-      request: vi.fn(async (name: string, body: never) => (name === "slack.history" ? history(body) : [])),
-      subscribe: vi.fn(),
-    } as unknown as BridgeClient;
+    const client = createTestHost({ history }).client;
     const { container, rerender } = render(<History bridge={client} channelId="C1" />);
     await screen.findByText("message 2");
     fireEvent.scroll(container.querySelector(".chat-history") as HTMLElement);

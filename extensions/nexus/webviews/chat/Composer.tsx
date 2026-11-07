@@ -13,6 +13,8 @@ const MAX_H = 88;
 
 export function Composer({ onSend, placeholder = "message" }: ComposerProps) {
   const [text, setText] = useState("");
+  // The live value, cleared synchronously on send so a double Enter or double click sends once.
+  const latest = useRef("");
   const box = useRef<HTMLTextAreaElement>(null);
 
   // Grows with the text (Shift+Enter lines) up to a few rows; one row is the kit's 22 px control height.
@@ -24,8 +26,9 @@ export function Composer({ onSend, placeholder = "message" }: ComposerProps) {
   }, [text]);
 
   const submit = () => {
-    const trimmed = text.trim();
+    const trimmed = latest.current.trim();
     if (!trimmed) return;
+    latest.current = "";
     setText("");
     onSend(trimmed);
   };
@@ -45,7 +48,10 @@ export function Composer({ onSend, placeholder = "message" }: ComposerProps) {
         value={text}
         placeholder={placeholder}
         aria-label={placeholder}
-        onChange={(e) => setText(e.target.value)}
+        onChange={(e) => {
+          latest.current = e.target.value;
+          setText(e.target.value);
+        }}
         onKeyDown={onKeyDown}
       />
       <Button variant="primary" onClick={submit} disabled={text.trim().length === 0}>

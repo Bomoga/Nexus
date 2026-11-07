@@ -3,7 +3,7 @@ import type { ChatMessage } from "../../src/contracts";
 import { Button, EmptyState, StatusLine, getBridge } from "../shared";
 import type { BridgeClient } from "../shared";
 import { Composer, FailedBar } from "./Composer";
-import { applyIncoming, mergeMessages, useOutbox, useSlackLive, useUsers } from "./live";
+import { mergeMessages, useOutbox, usePostsAs, useSlackLive, useUsers } from "./live";
 import { MessageRow } from "./MessageRow";
 
 export type ThreadCommand = "nexus.makeTaskFromThread";
@@ -35,11 +35,16 @@ export function ThreadPane({ bridge, channelId, threadTs, onClose, onOpenLink, r
   const atBottom = useRef(true);
   const stick = useRef(true);
   const users = useUsers(client, messages, `${channelId}/${threadTs}`);
+  const self = usePostsAs(client);
+  const outbox = useOutbox(client, { channelId, threadTs }, setMessages, self, () => {
+    stick.current = true;
+  });
+  const { failedFor } = outbox;
   const inThread = (m: ChatMessage) => m.threadTs === threadTs || m.ts === threadTs;
 
   useEffect(() => {
     let live = true;
-    setMessages([]);
+    setMessages(failedFor(channelId, threadTs));
     setLoad("loading");
     setMake("idle");
     stick.current = true;
@@ -55,16 +60,12 @@ export function ThreadPane({ bridge, channelId, threadTs, onClose, onOpenLink, r
     return () => {
       live = false;
     };
-  }, [client, channelId, threadTs, attempt]);
+  }, [client, channelId, threadTs, attempt, failedFor]);
 
   useSlackLive(client, channelId, (m, kind) => {
     if (!inThread(m)) return;
     if (atBottom.current) stick.current = true;
-    setMessages((l) => (kind === "message_changed" ? mergeMessages(l, [m]) : applyIncoming(l, m)));
-  });
-
-  const outbox = useOutbox(client, { channelId, threadTs }, setMessages, () => {
-    stick.current = true;
+    setMessages((l) => (kind === "message_changed" ? mergeMessages(l, [m]) : outbox.incoming(l, m)));
   });
 
   useLayoutEffect(() => {
@@ -90,7 +91,7 @@ export function ThreadPane({ bridge, channelId, threadTs, onClose, onOpenLink, r
     <div className="chat-thread-pane">
       <div className="chat-thread-head">
         <span className="chat-thread-title">THREAD</span>
-        <Button variant="primary" onClick={makeTask} disabled={make === "working"}>
+        <Button variant="primary" onClick={makeTask} disabled={make === "working" || make === "done"}>
           MAKE TASK
         </Button>
         <Button onClick={onClose}>CLOSE</Button>
@@ -122,7 +123,7 @@ export function ThreadPane({ bridge, channelId, threadTs, onClose, onOpenLink, r
           ))}
         </div>
       )}
-      <Composer onSend={outbox.send} placeholder="reply" />
+      {load === "failed" ? null : <Composer key={`${channelId}/${threadTs}`} onSend={outbox.send} placeholder="reply" />}
     </div>
   );
 }

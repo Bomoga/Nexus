@@ -55,6 +55,15 @@ describe("ThreadPane", () => {
     await screen.findByText("task drafted");
   });
 
+  test("MAKE TASK is disabled after the task is drafted", async () => {
+    const host = createTestHost();
+    render(<ThreadPane bridge={host.client} channelId="C_DEMO" threadTs={THREAD} onClose={() => undefined} />);
+    await screen.findByText("can an agent take this?");
+    fireEvent.click(screen.getByText("MAKE TASK"));
+    await screen.findByText("task drafted");
+    expect((screen.getByText("MAKE TASK").closest("button") as HTMLButtonElement).disabled).toBe(true);
+  });
+
   test("renders thread text as text, never as HTML", async () => {
     const host = createTestHost();
     render(<ThreadPane bridge={host.client} channelId="C_DEMO" threadTs={THREAD} onClose={() => undefined} />);

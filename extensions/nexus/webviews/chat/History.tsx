@@ -3,7 +3,7 @@ import type { ChatMessage } from "../../src/contracts";
 import { Button, Chip, EmptyState, StatusLine, getBridge } from "../shared";
 import type { BridgeClient } from "../shared";
 import { Composer, FailedBar } from "./Composer";
-import { applyIncoming, isReply, mergeMessages, useOutbox, useSlackLive, useUsers } from "./live";
+import { isReply, mergeMessages, useOutbox, usePostsAs, useSlackLive, useUsers } from "./live";
 import { MessageRow } from "./MessageRow";
 
 const PAGE = 50;
@@ -35,10 +35,16 @@ export function History({ bridge, channelId, onOpenLink, onOpenThread }: History
   const atBottom = useRef(true);
   const counted = useRef(new Set<string>());
   const users = useUsers(client, messages, channelId);
+  const self = usePostsAs(client);
+  const outbox = useOutbox(client, { channelId }, setMessages, self, () => {
+    anchor.current = { kind: "bottom" };
+  });
+  const { failedFor } = outbox;
 
   useEffect(() => {
     const gen = ++generation.current;
-    setMessages([]);
+    // Echoes whose post failed while we were here earlier come back with RETRY.
+    setMessages(failedFor(channelId));
     setCursor(undefined);
     setCached(false);
     setState("loading");
@@ -60,7 +66,7 @@ export function History({ bridge, channelId, onOpenLink, onOpenThread }: History
       .catch(() => {
         if (gen === generation.current) setState("failed");
       });
-  }, [client, channelId, attempt]);
+  }, [client, channelId, attempt, failedFor]);
 
   useLayoutEffect(() => {
     const el = scroller.current;
@@ -112,11 +118,7 @@ export function History({ bridge, channelId, onOpenLink, onOpenThread }: History
       return;
     }
     if (atBottom.current) anchor.current = { kind: "bottom" };
-    setMessages((l) => (kind === "message_changed" ? mergeMessages(l, [m]) : applyIncoming(l, m)));
-  });
-
-  const outbox = useOutbox(client, { channelId }, setMessages, () => {
-    anchor.current = { kind: "bottom" };
+    setMessages((l) => (kind === "message_changed" ? mergeMessages(l, [m]) : outbox.incoming(l, m)));
   });
 
   const openThread = (m: ChatMessage, target: HTMLElement) => {
@@ -169,7 +171,7 @@ export function History({ bridge, channelId, onOpenLink, onOpenThread }: History
           ))}
         </div>
       )}
-      <Composer onSend={outbox.send} />
+      {state === "failed" ? null : <Composer key={channelId} onSend={outbox.send} />}
     </div>
   );
 }

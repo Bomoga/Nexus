@@ -21,7 +21,16 @@ export interface TestHost {
   slackTs(n: number): string;
 }
 
-export function createTestHost(): TestHost {
+export interface HistoryPage { messages: ChatMessage[]; nextCursor?: string; fromCache: boolean }
+
+export interface HostOptions {
+  /** Scripts slack.history; may return a promise to hold the reply, or throw to fail it. */
+  history?: (body: { channelId: string; cursor?: string; limit?: number }) => HistoryPage | Promise<HistoryPage>;
+  /** Scripts slack.users. */
+  users?: (body: { ids?: string[] }) => unknown[] | Promise<unknown[]>;
+}
+
+export function createTestHost(opts: HostOptions = {}): TestHost {
   const inner = createFakeTransport({ liveIntervalMs: 0 });
   const listeners = new Set<(env: Envelope) => void>();
   const send = (env: Envelope) => queueMicrotask(() => listeners.forEach((l) => l(env)));
@@ -33,6 +42,15 @@ export function createTestHost(): TestHost {
   let hold = false;
   let held: Array<() => void> = [];
   let counter = 0;
+
+  const scripted = (id: string, run: () => unknown) => {
+    Promise.resolve()
+      .then(run)
+      .then(
+        (body) => send({ t: "res", id, ok: true, body }),
+        () => send({ t: "res", id, ok: false, error: { code: "offline", message: "scripted failure" } }),
+      );
+  };
 
   const transport: Transport = {
     post(env) {
@@ -60,6 +78,10 @@ export function createTestHost(): TestHost {
         };
         if (hold) held.push(reply);
         else reply();
+      } else if (env.t === "req" && env.name === "slack.history" && opts.history) {
+        scripted(env.id, () => opts.history!(env.body as never));
+      } else if (env.t === "req" && env.name === "slack.users" && opts.users) {
+        scripted(env.id, () => opts.users!(env.body as never));
       } else {
         inner.post(env);
       }

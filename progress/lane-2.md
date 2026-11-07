@@ -29,6 +29,9 @@ T+0 = 22:00 ET, 2026-11-06
 - 2026-11-07 Bridge wiring still to do in src/register/lane-2.ts: one shared NexusBridgeRouter with a real containsSecret, log and redact (needs src/shared/redact.ts on main), declare nexus.t0 in contributes/lane-2.json, key the store directory by folder path.
 - 2026-11-07 Elkin: host loads media/<entry>.js as a classic script; the planned Vite output may differ. A reloaded page must resubscribe with fromSeq.
 - 2026-11-07 Adrian: lane-1 hang paths on store I/O failure: approvals-controller.ts:218-223, sessions-controller.ts:159-160 and 166-167.
+- 2026-11-07 URLs: the fork hands an extension only nexus://<extension-id>/..., so the frozen nexus://auth/callback and nexus://coderef/... never reach Nexus (extensionUrlHandler.ts:155). Also product.json urlProtocol is still code-oss, and trustedExtensionProtocolHandlers should list nexus.nexus. Needs Lane 1: a core change or a contracts PR. Lane 2's UriRouter accepts both spellings and a decoded vscode.Uri.
+- 2026-11-07 Webview host loads Vite's media/<entry>/index.html (proven in the fork with Lane 3's real chat and globe build). CSP: nonce plus cspSource for scripts, no strict-dynamic.
+- 2026-11-07 Git interface widened for L2-07/L2-13/L2-14: refs, branchesContaining, contains, fileAt, isDirty, and a path-scoped diff against a base commit.
 
 ## Next
 - PR lane-2 to main with wave 1, then wave 2: L2-13 gate, L2-03 socket, L2-05 git

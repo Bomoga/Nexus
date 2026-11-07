@@ -52,7 +52,7 @@ export interface LocalStoreOptions {
   redact: (text: string) => string;
 }
 
-interface Journal { op: "put" | "decide"; record: unknown }
+interface Journal { op: "put" | "decide" | "mirror"; record: unknown }
 type DecideRecord = { id: string; decision: "approved" | "rejected"; decidedBy: DecidedBy; decidedAt: string };
 
 const DecideRecordSchema = z.object({
@@ -167,6 +167,24 @@ export class LocalStore implements EventStore {
     this.emitApproval(approval);
     this.emitStatus();
     return { approval: clone(approval), won: true };
+  }
+
+  /**
+   * Copies the shared store's decision over this machine's copy of an approval, even when it is already decided here. Only for
+   * an approval whose session runs on ANOTHER machine: that machine is the authority (it may have overridden an earlier
+   * decision while it was offline), and this copy must show what its agent acted on. Journaled so it survives a restart, never
+   * queued (it already is the shared store's value). Emits to approval subscribers like any change; this machine has no
+   * waiting agent for that session, so nothing runs because of it. Returns the approval, or undefined when it is unknown here.
+   */
+  async mirrorDecision(id: string, decision: "approved" | "rejected", decidedBy: DecidedBy, at: string): Promise<ApprovalRequest | undefined> {
+    const current = this.approvals.get(id);
+    if (!current) return undefined;
+    if (current.decision === decision && current.decidedAt === at && JSON.stringify(current.decidedBy) === JSON.stringify(decidedBy)) return clone(current);
+    const canonical = this.check("approvals", "decide", { id, decision, decidedBy: clone(decidedBy), decidedAt: at }) as DecideRecord;
+    this.appendLine(FILES.approvals, JSON.stringify({ op: "mirror", record: canonical } satisfies Journal) + "\n");
+    const approval = this.applyMirror(canonical)!;
+    this.emitApproval(approval);
+    return clone(approval);
   }
 
   // ---- events ----
@@ -374,7 +392,7 @@ export class LocalStore implements EventStore {
     const journalKeys = new Set<string>();   // every well-formed journal line, to detect outbox entries with no journal line
     const journalOf = (table: Table, accept: (j: Journal) => boolean = () => true): Journal[] =>
       this.readLines(FILES[table]).filter((j): j is Record<string, unknown> & Journal => {
-        const ok = (j.op === "put" || j.op === "decide") && j.record !== null && typeof j.record === "object" && accept(j as unknown as Journal);
+        const ok = (j.op === "put" || j.op === "decide" || j.op === "mirror") && j.record !== null && typeof j.record === "object" && accept(j as unknown as Journal);
         if (!ok) this.skipped++;
         else journalKeys.add(`${table}\0${JSON.stringify({ op: j.op, record: j.record })}`);
         return ok;
@@ -392,6 +410,8 @@ export class LocalStore implements EventStore {
     for (const j of journalOf("approvals")) {
       if (j.op === "decide") {
         if (!DecideRecordSchema.safeParse(j.record).success || !this.applyDecide(j.record as DecideRecord)) this.skipped++;
+      } else if (j.op === "mirror") {
+        if (!DecideRecordSchema.safeParse(j.record).success || !this.applyMirror(j.record as DecideRecord)) this.skipped++;
       } else if (valid("approvals", j.record)) {
         const merged = this.mergeApproval(j.record as ApprovalRequest);
         if (merged) this.approvals.set(merged.id, merged);
@@ -465,6 +485,15 @@ export class LocalStore implements EventStore {
     }
     if (existing && JSON.stringify(existing) === JSON.stringify(next)) return undefined;
     return next;
+  }
+
+  /** Sets the decision whatever it was (mirrorDecision and its journal replay only). */
+  private applyMirror(rec: DecideRecord): ApprovalRequest | undefined {
+    const current = this.approvals.get(rec.id);
+    if (!current) return undefined;
+    const approval: ApprovalRequest = { ...current, decision: rec.decision, decidedBy: clone(rec.decidedBy), decidedAt: rec.decidedAt };
+    this.approvals.set(rec.id, approval);
+    return approval;
   }
 
   private applyDecide(rec: DecideRecord): ApprovalRequest | undefined {

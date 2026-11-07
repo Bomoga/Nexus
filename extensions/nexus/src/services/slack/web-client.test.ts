@@ -56,6 +56,10 @@ describe("extractCodeRefs", () => {
     expect(extractCodeRefs(`(see ${l})`)).toEqual([ref]);
     expect(extractCodeRefs(`${l}, then ${l}.`)).toEqual([ref, ref]);
   });
+  it("reads the extension-id spelling of a link, wrapped and bare", () => {
+    const withId = link.replace("nexus://coderef/", "nexus://nexus.nexus/coderef/");
+    expect(extractCodeRefs(`<${withId}|label> and ${withId}.`)).toEqual([fx.codeRef, fx.codeRef]);
+  });
   it("ends a bare link at quotes, brackets, backticks, ellipsis and escaped >", () => {
     for (const [pre, post] of [['"', '"'], ["`", "`"], ["[", "]"], ["{", "}"], ["", "…"], ["", "&gt;"]]) {
       expect(extractCodeRefs(`${pre}${link}${post}`)).toEqual([fx.codeRef]);

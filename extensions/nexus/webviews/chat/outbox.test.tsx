@@ -6,6 +6,8 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 import type { ChatMessage } from "../../src/contracts";
 import { App } from "./App";
 import { History } from "./History";
+import { confirms } from "./outbox";
+import type { OutboxEntry } from "./outbox";
 import { ThreadPane } from "./ThreadPane";
 import { createTestHost } from "./testHost";
 import type { TestHost } from "./testHost";
@@ -233,6 +235,20 @@ describe("MAKE TASK follows the open thread (failure 5)", () => {
     rerender(pane(THREAD));
     await settle();
     expect(screen.getByText("task drafted")).toBeTruthy();
+  });
+});
+
+describe("confirms", () => {
+  test("matches only by clientId or the ts the post reply gave, never by text, author or target", () => {
+    const entry: OutboxEntry = { clientId: "nx-1", channelId: "C_DEMO", text: "ok", state: "failed", sentAt: "1762490000.000001" };
+    const m: ChatMessage = { id: "C_DEMO:1762490000.000005", channelId: "C_DEMO", ts: "1762490000.000005", author: adrian, text: "ok", codeRefs: [], sentVia: "user" };
+    expect([
+      confirms(entry, m),
+      confirms(entry, { ...m, clientId: "nx-2" }),
+      confirms(entry, { ...m, clientId: "nx-1", text: "edited" }),
+      confirms({ ...entry, confirmedTs: m.ts }, m),
+      confirms({ ...entry, confirmedTs: m.ts }, { ...m, channelId: "C_BUILD" }),
+    ]).toEqual([false, false, true, true, false]);
   });
 });
 

@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ChatMessage } from "../../src/contracts";
 import { Button, Chip, EmptyState, StatusLine, getBridge } from "../shared";
 import type { BridgeClient } from "../shared";
-import { Composer, FailedBar } from "./Composer";
-import { isReply, mergeMessages, useOutbox, usePostsAs, useSlackLive, useUsers } from "./live";
+import { Composer, EchoBar, echoClass } from "./Composer";
+import { isReply, mergeMessages, usePostsAs, useSlackLive, useUsers } from "./live";
+import { useOutboxRows, useOutboxStore } from "./outbox";
 import { MessageRow } from "./MessageRow";
 
 const PAGE = 50;
@@ -21,6 +22,7 @@ export interface HistoryProps {
 
 export function History({ bridge, channelId, onOpenLink, onOpenThread }: HistoryProps) {
   const client = bridge ?? getBridge();
+  // Slack's copies only; open sends come from the outbox (see useOutboxRows).
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [cursor, setCursor] = useState<string | undefined>();
   const [cached, setCached] = useState(false);
@@ -34,17 +36,15 @@ export function History({ bridge, channelId, onOpenLink, onOpenThread }: History
   const anchor = useRef<Anchor | undefined>(undefined);
   const atBottom = useRef(true);
   const counted = useRef(new Set<string>());
-  const users = useUsers(client, messages, channelId);
   const self = usePostsAs(client);
-  const outbox = useOutbox(client, { channelId }, setMessages, self, () => {
-    anchor.current = { kind: "bottom" };
-  });
-  const { failedFor } = outbox;
+  const outbox = useOutboxStore(client);
+  const target = useMemo(() => ({ channelId }), [channelId]);
+  const { shown, rows } = useOutboxRows(outbox, target, messages, self);
+  const users = useUsers(client, shown, channelId);
 
   useEffect(() => {
     const gen = ++generation.current;
-    // Echoes whose post failed while we were here earlier come back with RETRY.
-    setMessages(failedFor(channelId));
+    setMessages([]);
     setCursor(undefined);
     setCached(false);
     setState("loading");
@@ -56,8 +56,9 @@ export function History({ bridge, channelId, onOpenLink, onOpenThread }: History
       .request("slack.history", { channelId, limit: PAGE })
       .then((r) => {
         if (gen !== generation.current) return;
+        outbox.observe(r.messages);
         anchor.current = { kind: "bottom" };
-        // Live and pending messages that arrived while the page was loading stay.
+        // Live messages that arrived while the page was loading stay.
         setMessages((cur) => mergeMessages(r.messages, cur));
         setCursor(r.nextCursor);
         setCached(r.fromCache);
@@ -66,7 +67,7 @@ export function History({ bridge, channelId, onOpenLink, onOpenThread }: History
       .catch(() => {
         if (gen === generation.current) setState("failed");
       });
-  }, [client, channelId, attempt, failedFor]);
+  }, [client, channelId, attempt, outbox]);
 
   useLayoutEffect(() => {
     const el = scroller.current;
@@ -74,7 +75,7 @@ export function History({ bridge, channelId, onOpenLink, onOpenThread }: History
     if (!el || !a) return;
     anchor.current = undefined;
     el.scrollTop = a.kind === "bottom" ? el.scrollHeight : el.scrollHeight - a.height;
-  }, [messages]);
+  }, [rows]);
 
   const loadOlder = useCallback(() => {
     if (!cursor || inflight.current) return;
@@ -87,6 +88,7 @@ export function History({ bridge, channelId, onOpenLink, onOpenThread }: History
       .request("slack.history", { channelId, cursor, limit: PAGE })
       .then((r) => {
         if (gen !== generation.current) return;
+        outbox.observe(r.messages);
         anchor.current = { kind: "keep", height };
         setMessages((m) => mergeMessages(m, r.messages));
         // A cursor that does not advance would loop forever; treat it as the end.
@@ -98,7 +100,7 @@ export function History({ bridge, channelId, onOpenLink, onOpenThread }: History
       .finally(() => {
         if (inflight.current === token) inflight.current = undefined;
       });
-  }, [client, channelId, cursor]);
+  }, [client, channelId, cursor, outbox]);
 
   // Paging is driven by scroll events, which never come if the pane does not overflow or the page we just
   // loaded added no height; keep loading while the top is in view and older pages exist.
@@ -106,9 +108,10 @@ export function History({ bridge, channelId, onOpenLink, onOpenThread }: History
     const el = scroller.current;
     if (state !== "ready" || !cursor || olderFailed || !el || el.clientHeight <= 0) return;
     if (el.scrollHeight <= el.clientHeight || el.scrollTop <= 0) loadOlder();
-  }, [state, cursor, olderFailed, messages, loadOlder]);
+  }, [state, cursor, olderFailed, rows, loadOlder]);
 
   useSlackLive(client, channelId, (m, kind) => {
+    outbox.observe([m]);
     if (isReply(m)) {
       // Replies belong to the thread pane; the parent only shows a count.
       if (kind === "message" && !counted.current.has(m.id)) {
@@ -118,11 +121,16 @@ export function History({ bridge, channelId, onOpenLink, onOpenThread }: History
       return;
     }
     if (atBottom.current) anchor.current = { kind: "bottom" };
-    setMessages((l) => (kind === "message_changed" ? mergeMessages(l, [m]) : outbox.incoming(l, m)));
+    setMessages((l) => mergeMessages(l, [m]));
   });
 
-  const openThread = (m: ChatMessage, target: HTMLElement) => {
-    if (!onOpenThread || m.pending || m.failed || target.closest("button")) return;
+  const send = (text: string) => {
+    anchor.current = { kind: "bottom" };
+    outbox.send(target, text);
+  };
+
+  const openThread = (m: ChatMessage, el: HTMLElement) => {
+    if (!onOpenThread || m.pending || m.failed || el.closest("button")) return;
     onOpenThread(m);
   };
 
@@ -135,7 +143,7 @@ export function History({ bridge, channelId, onOpenLink, onOpenThread }: History
       ) : null}
       {state === "failed" ? (
         <EmptyState message="could not load history" action={{ label: "RETRY", onClick: () => setAttempt((n) => n + 1) }} />
-      ) : state === "ready" && messages.length === 0 ? (
+      ) : state === "ready" && rows.length === 0 ? (
         <EmptyState message="no messages yet" />
       ) : (
         <div
@@ -153,25 +161,32 @@ export function History({ bridge, channelId, onOpenLink, onOpenThread }: History
               <Button onClick={loadOlder}>RETRY</Button>
             </StatusLine>
           ) : null}
-          {messages.map((m) => (
-            <div
-              key={m.id}
-              className={[m.failed ? "chat-failed" : "", onOpenThread && !m.pending && !m.failed ? "chat-row-open" : ""].filter(Boolean).join(" ") || undefined}
-              onClick={(e) => openThread(m, e.target as HTMLElement)}
-            >
-              <MessageRow
-                message={m}
-                displayName={users[m.author.id]?.displayName}
-                avatarUrl={users[m.author.id]?.avatarUrl}
-                onOpenLink={onOpenLink}
-                onOpenThread={onOpenThread}
-              />
-              {m.failed ? <FailedBar onRetry={() => outbox.retry(m)} /> : null}
-            </div>
-          ))}
+          {rows.map(({ message: m, entry }) => {
+            const opens = onOpenThread && !entry;
+            const cls = [echoClass(entry?.state), opens ? "chat-row-open" : ""].filter(Boolean).join(" ") || undefined;
+            return (
+              <div key={m.id} className={cls} onClick={(e) => openThread(m, e.target as HTMLElement)}>
+                <MessageRow
+                  message={m}
+                  displayName={users[m.author.id]?.displayName}
+                  avatarUrl={users[m.author.id]?.avatarUrl}
+                  onOpenLink={onOpenLink}
+                  onOpenThread={entry ? undefined : onOpenThread}
+                />
+                {entry && entry.state !== "pending" ? <EchoBar state={entry.state} onRetry={() => outbox.retry(entry.clientId)} /> : null}
+              </div>
+            );
+          })}
         </div>
       )}
-      {state === "failed" ? null : <Composer key={channelId} onSend={outbox.send} />}
+      {state === "failed" ? null : (
+        <Composer
+          key={channelId}
+          onSend={send}
+          initialText={outbox.draftFor(target)}
+          onDraftChange={(text) => outbox.setDraft(target, text)}
+        />
+      )}
     </div>
   );
 }

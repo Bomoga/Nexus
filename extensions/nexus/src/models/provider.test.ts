@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { fx } from "../contracts/fixtures";
-import { FAKE_AGENT_SCRIPT, FakeProvider } from "./fake-provider";
+import { FAKE_AGENT_SCRIPT, FakeProvider, keyFingerprint } from "./fake-provider";
 import { ListingCache } from "./listing-cache";
 import { ProviderAuthError, collectTurn, roleEligible, type TurnRequest } from "./provider";
 
@@ -47,13 +47,14 @@ describe("FakeProvider", () => {
     expect(r.toolCalls).toEqual([]);
   });
 
-  it("records requests and the key passed on each call, and holds no key field", async () => {
+  it("records requests and a fingerprint of the key on each call, and never holds a key", async () => {
     const p = new FakeProvider();
-    await p.listModels("key-1");
-    await collectTurn(p.turn(req(), "key-2"));
-    expect(p.keysSeen).toEqual(["key-1", "key-2"]);
+    await p.listModels("sk-key-1");
+    await collectTurn(p.turn(req(), "sk-key-2"));
+    expect(p.keyFingerprints).toEqual([keyFingerprint("sk-key-1"), keyFingerprint("sk-key-2")]);
     expect(p.requests).toHaveLength(1);
-    expect(Object.keys(p)).not.toContain("apiKey");
+    expect(JSON.stringify(p)).not.toContain("sk-key");
+    expect(JSON.stringify(Object.values(p))).not.toContain("sk-key");
   });
 
   it("lists the fixture models for its provider and can fail with an auth error", async () => {

@@ -1,6 +1,7 @@
 // The session's single Slack progress message (CLAUDE.md sections 6 and 8): one bot message in the task's thread,
 // edited in place. vscode-free. Bot token only; everything model-written is redacted, escaped and labeled.
 import { CodeRef, encodeCodeRef, type AgentEvent, type AgentSession, type Task } from "../../contracts";
+import { checkRelativePath } from "../coderef/create";
 import { escapeAndTruncate } from "./interactivity";
 import type { SlackService } from "./types";
 
@@ -59,6 +60,12 @@ const STATUS_LABEL: Record<AgentSession["status"], string> = {
   cancelled: "cancelled",
 };
 const TERMINAL = new Set<AgentSession["status"]>(["done", "failed", "cancelled"]);
+
+/** The agent's path as a plain repo-relative path ("./a" → "a"), or undefined for an absolute or otherwise unusable one. */
+function repoRelative(path: string): string | undefined {
+  const p = path.replace(/^(?:\.\/)+/, "");
+  try { checkRelativePath(p); return p; } catch { return undefined; }
+}
 
 /** One file's state in the cumulative worktree diff. range null: no usable hunks or an unparseable path, so no link. */
 type FileState = { range: { start: number; end: number } | null; deleted: boolean };
@@ -146,7 +153,8 @@ export function createProgressMessages(deps: ProgressMessagesDeps): ProgressMess
         const parsed = workspaceId && t.commit && state.range && !state.deleted
           ? CodeRef.safeParse({ workspaceId, commit: t.commit, path, startLine: state.range.start, endLine: state.range.end })
           : undefined;
-        const line = `\n• ${parsed?.success ? `<${encodeCodeRef(parsed.data)}|${label}>` : `${label}${state.deleted ? " (deleted)" : ""}`}`;
+        // A plain label is an inline code span, so Slack neither auto-links nor formats a repo path (escaping already removed backticks).
+        const line = `\n• ${parsed?.success ? `<${encodeCodeRef(parsed.data)}|${label}>` : `\`${label}\`${state.deleted ? " (deleted)" : ""}`}`;
         if (out.length + title.length + block.length + line.length + reserve > MAX_PROGRESS_CHARS) break;
         block += line;
         shown++;
@@ -263,7 +271,8 @@ export function createProgressMessages(deps: ProgressMessagesDeps): ProgressMess
         const next = new Map<string, FileState>();
         for (const [path, state] of t.files) if (!parsed.has(path)) next.set(path, { range: null, deleted: state.deleted });
         for (const [path, state] of parsed) next.set(path, state);
-        if (!next.has(event.path)) next.set(event.path, { range: null, deleted: false });
+        const own = repoRelative(event.path);
+        if (own !== undefined && !next.has(own)) next.set(own, { range: null, deleted: false });
         t.files = next;
       } else if (event.type === "commit") {
         t.commit = event.sha;

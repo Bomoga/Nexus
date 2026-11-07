@@ -191,12 +191,45 @@ describe("finish", () => {
       { workspaceId: WS, commit: SHA, path: "src/a.ts", startLine: 1, endLine: 2 },
       { workspaceId: WS, commit: SHA, path: "src/b.ts", startLine: 500, endLine: 601 },
     ]);
-    expect(body).toContain("• old.ts (deleted)");
+    expect(body).toContain("• `old.ts` (deleted)");
     expect(body).not.toMatch(/<nexus[^>]*old\.ts/);
     await p.update(s, "late");
     p.onAgentEvent(ev({ type: "status", status: "failed" }, 4));
     await vi.advanceTimersByTimeAsync(5000);
     expect(edit).toHaveBeenCalledTimes(1);
+  });
+
+  test("a file the latest cumulative diff no longer contains keeps no stale link", async () => {
+    const p = make();
+    const s = (await p.start(session()))!;
+    const a = "diff --git a/src/a.ts b/src/a.ts\n--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1,2 +1,2 @@\n x";
+    const b = "diff --git a/src/b.ts b/src/b.ts\n--- a/src/b.ts\n+++ b/src/b.ts\n@@ -5,2 +5,3 @@\n y";
+    p.onAgentEvent(ev({ type: "file_edit", path: "src/a.ts", diff: a }));
+    p.onAgentEvent(ev({ type: "file_edit", path: "src/b.ts", diff: b }, 2));   // the agent reverted a.ts: it left the diff
+    p.onAgentEvent(ev({ type: "commit", sha: SHA }, 3));
+    await p.finish({ ...s, status: "done" });
+    const body = await bodyOf(s.slackProgress!.messageTs);
+    const links = [...body.matchAll(/<(nexus:\/\/[^|>]+)\|/g)].map(m => decodeCodeRef(m[1]!)?.path);
+    expect(links).toEqual(["src/b.ts"]);
+    expect(body).toContain("• `src/a.ts`");
+  });
+
+  test("reads git's real format for a path with a space, and keeps | out of a link label", async () => {
+    const p = make();
+    const s = (await p.start(session()))!;
+    // git ends ---/+++ paths that contain a space with a tab
+    const d = "diff --git a/my file.ts b/my file.ts\n--- a/my file.ts\t\n+++ b/my file.ts\t\n@@ -1,3 +1,4 @@\n x"
+      + "\ndiff --git a/a|b.ts b/a|b.ts\n--- a/a|b.ts\n+++ b/a|b.ts\n@@ -2 +2 @@\n y";
+    p.onAgentEvent(ev({ type: "file_edit", path: "./my file.ts", diff: d }));
+    p.onAgentEvent(ev({ type: "file_edit", path: "/Users/someone/wt/a|b.ts", diff: d }, 2));
+    p.onAgentEvent(ev({ type: "commit", sha: SHA }, 3));
+    await p.finish({ ...s, status: "done" });
+    const body = await bodyOf(s.slackProgress!.messageTs);
+    const links = [...body.matchAll(/<(nexus:\/\/[^|>]+)\|([^>]*)>/g)].map(m => [decodeCodeRef(m[1]!)?.path, decodeCodeRef(m[1]!)?.endLine, m[2]]);
+    expect(links).toEqual([["my file.ts", 4, "my file.ts"], ["a|b.ts", 2, "a¦b.ts"]]);
+    // the agent's own "./" path is folded into the diff's path, and an absolute worktree path is never shown
+    expect(body).not.toContain("./my file.ts");
+    expect(body).not.toContain("/Users/someone");
   });
 
   test("12 long paths: every link is whole, the rest are counted, never an unterminated <", async () => {
@@ -221,7 +254,7 @@ describe("finish", () => {
     const s = (await p.start(session()))!;
     p.onAgentEvent(ev({ type: "file_edit", path: "src/a.ts", diff: "diff --git a/src/a.ts b/src/a.ts\n--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1 +1 @@\n-x" }));
     await p.finish({ ...s, status: "done" });
-    expect(await bodyOf(s.slackProgress!.messageTs)).toContain("• src/a.ts");
+    expect(await bodyOf(s.slackProgress!.messageTs)).toContain("• `src/a.ts`");
     expect(await bodyOf(s.slackProgress!.messageTs)).not.toContain("nexus://");
   });
 

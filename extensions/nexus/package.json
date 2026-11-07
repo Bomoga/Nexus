@@ -170,6 +170,14 @@
       {
         "command": "nexus.openSession",
         "title": "Nexus: Open session"
+      },
+      {
+        "command": "nexus.openCommit",
+        "title": "Nexus: Open commit"
+      },
+      {
+        "command": "nexus.mergeAgentBranch",
+        "title": "Nexus: Merge agent branch"
       }
     ],
     "configuration": {

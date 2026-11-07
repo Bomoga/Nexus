@@ -102,7 +102,8 @@ export class ApprovalsController implements ApprovalRequester {
       throw e;
     }
     // A decision made while we were still creating (another machine, a Slack button) is applied now, after approval_request.
-    const early = this.creating.get(approval.id) ?? (await store.getApproval(approval.id));
+    const stored = await store.getApproval(approval.id);
+    const early = this.creating.get(approval.id) ?? stored;          // read the parked decision AFTER the await: one may land during it
     this.creating.delete(approval.id);
     if (early?.decision) await this.settle(early);
     return approval;
@@ -167,9 +168,19 @@ export class ApprovalsController implements ApprovalRequester {
   // ---- reading ----
 
   async list(filter: { sessionId?: string; pendingOnly?: boolean } = {}): Promise<ApprovalRequest[]> {
-    return (await this.deps.store.listApprovals())
-      .filter(a => (!filter.sessionId || a.sessionId === filter.sessionId) && (!filter.pendingOnly || !a.decision))
-      .sort((a, b) => a.requestedAt.localeCompare(b.requestedAt));
+    const all = (await this.deps.store.listApprovals())
+      .filter(a => (!filter.sessionId || a.sessionId === filter.sessionId) && (!filter.pendingOnly || !a.decision));
+    let shown = all;
+    if (filter.pendingOnly) {
+      // An undecided approval of a session that already ended can never be decided (decisions are refused), so it is not "waiting".
+      const live = new Map<string, boolean>();
+      for (const id of new Set(all.map(a => a.sessionId))) {
+        const s = this.ended.has(id) ? undefined : await this.deps.store.getSession(id);
+        live.set(id, !!s && !["done", "failed", "cancelled"].includes(s.status));
+      }
+      shown = all.filter(a => live.get(a.sessionId));
+    }
+    return shown.sort((a, b) => a.requestedAt.localeCompare(b.requestedAt));
   }
 
   get(approvalId: string): Promise<ApprovalRequest | undefined> {

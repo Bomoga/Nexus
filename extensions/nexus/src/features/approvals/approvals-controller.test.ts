@@ -309,6 +309,23 @@ describe("when the session ends", () => {
     expect(await s.eventTypes()).not.toContain("approval_resolved");
   });
 
+  it("does not list an undecidable approval of an ended session as waiting, and cancel racing the child's finish ends it once", async () => {
+    const s = await setup();
+    const result = runCommand(s);
+    await vi.waitFor(() => expect(s.shown).toHaveLength(1));
+    expect(await s.approvals.list({ pendingOnly: true })).toHaveLength(1);
+    const [cancelled] = await Promise.all([
+      s.sessions.cancel(s.session.id),
+      s.sessions.onFinished({ sessionId: s.session.id, outcome: "failed", turns: 1 }),
+    ]);
+    await result;
+    const final = (await s.store.getSession(s.session.id))!.status;                  // whichever ending came first wins; the other does not rewrite it
+    expect(cancelled.status).toBe(final);
+    expect(["cancelled", "failed"]).toContain(final);
+    expect(await s.approvals.list({ pendingOnly: true })).toEqual([]);
+    expect((await s.eventTypes()).filter(t => t === "status:cancelled" || t === "status:failed")).toEqual([`status:${final}`]);
+  });
+
   it("refuses to create a new approval for a session that has ended", async () => {
     const s = await setup();
     await s.sessions.onFinished({ sessionId: s.session.id, outcome: "done", turns: 1 });

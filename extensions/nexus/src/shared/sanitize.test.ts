@@ -38,6 +38,16 @@ describe("sanitizeForEvent", () => {
     expect(text).toContain("[omitted: event too large]");
   });
 
+  it("cuts cycles, skips throwing getters and bounds a wide tree of small values", () => {
+    const loop: Record<string, unknown> = { a: 1 };
+    loop.self = loop;
+    const withGetter = { ok: 1, get bad(): number { throw new Error("boom"); } };
+    expect(JSON.stringify(sanitizeForEvent({ loop, withGetter }))).toContain("[circular]");
+    expect((sanitizeForEvent(withGetter) as Record<string, unknown>).ok).toBe(1);
+    const wide = Array.from({ length: 50 }, () => Array.from({ length: 50 }, () => Array.from({ length: 50 }, (_, i) => i)));
+    expect(JSON.stringify(sanitizeForEvent(wide)).length).toBeLessThan(MAX_EVENT_TOTAL * 3);
+  });
+
   it("drops what JSON cannot carry and turns non-finite numbers into null", () => {
     const out = sanitizeForEvent({ f: () => 1, u: undefined, s: Symbol("x"), big: 10n, nan: Number.NaN, inf: Infinity, ok: 1.5 }) as Record<string, unknown>;
     expect(out).toEqual({ nan: null, inf: null, ok: 1.5 });

@@ -85,7 +85,9 @@ describe("accept and reject", () => {
     const tasks = await Promise.all(accepted.createdTaskIds!.map(id => s.store.getTask(id)));
     tasks.forEach((t, i) => {
       expect(t).toMatchObject({ status: "draft", source: { kind: "plan", planId: plan.id, subtaskIndex: i }, workspaceId: "ws_demo", title: plan.subtasks[i].title });
-      expect(t!.brief).toContain(`(Part ${i + 1} of 3 of: ${fx.task.title})`);
+      expect(t!.brief).toContain(`(Part ${i + 1} of 3 of task ${fx.task.id})`);
+      expect(t!.brief).not.toContain(fx.task.title);                            // the parent's title is never copied into a brief
+      expect(t!.brief.split("\n\n")[0].split("\n").every(line => line.startsWith("> "))).toBe(true);   // swarm text is quoted
       expect(t!.codeRefs).toEqual(fx.task.codeRefs);
     });
     expect(await s.store.getPlan(plan.id)).toEqual(accepted);

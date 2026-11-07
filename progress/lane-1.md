@@ -12,7 +12,8 @@ Lead session, no workers: everything below was written, tested and independently
 - L1-17 Swarms client + text-role provider, L1-18 advisory swarm review, L1-19 task breakdown + scheduler (max 2, 1 under 10 GB, dependency order)
 - L1-20 Prune adapter + receipts, L1-21 optimizer (toggle, spend totals, receipts to the store)
 - L1-22 extension half (home keeper); L1-26 demo repo seed + `demo/demo-script.md` + `nexus.dev.reseedDemoRepo`
-- Independent reviews: three rounds with fresh Opus/Sonnet reviewers; every blocking finding fixed and covered by a test (one fix was mutation-checked). A fourth round verifying the fixes was started.
+- Independent reviews: four rounds with fresh Opus/Sonnet reviewers; every blocking finding fixed and covered by a test (one fix was mutation-checked). Round four's fixes: early approval decision read after the await, session ending claimed synchronously and shared by concurrent callers, event sanitiser bounded by total nodes with cycle and getter handling, undecidable approvals of ended sessions hidden from "waiting", swarm subtask briefs quoted and parent referenced by id, scheduler marks tasks failed only while still draft.
+- Composition root `composeLane1` (src/features/compose.ts) with an offline end-to-end test: thread, task, agent, human approvals, swarm review, commit.
 
 ## In flight
 - none

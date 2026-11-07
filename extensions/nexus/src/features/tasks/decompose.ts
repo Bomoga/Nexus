@@ -115,7 +115,8 @@ export class DecomposeService {
         const s = plan.subtasks[i];
         const task = Task.parse({
           id: clock.newId("task"), title: s.title,
-          brief: `${s.brief}\n\n(Part ${i + 1} of ${plan.subtasks.length} of: ${parent.title})`,
+          // The swarm's text is model output: quote it like any other untrusted brief text, and refer to the parent by id.
+          brief: `${s.brief.split("\n").map(line => `> ${line}`).join("\n")}\n\n(Part ${i + 1} of ${plan.subtasks.length} of task ${parent.id})`,
           source: { kind: "plan", planId: plan.id, subtaskIndex: i }, workspaceId: parent.workspaceId, status: "draft",
           createdAt: clock.now(), codeRefs: parent.codeRefs, ...(parent.createdBy ? { createdBy: parent.createdBy } : {}),
         });

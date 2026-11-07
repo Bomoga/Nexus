@@ -77,6 +77,8 @@ export class SessionsController implements SessionEvents {
   private active?: { session: AgentSession; task: Task };
   /** Held from the first line of start() until the session is active, so two concurrent starts cannot both pass the guard. */
   private reserved = false;
+  /** Endings in flight, so a second caller waits for the first instead of seeing a half-written session. */
+  private readonly ending = new Map<string, Promise<AgentSession>>();
   private readonly counters = new Map<string, Counter>();
   private readonly subscribers = new Map<string, Set<(e: AgentEvent) => void>>();
 
@@ -180,12 +182,23 @@ export class SessionsController implements SessionEvents {
     this.deps.onTaskChange?.(task);
   }
 
-  private async finalize(sessionId: string, status: "done" | "failed" | "cancelled"): Promise<AgentSession> {
+  private finalize(sessionId: string, status: "done" | "failed" | "cancelled"): Promise<AgentSession> {
     const a = this.active;
-    if (!a || a.session.id !== sessionId) return (await this.deps.store.getSession(sessionId))!;
-    // Release anything still waiting on a human first; a cancelled session's APPROVE must run nothing afterwards.
-    await this.attempt("release approvals", () => this.deps.approvals?.sessionEnded?.(sessionId, status) ?? Promise.resolve());
+    if (!a || a.session.id !== sessionId) {
+      // Someone else is already ending it: wait for that to finish so the caller sees the final state.
+      return this.ending.get(sessionId) ?? this.deps.store.getSession(sessionId).then(s => s!);
+    }
+    const run = this.runFinalize(a, sessionId, status).finally(() => this.ending.delete(sessionId));
+    this.ending.set(sessionId, run);
+    return run;
+  }
+
+  private async runFinalize(a: NonNullable<SessionsController["active"]>, sessionId: string, status: "done" | "failed" | "cancelled"): Promise<AgentSession> {
+    // Claim the ending before the first await, so a second finalize (cancel racing the child's own "finished") returns
+    // above instead of running twice, and nothing can flip the session back to running while it ends.
     this.active = undefined;
+    // Release anything still waiting on a human; a cancelled session's APPROVE must run nothing afterwards.
+    await this.attempt("release approvals", () => this.deps.approvals?.sessionEnded?.(sessionId, status) ?? Promise.resolve());
     const ended: AgentSession = { ...a.session, status, endedAt: this.deps.clock.now() };
     // Each write is best effort: a store hiccup must never leave the controller wedged or the agent host un-ended.
     await this.attempt("save the session", () => this.deps.store.putSession(ended));

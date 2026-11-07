@@ -109,7 +109,7 @@ export class Scheduler {
                 }
                 this.deps.log?.(`could not start "${tasks[i]?.title ?? ids[i]}": ${e instanceof Error ? e.message : "unknown error"}`);
                 const t = await store.getTask(ids[i]);
-                if (t && !TERMINAL.has(t.status)) await store.putTask({ ...t, status: "failed" });
+                if (t?.status === "draft") await store.putTask({ ...t, status: "failed" });
                 running--;
                 again = true;
               }

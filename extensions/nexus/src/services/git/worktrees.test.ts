@@ -2,10 +2,13 @@ import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { GitCli } from "./git-cli";
 import { binaryPathsInDiff } from "./worktrees";
 import { emptyGitConfig } from "./empty-config";
+
+// Every test here runs several real git processes; on a loaded Windows machine one can exceed the 5 s default.
+vi.setConfig({ testTimeout: 20_000 });
 
 let base: string, repo: string, sessions: string, git: GitCli;
 const env = { ...process.env, GIT_CONFIG_GLOBAL: emptyGitConfig(), GIT_CONFIG_SYSTEM: emptyGitConfig(), GIT_CONFIG_NOSYSTEM: "1" };
@@ -262,19 +265,25 @@ describe("commit messages", () => {
   });
 });
 
+/** Git for Windows marks a worktree's .git file hidden, and Windows refuses to overwrite a hidden file: remove it, then write. */
+function rewriteGitFile(file: string, text: string) {
+  rmSync(file, { force: true });
+  writeFileSync(file, text);
+}
+
 describe("worktree and branch identity", () => {
   it("refuses a worktree whose .git file points at another session's entry", async () => {
     const a = await git.createSessionWorktree({ sessionId: "s1", workspaceId: "w" });
     await git.createSessionWorktree({ sessionId: "s2", workspaceId: "w" });
     const common = sh(repo, "rev-parse", "--path-format=absolute", "--git-common-dir");
-    writeFileSync(path.join(a.worktreePath, ".git"), `gitdir: ${common}/worktrees/s2\n`);
+    rewriteGitFile(path.join(a.worktreePath, ".git"), `gitdir: ${common}/worktrees/s2\n`);
     await expect(git.diff(a.worktreePath, a.baseCommit)).rejects.toThrow(/another worktree's entry|does not belong/);
   });
 
   it("refuses a worktree whose .git file was repointed at the user's repository", async () => {
     const w = await git.createSessionWorktree({ sessionId: "s1", workspaceId: "w" });
     write(w.worktreePath, "agent-new.txt", "x\n");
-    writeFileSync(path.join(w.worktreePath, ".git"), `gitdir: ${repo}/.git\n`);
+    rewriteGitFile(path.join(w.worktreePath, ".git"), `gitdir: ${repo}/.git\n`);
     await expect(git.diff(w.worktreePath, w.baseCommit)).rejects.toThrow(/does not belong to this repository/);
     await expect(git.commitIn(w.worktreePath, "m", "s1", "")).rejects.toThrow(/does not belong to this repository/);
     expect(sh(repo, "status", "--porcelain")).toBe("");

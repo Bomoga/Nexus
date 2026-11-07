@@ -164,7 +164,8 @@ describe("module path checks run before git is touched", () => {
 });
 
 describe("created refs honour the contract", () => {
-  const files = ["a b%c.ts", "ünï/日本.ts", "q?#&=.ts", "pipe|gt>.ts"];
+  // ? | > are not allowed in Windows file names, so those two cases only run elsewhere.
+  const files = ["a b%c.ts", "ünï/日本.ts", "q?#&=.ts", "pipe|gt>.ts"].filter(f => process.platform !== "win32" || !/[<>:"|?*]/.test(f));
   beforeAll(() => { for (const f of files) write(f, "one\ntwo\n"); write("a..b.ts", "x\n"); commit("odd names"); });
   it.each(files)("round-trips %s", async f => {
     const r = await createCodeRef({ git }, f, 1, 2);

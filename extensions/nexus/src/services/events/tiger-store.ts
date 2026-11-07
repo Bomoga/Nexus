@@ -462,6 +462,17 @@ export type PoolConstructor = new (config: {
  * no TLS, or weaker TLS, is refused. The error never contains the connection string.
  */
 export function createTigerPool(connectionString: string, PoolCtor: PoolConstructor = Pool as unknown as PoolConstructor): TigerClient {
+  const url = tigerConnectionString(connectionString);
+  const pool = new PoolCtor({ connectionString: url, ssl: { rejectUnauthorized: true }, max: 4, connectionTimeoutMillis: 5000, idleTimeoutMillis: 30_000, query_timeout: 10_000, keepAlive: true });
+  pool.on("error", () => { /* an idle connection dropped: the next query reconnects; unhandled, this would crash the extension host */ });
+  return pool;
+}
+
+/**
+ * The connection string with every TLS setting removed (pg lets URL parameters override the explicit ssl option), after refusing
+ * one that asks for no TLS or weaker TLS. Callers then set `ssl: { rejectUnauthorized: true }`. Errors never contain the string.
+ */
+export function tigerConnectionString(connectionString: string): string {
   let url: URL;
   try { url = new URL(connectionString); } catch { throw new Error("the Tiger Cloud connection string is not a valid postgres URL"); }
   if (url.protocol !== "postgres:" && url.protocol !== "postgresql:") throw new Error("the Tiger Cloud connection string must be a postgres:// URL");
@@ -469,9 +480,6 @@ export function createTigerPool(connectionString: string, PoolCtor: PoolConstruc
   if (mode !== null && !["require", "verify-ca", "verify-full"].includes(mode)) throw new Error("the Tiger Cloud connection string must use TLS (sslmode=require or stronger)");
   const ssl = url.searchParams.get("ssl");
   if (ssl !== null && ["false", "0", "off", "no"].includes(ssl.toLowerCase())) throw new Error("the Tiger Cloud connection string must use TLS");
-  // pg lets URL parameters override the ssl option, so TLS settings are removed here and set explicitly below.
   for (const key of ["sslmode", "ssl", "uselibpqcompat", "sslcert", "sslkey", "sslrootcert"]) url.searchParams.delete(key);
-  const pool = new PoolCtor({ connectionString: url.toString(), ssl: { rejectUnauthorized: true }, max: 4, connectionTimeoutMillis: 5000, idleTimeoutMillis: 30_000, query_timeout: 10_000, keepAlive: true });
-  pool.on("error", () => { /* an idle connection dropped: the next query reconnects; unhandled, this would crash the extension host */ });
-  return pool;
+  return url.toString();
 }

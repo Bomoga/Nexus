@@ -88,25 +88,23 @@ export function councilJudges(output: unknown): Array<{ modelId: string; text: s
   const turns = output.filter((t): t is { role: string; content?: unknown } => !!t && typeof t === "object" && typeof (t as { role?: unknown }).role === "string");
   const judgeTurns = turns.filter(t => /_judge$/i.test(t.role));
   if (judgeTurns.length === 0) return undefined;
+  // A judge with no text says nothing, so it cannot count toward a verdict.
   return judgeTurns.slice(0, MAX_JUDGES).map(t => ({
     modelId: clip(redact(t.role.replace(/_judge$/i, " judge").replace(/_/g, " ")), 60),
     text: clip(readable(outputText(t.content)), JUDGE_CHARS),
-  }));
+  })).filter(j => j.text.length > 0);
 }
 
 /** No verdicts could be derived: each judge's first sentence as its note, "concerns" everywhere. NEVER looks_good. */
 export function fallbackCouncil(judges: ReadonlyArray<{ modelId: string; text: string }>): Parsed {
   return {
     verdict: "concerns", summary: NO_VERDICTS,
-    judges: judges.map(j => ({ modelId: j.modelId, verdict: "concerns" as Verdict, notes: clip(firstSentence(j.text), NOTE_CHARS) })),
+    ...(judges.length > 0 ? { judges: judges.map(j => ({ modelId: j.modelId, verdict: "concerns" as Verdict, notes: clip(firstSentence(j.text), NOTE_CHARS) })) } : {}),
   };
 }
 
-/** The council output as a review, using ONLY the judge turns (the aggregator's text is ignored). */
-export function parseCouncil(output: unknown): Parsed | undefined {
-  const judges = councilJudges(output);
-  return judges ? fallbackCouncil(judges) : undefined;
-}
+/** The council's output had no judge turns (a string, or renamed roles): the last turn is the echoed candidate, so it is never parsed for a verdict. */
+const UNREADABLE: Parsed = { verdict: "concerns", summary: "The council output could not be read, so no verdict was derived." };
 
 export class SwarmReviewService implements ApprovalHook {
   readonly name = "swarm-review";
@@ -138,7 +136,7 @@ export class SwarmReviewService implements ApprovalHook {
       if (text.trim().length === 0) throw new SwarmsUnavailable("bad_response", "The council returned no text.");
       const judges = councilJudges(run.output);
       // Judges answer in prose and the aggregator only echoes the candidate, so a council verdict is derived, never read off the aggregator.
-      const parsed = judges ? await this.derive(judges, apiKey, approval.sessionId) : parseVerdict(text);
+      const parsed = judges ? await this.derive(judges, apiKey, approval.sessionId) : UNREADABLE;
       review = SwarmReview.parse({ ...review, status: "done", ...parsed, durationMs: Date.now() - started });
     } catch (e) {
       const why = e instanceof SwarmsUnavailable ? e.message : redact(e instanceof Error ? e.message : "unknown error");
@@ -181,7 +179,7 @@ export class SwarmReviewService implements ApprovalHook {
   /** One text-only call turns the judges' prose into a structured verdict. Any failure or unparseable reply falls back to "concerns", never looks_good. */
   private async derive(judges: ReadonlyArray<{ modelId: string; text: string }>, apiKey: string, sessionId: string): Promise<Parsed> {
     const { swarms } = this.deps;
-    if (!swarms.complete) return fallbackCouncil(judges);
+    if (judges.length === 0 || !swarms.complete) return fallbackCouncil(judges);
     try {
       const task = [
         "Below are written assessments from code-review judges who graded a coding agent's change.",
@@ -213,7 +211,7 @@ export class SwarmReviewService implements ApprovalHook {
     const lastTest = [...events].reverse().find(e => e.type === "test_output");
     const diff = approval.diffPreview ?? [...events].reverse().find(e => e.type === "file_edit")?.diff ?? "(no diff available)";
     // The candidate wrapper must not be forgeable from inside the data.
-    const safe = (s: string) => s.replace(/(BEGIN|END)_CANDIDATE/g, "$1\u200b_CANDIDATE");
+    const safe = (s: string) => s.replace(/(BEGIN|END)[_\s]*CANDIDATE/gi, m => `${m[0]}\u200b${m.slice(1)}`);
     const brief = frame([{ label: "task brief", text: safe(clip(redact(task?.brief ?? "(no brief)"), BRIEF_CHARS)) }]);
     const candidate = frame([
       { label: "diff", text: safe(clip(redact(diff), DIFF_CHARS)) },

@@ -50,6 +50,6 @@ describe("ChannelList", () => {
   test("shows a one-line empty state when the request fails", async () => {
     const client = { request: vi.fn().mockRejectedValue(new Error("boom")), subscribe: vi.fn() } as unknown as BridgeClient;
     render(<ChannelList bridge={client} selectedId={undefined} onSelect={() => {}} />);
-    await waitFor(() => expect(screen.getByText(/could not load channels/i)).toBeTruthy());
+    await waitFor(() => expect(screen.getByText("slack failed: boom")).toBeTruthy());
   });
 });

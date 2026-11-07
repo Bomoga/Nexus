@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import type { AgentEvent, Envelope } from "../../src/contracts";
 import { fx } from "../../src/contracts/fixtures";
 import { scriptedAgentEvents, scriptedReceipts } from "../../src/contracts/fixtures/stream";
@@ -9,7 +9,10 @@ import type { Transport } from "../shared";
 import { App } from "./App";
 import { resolveSessionId } from "./sessionId";
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.useRealTimers();
+});
 
 type Req = Extract<Envelope, { t: "req" }>;
 type Answers = Record<string, (body: Record<string, unknown>) => unknown>;
@@ -270,6 +273,73 @@ describe("session view", () => {
     render(<App bridge={bridge} sessionId={undefined} />);
     expect(screen.getByText(/no session/i)).toBeTruthy();
     expect(reqs("sessions.get").length + subbed("agent.subscribe").length).toBe(0);
+  });
+});
+
+describe("states", () => {
+  test("a not_found sessions.get shows the friendly line and RETRY re-requests", async () => {
+    let missing = true;
+    const { bridge, reqs } = setup({
+      "sessions.get": () => {
+        if (missing) throw { code: "not_found", message: "no handler for sessions.get" };
+        return fx.session;
+      },
+    });
+    render(<App bridge={bridge} sessionId="ses_01" />);
+    expect(await screen.findByText(/session isn.t connected yet/)).toBeTruthy();
+    expect(screen.queryByText(/no handler/)).toBeNull();
+    missing = false;
+    fireEvent.click(screen.getByRole("button", { name: "RETRY" }));
+    expect(await screen.findByText("Fix cart discount for qty > 1")).toBeTruthy();
+    expect(reqs("sessions.get")).toHaveLength(2);
+  });
+
+  test("a failing approvals.list does not replace the view or hide a sessions.get error", async () => {
+    const down = { code: "offline", message: "down" };
+    const a = setup({ "approvals.list": () => { throw down; } });
+    render(<App bridge={a.bridge} sessionId="ses_01" />);
+    expect(await screen.findByText("Fix cart discount for qty > 1")).toBeTruthy();
+    expect(await screen.findByText("approvals: offline")).toBeTruthy();
+    cleanup();
+    const b = setup({ "sessions.get": () => { throw down; }, "approvals.list": () => { throw down; } });
+    render(<App bridge={b.bridge} sessionId="ses_01" />);
+    expect(await screen.findByText("session: offline")).toBeTruthy();
+  });
+
+  test("empty tabs say one line each", async () => {
+    const { bridge } = setup({ "receipts.list": () => ({ receipts: [], summary: { sessionId: "ses_01", calls: 0, costUsd: 0, savedUsd: 0 } }) });
+    render(<App bridge={bridge} sessionId="ses_01" />);
+    await screen.findByText("Fix cart discount for qty > 1");
+    fireEvent.click(screen.getByRole("tab", { name: /diff/i }));
+    expect(screen.getByText("no diffs yet")).toBeTruthy();
+    fireEvent.click(screen.getByRole("tab", { name: /tests/i }));
+    expect(screen.getByText("no test output yet")).toBeTruthy();
+    fireEvent.click(screen.getByRole("tab", { name: /receipts/i }));
+    expect(screen.getByText("no receipts yet")).toBeTruthy();
+  });
+
+  test("a pending approval shows waiting time and the no-timeout line; time never decides it", async () => {
+    const asked = Date.parse(fx.approval.requestedAt);
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
+    vi.setSystemTime(asked + 10_000);
+    const { bridge, emit, subbed, reqs } = setup();
+    render(<App bridge={bridge} sessionId="ses_01" />);
+    await waitFor(() => expect(subbed("agent.subscribe").length).toBe(1));
+    emit("agent.subscribe", scriptedAgentEvents[8]);
+    const row = rows()[0];
+    expect(await within(row).findByText("waiting <1m")).toBeTruthy();
+    expect(within(row).getByText("no timeout: the agent waits until someone decides")).toBeTruthy();
+    act(() => {
+      vi.advanceTimersByTime(30_000 * 7);
+    });
+    expect(within(row).getByText("waiting 3m").className).toContain("nx-tone-pending");
+    act(() => {
+      vi.advanceTimersByTime(30 * 60_000);
+    });
+    expect(within(row).getByText("waiting 33m")).toBeTruthy();
+    expect(within(row).getByRole("button", { name: /approve/i })).toBeTruthy();
+    expect(within(row).getByRole("button", { name: /reject/i })).toBeTruthy();
+    expect(reqs("approvals.resolve")).toHaveLength(0);
   });
 });
 

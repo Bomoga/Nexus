@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import type { EventTarget, NexusEvent } from "../../src/contracts";
-import { Button, StatusLine, request } from "../shared";
+import { Button, StatusLine, friendlyError, request } from "../shared";
 import { DEFAULT_T0_MS, formatEventTime, shortId } from "./model/picking";
 
 export interface DetailStripProps {
@@ -22,17 +22,19 @@ export function DetailStrip({ event, t0Ms = DEFAULT_T0_MS, open = defaultOpen }:
   const openTarget = useCallback(() => {
     if (!event) return;
     setFailure(undefined);
-    open(event.target).catch((e: unknown) => setFailure({ event, message: e instanceof Error ? e.message : String(e) }));
+    open(event.target).catch((e: unknown) => setFailure({ event, message: friendlyError(e, "open") }));
   }, [event, open]);
 
   // After a click-pick focus is on the canvas/body, so Enter is handled at the document while an event is selected.
   // Controls that own Enter (inputs, buttons including OPEN, selects, editables) are left alone: no double-open.
+  // Exception: the search box right after a search pick (data-picked, dropdown closed, query unchanged) — Enter opens.
   useEffect(() => {
     if (!event) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Enter" || e.defaultPrevented || e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;
       const t = e.target;
-      if (t instanceof Element && t.closest("input, textarea, select, button, a[href], [contenteditable]:not([contenteditable=false])")) return;
+      const pickedSearch = t instanceof Element && t.matches('input[data-picked="true"]');
+      if (!pickedSearch && t instanceof Element && t.closest("input, textarea, select, button, a[href], [contenteditable]:not([contenteditable=false])")) return;
       e.preventDefault();
       openTarget();
     };
@@ -58,7 +60,7 @@ export function DetailStrip({ event, t0Ms = DEFAULT_T0_MS, open = defaultOpen }:
       <span className="globe-strip-cell nx-data">{shortId(event.target)}</span>
       <span className="globe-strip-cell">{event.actor.name}</span>
       {error ? <span className="globe-strip-error"><StatusLine tone="error">{error}</StatusLine></span> : null}
-      <Button variant="primary" kbd="ENTER" onClick={openTarget}>
+      <Button variant="primary" kbd="↵" onClick={openTarget}>
         OPEN
       </Button>
     </div>

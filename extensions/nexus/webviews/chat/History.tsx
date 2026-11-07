@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ChatMessage } from "../../src/contracts";
-import { Button, Chip, EmptyState, StatusLine, getBridge } from "../shared";
+import { Button, Chip, EmptyState, StatusLine, friendlyError, getBridge } from "../shared";
 import type { BridgeClient } from "../shared";
 import { Composer, EchoBar, echoClass } from "./Composer";
 import { isReply, mergeMessages, usePostsAs, useSlackLive, useUsers } from "./live";
@@ -15,12 +15,14 @@ type Anchor = { kind: "bottom" } | { kind: "keep"; height: number };
 export interface HistoryProps {
   bridge?: BridgeClient;
   channelId: string;
+  /** For the empty-state line; without it the line says "no messages yet". */
+  channelName?: string;
   onOpenLink?: (url: string) => void;
   /** Called with a parent message when its row or reply count is clicked. */
   onOpenThread?: (message: ChatMessage) => void;
 }
 
-export function History({ bridge, channelId, onOpenLink, onOpenThread }: HistoryProps) {
+export function History({ bridge, channelId, channelName, onOpenLink, onOpenThread }: HistoryProps) {
   const client = bridge ?? getBridge();
   // Slack's copies only; open sends come from the outbox (see useOutboxRows).
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -28,6 +30,7 @@ export function History({ bridge, channelId, onOpenLink, onOpenThread }: History
   const [cached, setCached] = useState(false);
   const [state, setState] = useState<"loading" | "ready" | "failed">("loading");
   const [olderFailed, setOlderFailed] = useState(false);
+  const [failure, setFailure] = useState("");
   const [attempt, setAttempt] = useState(0);
   const scroller = useRef<HTMLDivElement>(null);
   const generation = useRef(0);
@@ -64,8 +67,10 @@ export function History({ bridge, channelId, onOpenLink, onOpenThread }: History
         setCached(r.fromCache);
         setState("ready");
       })
-      .catch(() => {
-        if (gen === generation.current) setState("failed");
+      .catch((e: unknown) => {
+        if (gen !== generation.current) return;
+        setFailure(friendlyError(e, "slack"));
+        setState("failed");
       });
   }, [client, channelId, attempt, outbox]);
 
@@ -142,9 +147,9 @@ export function History({ bridge, channelId, onOpenLink, onOpenThread }: History
         </div>
       ) : null}
       {state === "failed" ? (
-        <EmptyState message="could not load history" action={{ label: "RETRY", onClick: () => setAttempt((n) => n + 1) }} />
+        <EmptyState message={failure} action={{ label: "RETRY", onClick: () => setAttempt((n) => n + 1) }} />
       ) : state === "ready" && rows.length === 0 ? (
-        <EmptyState message="no messages yet" />
+        <EmptyState message={channelName ? `no messages in #${channelName} yet` : "no messages yet"} />
       ) : (
         <div
           ref={scroller}

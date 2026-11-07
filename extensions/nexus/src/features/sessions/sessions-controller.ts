@@ -51,6 +51,8 @@ export interface SessionsDeps {
   agentModels?: () => ModelInfo[];
   /** Extra untrusted blocks for the agent's system prompt (the brief builder supplies the quoted thread). */
   untrustedBlocks?: (task: Task) => Array<{ label: string; text: string }>;
+  /** Called after every task write (status changes), so tasks.subscribe can publish them. */
+  onTaskChange?: (task: Task) => void;
 }
 
 const TERMINAL = new Set<AgentSession["status"]>(["done", "failed", "cancelled"]);
@@ -92,7 +94,7 @@ export class SessionsController implements SessionEvents {
     };
     const running: Task = { ...task, status: "running", sessionId: id };
     await store.putSession(session);
-    await store.putTask(running);
+    await this.putTask(running);
     this.active = { session, task: running };
     await this.emit(id, { type: "status", status: "running" });
     await store.putNexusEvent(this.sessionEvent(session, running, orbitOf(wt.baseBranch)));
@@ -141,8 +143,13 @@ export class SessionsController implements SessionEvents {
     a.session = { ...a.session, status };
     a.task = { ...a.task, status };
     await this.deps.store.putSession(a.session);
-    await this.deps.store.putTask(a.task);
+    await this.putTask(a.task);
     await this.emit(sessionId, { type: "status", status });
+  }
+
+  private async putTask(task: Task): Promise<void> {
+    await this.deps.store.putTask(task);
+    this.deps.onTaskChange?.(task);
   }
 
   private async finalize(sessionId: string, status: "done" | "failed" | "cancelled"): Promise<AgentSession> {
@@ -151,7 +158,7 @@ export class SessionsController implements SessionEvents {
     this.active = undefined;
     const ended: AgentSession = { ...a.session, status, endedAt: this.deps.clock.now() };
     await this.deps.store.putSession(ended);
-    await this.deps.store.putTask({ ...a.task, status });
+    await this.putTask({ ...a.task, status });
     await this.emit(sessionId, { type: "status", status });
     this.deps.host.endSession(sessionId);
     return ended;

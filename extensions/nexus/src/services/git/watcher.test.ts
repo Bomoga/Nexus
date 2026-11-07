@@ -1,12 +1,13 @@
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { devNull, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { NexusEvent } from "../../contracts";
 import { GitCli } from "./git-cli";
 import { GitWatcher } from "./watcher";
 import type { GitService, LogEntry, RefInfo } from "./types";
+import { emptyGitConfig } from "./empty-config";
 
 let root: string;
 let day = 0;
@@ -14,7 +15,7 @@ const sh = (...args: string[]) => {
   const date = `2026-11-07T${String(10 + day++).padStart(2, "0")}:00:00-05:00`;
   return execFileSync("git", args, {
     cwd: root, encoding: "utf8",
-    env: { ...process.env, GIT_AUTHOR_NAME: "Test Author", GIT_AUTHOR_EMAIL: "t@example.com", GIT_COMMITTER_NAME: "Test Author", GIT_COMMITTER_EMAIL: "t@example.com", GIT_AUTHOR_DATE: date, GIT_COMMITTER_DATE: date, GIT_CONFIG_GLOBAL: devNull, GIT_CONFIG_SYSTEM: devNull },
+    env: { ...process.env, GIT_AUTHOR_NAME: "Test Author", GIT_AUTHOR_EMAIL: "t@example.com", GIT_COMMITTER_NAME: "Test Author", GIT_COMMITTER_EMAIL: "t@example.com", GIT_AUTHOR_DATE: date, GIT_COMMITTER_DATE: date, GIT_CONFIG_GLOBAL: emptyGitConfig(), GIT_CONFIG_SYSTEM: emptyGitConfig() },
   }).trim();
 };
 const commit = (file: string, msg: string) => {

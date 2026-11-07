@@ -5,8 +5,10 @@ import { OrbitControls } from "@react-three/drei";
 import type { NexusEvent, TimeWindow } from "../../../src/contracts";
 import { familiesKey, familiesOf, orbitLayout } from "../model";
 import { Globe } from "./Globe";
+import { Arcs } from "./arcs";
 import { Markers } from "./Markers";
 import { Orbits } from "./Orbits";
+import { Activity } from "./rings";
 
 export interface SceneProps {
   events: readonly NexusEvent[];
@@ -28,6 +30,8 @@ export function Scene({ events, now, window, children }: SceneProps) {
         <Globe />
         <Orbits layout={layout} />
         <Markers events={events} layout={layout} now={now} window={window} />
+        <Activity events={events} layout={layout} now={now} window={window} />
+        <Arcs events={events} layout={layout} now={now} window={window} />
         {children}
       </group>
     </Canvas>

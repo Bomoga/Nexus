@@ -1,7 +1,9 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { NexusEvent, TimeWindow } from "../../src/contracts";
 import { Select, StatusLine, isFakeMode, request } from "../shared";
 import { QUERY_LIMIT, TIME_WINDOWS, keepNewest, visibleEvents, windowMs } from "./model";
+import { insertLive } from "./model/arcs";
+import { markLive, useDriftNow, useLiveEvents } from "./scene/live";
 import { Scene } from "./scene/Scene";
 
 const NOW_TICK_MS = 5_000;
@@ -58,6 +60,29 @@ export function App() {
     setWindow(w);
     request("ui.setTimeWindow", { window: w }).catch(() => undefined);
   }, []);
+
+  // Live events: "now" and the window are read from refs so the subscription is never re-created.
+  const driftNow = useDriftNow(now ?? 0);
+  const eventsRef = useRef(events);
+  const windowRef = useRef(window_);
+  useEffect(() => {
+    eventsRef.current = events;
+    windowRef.current = window_;
+  }, [events, window_]);
+  const onLive = useCallback(
+    (incoming: NexusEvent) => {
+      if (!ready) return;
+      // The fake host stamps live events with the wall clock, but fake "now" is scripted: land them on the now line.
+      const e = isFakeMode() ? { ...incoming, at: new Date(driftNow()).toISOString() } : incoming;
+      const next = insertLive(eventsRef.current, e, driftNow(), windowRef.current);
+      if (next === eventsRef.current) return;
+      eventsRef.current = next;
+      markLive(e);
+      setEvents(next);
+    },
+    [ready, driftNow],
+  );
+  useLiveEvents(onLive, ready);
 
   const visible = useMemo(() => (now === null ? [] : visibleEvents(events, now, window_)), [events, now, window_]);
 

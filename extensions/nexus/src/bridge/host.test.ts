@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type * as vscode from "vscode";
-import { buildCsp, buildHtml, createWebviewHost, formatTPlus, registerAppPing } from "./host";
+import { buildCsp, buildHtml, parseBuiltPage, createWebviewHost, formatTPlus, registerAppPing } from "./host";
 import type { HostApi } from "./host";
 import { fx } from "../contracts/fixtures";
 import { NexusBridgeRouter } from "./router";
@@ -42,7 +42,21 @@ function fakePanel() {
   return { panel, ...base, disposePanel: () => { for (const c of [...dispose]) c(); }, setVisible: (v: boolean) => { panel.visible = v; for (const c of [...state]) c({ webviewPanel: panel }); } };
 }
 
-function fakeApi(t0?: string) {
+// What Vite really emits for media/<entry>/index.html.
+const VITE_PAGE = `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Nexus chat</title>
+    <script type="module" crossorigin src="./assets/index-Pl2JwmhW.js"></script>
+    <link rel="stylesheet" crossorigin href="./assets/index-DsQ-puiO.css">
+  </head>
+  <body>
+    <div id="root"></div>
+  </body>
+</html>`;
+
+function fakeApi(t0?: string, missing = false) {
   const providers = new Map<string, vscode.WebviewViewProvider>();
   const panels: ReturnType<typeof fakePanel>[] = [];
   const panelArgs: { viewType: string; title: string; options: unknown }[] = [];
@@ -54,6 +68,7 @@ function fakeApi(t0?: string) {
     },
     workspace: { getConfiguration: () => ({ get: <T,>() => t0 as T | undefined }) },
     ViewColumn: { Active: -1 as vscode.ViewColumn },
+    readTextFile: uri => missing ? undefined : uri.toString().endsWith("/index.html") ? VITE_PAGE : undefined,
   };
   return { api, providers, panels, panelArgs };
 }
@@ -67,7 +82,7 @@ const resolveView = (providers: Map<string, vscode.WebviewViewProvider>, id: str
 describe("webview host", () => {
   it("CSP carries the nonce, blocks connect, and has no remote source", () => {
     const csp = buildCsp("NONCE123", "https://file+.vscode-resource.test");
-    expect(csp).toContain("script-src 'nonce-NONCE123'");
+    expect(csp).toContain("script-src 'nonce-NONCE123' 'strict-dynamic'");
     expect(csp).toContain("style-src 'nonce-NONCE123'");
     expect(csp).toContain("default-src 'none'");
     expect(csp).toContain("connect-src 'none'");
@@ -76,10 +91,28 @@ describe("webview host", () => {
     expect(csp).not.toContain("*");
   });
 
-  it("html loads media/<entry>.js under the same nonce", () => {
-    const html = buildHtml({ nonce: "N", cspSource: "src", scriptUri: "u/media/globe.js", title: "A\"<b>" });
-    expect(html).toContain('<script nonce="N" src="u/media/globe.js">');
+  it("html loads module scripts under the nonce and stylesheets from the resource origin", () => {
+    const html = buildHtml({ nonce: "N", cspSource: "src", scripts: ["u/a.js"], styles: ["u/a.css"], title: "A\"<b>" });
+    expect(html).toContain('<script type="module" nonce="N" src="u/a.js">');
+    expect(html).toContain('<link rel="stylesheet" href="u/a.css">');
     expect(html).not.toContain("<b>");
+  });
+
+  it("reads Vite's assets and refuses remote, parent-relative or inline ones", () => {
+    expect(parseBuiltPage(VITE_PAGE)).toEqual({ scripts: ["assets/index-Pl2JwmhW.js"], styles: ["assets/index-DsQ-puiO.css"] });
+    const hostile = `<script src="https://evil.test/a.js"></script><script src="../../x.js"></script><script src="./assets/a b.js"></script>
+      <script>alert(1)</script><link rel="stylesheet" href="https://evil.test/a.css"><link rel="stylesheet" href="./assets/../../a.css">`;
+    expect(parseBuiltPage(hostile)).toEqual({ scripts: [], styles: [] });
+  });
+
+  it("explains a missing build instead of a blank page, and runs no script", () => {
+    const { api, providers } = fakeApi(undefined, true);
+    createWebviewHost(ctx(), "nexus.chat", "chat", router(), api).register();
+    const view = fakeView();
+    resolveView(providers, "nexus.chat", view);
+    expect(view.webview.html).toContain('Webview "chat" is not built');
+    expect(view.webview.html).not.toContain("<script");
+    expect(view.webview.html).toContain("default-src 'none'");
   });
 
   it("resolves a view with scripts on, only media/ as a local root, and the entry script", () => {
@@ -91,7 +124,9 @@ describe("webview host", () => {
     expect(view.webview.options?.localResourceRoots).toHaveLength(1);
     expect(String(view.webview.options?.localResourceRoots?.[0])).toBe("ext/media");
     const nonce = /nonce-([^']+)'/.exec(view.webview.html)![1];
-    expect(view.webview.html).toContain(`<script nonce="${nonce}" src="https://file+.vscode-resource.test/ext/media/globe.js">`);
+    expect(view.webview.html).toContain(`<script type="module" nonce="${nonce}" src="https://file+.vscode-resource.test/ext/media/globe/assets/index-Pl2JwmhW.js">`);
+    expect(view.webview.html).toContain(`<link rel="stylesheet" href="https://file+.vscode-resource.test/ext/media/globe/assets/index-DsQ-puiO.css">`);
+    expect(view.webview.html).not.toContain("crossorigin");
   });
 
   it("uses a fresh nonce per webview", () => {
@@ -103,7 +138,7 @@ describe("webview host", () => {
     expect(/nonce-([^']+)'/.exec(a.webview.html)![1]).not.toBe(/nonce-([^']+)'/.exec(b.webview.html)![1]);
   });
   it("escapes the script uri and title in the page", () => {
-    const html = buildHtml({ nonce: "N", cspSource: "src", scriptUri: 'x.js"><script>alert(1)</script>', title: "t" });
+    const html = buildHtml({ nonce: "N", cspSource: "src", scripts: ['x.js"><script>alert(1)</script>'], styles: [], title: "t" });
     expect(html).not.toContain("<script>alert");
     expect(html).toContain("&quot;&gt;&lt;script&gt;");
   });
@@ -121,7 +156,7 @@ describe("webview host", () => {
     const nonce = /nonce-([^']+)'/.exec(w.html)![1];
     expect(w.html).toContain(`content="default-src 'none'; script-src 'nonce-${nonce}'`);
     expect(w.html).toContain("connect-src 'none'");
-    expect(w.html).toContain(`<script nonce="${nonce}" src="https://file+.vscode-resource.test/ext/media/session.js">`);
+    expect(w.html).toContain(`<script type="module" nonce="${nonce}" src="https://file+.vscode-resource.test/ext/media/session/assets/index-Pl2JwmhW.js">`);
     expect(w.html).not.toMatch(/https?:\/\/(?!file\+\.vscode-resource\.test)/);
   });
 

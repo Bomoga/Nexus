@@ -2,6 +2,7 @@
 // adapts their Webview to the router's WebviewTransport, and implements app.ping.
 // The vscode API is injected (defaulting to the real module) so tests never need the editor.
 import { randomBytes, randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import type * as vscode from "vscode";
 import type { NexusBridgeRouter, WebviewTransport } from "./router";
 import type { Disposable } from "./types";
@@ -15,20 +16,30 @@ export interface HostApi {
   };
   workspace: { getConfiguration(section: string): { get<T>(key: string): T | undefined } };
   ViewColumn: { Active: vscode.ViewColumn };
+  /** The file's text, or undefined if it does not exist. */
+  readTextFile(uri: vscode.Uri): string | undefined;
+}
+
+function readTextFile(uri: vscode.Uri): string | undefined {
+  try { return readFileSync(uri.fsPath, "utf8"); } catch { return undefined; }
 }
 
 function realApi(): HostApi {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
-  return require("vscode") as HostApi;
+  const { Uri, window, workspace, ViewColumn } = require("vscode") as typeof vscode;
+  return { Uri, window, workspace, ViewColumn, readTextFile };
 }
 
 export function makeNonce(): string { return randomBytes(16).toString("base64"); }
 
-/** Strict CSP: nothing remote, scripts and styles only by nonce, local files only from the webview's own resource origin. */
+/**
+ * Strict CSP: nothing remote, entry scripts only by nonce, and local files only from the webview's own resource origin.
+ * 'strict-dynamic' lets a nonced module load its own split chunks (Vite's import()), which a nonce alone would block.
+ */
 export function buildCsp(nonce: string, cspSource: string): string {
   return [
     "default-src 'none'",
-    `script-src 'nonce-${nonce}'`,
+    `script-src 'nonce-${nonce}' 'strict-dynamic'`,
     `style-src 'nonce-${nonce}' ${cspSource}`,
     `img-src ${cspSource} data:`,
     `font-src ${cspSource}`,
@@ -40,8 +51,22 @@ export function buildCsp(nonce: string, cspSource: string): string {
 
 function escapeAttr(s: string): string { return s.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
 
-export function buildHtml(opts: { nonce: string; cspSource: string; scriptUri: string; title: string }): string {
-  const { nonce, cspSource, scriptUri, title } = opts;
+/** The relative assets of a page Vite built into media/<entry>/index.html. */
+export interface BuiltPage { scripts: string[]; styles: string[] }
+
+const ASSET_PATH = /^assets\/[A-Za-z0-9._-]+\.(?:js|css)$/;
+
+/** Reads only well-formed relative assets out of Vite's page. Anything else in it (inline code, remote URLs) is left out. */
+export function parseBuiltPage(html: string): BuiltPage {
+  const assets = (tag: RegExp) => [...html.matchAll(tag)].map(m => m[1].replace(/^\.\//, "")).filter(p => ASSET_PATH.test(p));
+  return {
+    scripts: assets(/<script\b[^>]*\bsrc="([^"]+)"[^>]*>/g),
+    styles: assets(/<link\b[^>]*\brel="stylesheet"[^>]*\bhref="([^"]+)"[^>]*>/g),
+  };
+}
+
+export function buildHtml(opts: { nonce: string; cspSource: string; scripts: string[]; styles: string[]; title: string }): string {
+  const { nonce, cspSource, scripts, styles, title } = opts;
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -49,19 +74,35 @@ export function buildHtml(opts: { nonce: string; cspSource: string; scriptUri: s
 <meta http-equiv="Content-Security-Policy" content="${escapeAttr(buildCsp(nonce, cspSource))}">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${escapeAttr(title)}</title>
+${styles.map(href => `<link rel="stylesheet" href="${escapeAttr(href)}">`).join("\n")}
 </head>
 <body>
 <div id="root"></div>
-<script nonce="${nonce}" src="${escapeAttr(scriptUri)}"></script>
+${scripts.map(src => `<script type="module" nonce="${nonce}" src="${escapeAttr(src)}"></script>`).join("\n")}
 </body>
+</html>`;
+}
+
+/** Shown when an entry has no build, so a missing webview says why instead of staying blank. No scripts run. */
+export function buildMissingHtml(cspSource: string, entry: string): string {
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="${escapeAttr(buildCsp(makeNonce(), cspSource))}">
+</head>
+<body>Webview "${escapeAttr(entry)}" is not built. Run npm run build:webviews in extensions/nexus.</body>
 </html>`;
 }
 
 function configureWebview(api: HostApi, ctx: vscode.ExtensionContext, entry: string, webview: vscode.Webview, title: string): void {
   const media = api.Uri.joinPath(ctx.extensionUri, "media");
   webview.options = { enableScripts: true, localResourceRoots: [media] };
-  const scriptUri = webview.asWebviewUri(api.Uri.joinPath(media, `${entry}.js`)).toString();
-  webview.html = buildHtml({ nonce: makeNonce(), cspSource: webview.cspSource, scriptUri, title });
+  const built = api.readTextFile(api.Uri.joinPath(media, entry, "index.html"));
+  const page = built === undefined ? undefined : parseBuiltPage(built);
+  if (!page?.scripts.length) { webview.html = buildMissingHtml(webview.cspSource, entry); return; }
+  const toUri = (asset: string) => webview.asWebviewUri(api.Uri.joinPath(media, entry, ...asset.split("/"))).toString();
+  webview.html = buildHtml({ nonce: makeNonce(), cspSource: webview.cspSource, scripts: page.scripts.map(toUri), styles: page.styles.map(toUri), title });
 }
 
 interface HostedWebview {
@@ -97,7 +138,7 @@ export interface WebviewHost {
 }
 
 /**
- * Host one webview entry (media/<entry>.js) as a sidebar view and/or editor panel, wired to the router.
+ * Host one webview entry (Vite's build in media/<entry>/) as a sidebar view and/or editor panel, wired to the router.
  * Views: retainContextWhenHidden stays off (memory), so hiding one destroys its page: the router drops its subscriptions
  * on hide and the reloaded page subscribes again. Panels: retained, because moving a panel or maximizing another group can
  * destroy an unretained page while `visible` stays true, so a panel keeps its subscriptions across a hide. Moving a panel

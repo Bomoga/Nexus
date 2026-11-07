@@ -1,18 +1,13 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import type { ChatMessage, SlackUser } from "../../src/contracts";
-import { Chip, EmptyState, getBridge } from "../shared";
+import type { ChatMessage } from "../../src/contracts";
+import { Button, Chip, EmptyState, StatusLine, getBridge } from "../shared";
 import type { BridgeClient } from "../shared";
+import { Composer, FailedBar } from "./Composer";
+import { applyIncoming, isReply, mergeMessages, useOutbox, useSlackLive, useUsers } from "./live";
 import { MessageRow } from "./MessageRow";
 
 const PAGE = 50;
-
-const byTs = (a: ChatMessage, b: ChatMessage) => parseFloat(a.ts) - parseFloat(b.ts) || a.ts.localeCompare(b.ts);
-
-function merge(existing: ChatMessage[], incoming: ChatMessage[]): ChatMessage[] {
-  const map = new Map(existing.map((m) => [m.id, m]));
-  for (const m of incoming) map.set(m.id, m);
-  return [...map.values()].sort(byTs);
-}
+const BOTTOM_SLOP = 4;
 
 type Anchor = { kind: "bottom" } | { kind: "keep"; height: number };
 
@@ -20,7 +15,7 @@ export interface HistoryProps {
   bridge?: BridgeClient;
   channelId: string;
   onOpenLink?: (url: string) => void;
-  /** Wired by the thread pane (L3-09). */
+  /** Called with a parent message when its row or reply count is clicked. */
   onOpenThread?: (message: ChatMessage) => void;
 }
 
@@ -30,12 +25,16 @@ export function History({ bridge, channelId, onOpenLink, onOpenThread }: History
   const [cursor, setCursor] = useState<string | undefined>();
   const [cached, setCached] = useState(false);
   const [state, setState] = useState<"loading" | "ready" | "failed">("loading");
-  const [users, setUsers] = useState<Record<string, SlackUser>>({});
+  const [olderFailed, setOlderFailed] = useState(false);
+  const [attempt, setAttempt] = useState(0);
   const scroller = useRef<HTMLDivElement>(null);
-  const loadingOlder = useRef(false);
   const generation = useRef(0);
+  // The one older-page request in flight; only that request may clear it (a stale one from a previous channel must not).
+  const inflight = useRef<object | undefined>(undefined);
   const anchor = useRef<Anchor | undefined>(undefined);
-  const asked = useRef(new Set<string>());
+  const atBottom = useRef(true);
+  const counted = useRef(new Set<string>());
+  const users = useUsers(client, messages, channelId);
 
   useEffect(() => {
     const gen = ++generation.current;
@@ -43,14 +42,17 @@ export function History({ bridge, channelId, onOpenLink, onOpenThread }: History
     setCursor(undefined);
     setCached(false);
     setState("loading");
-    loadingOlder.current = false;
-    asked.current = new Set();
+    setOlderFailed(false);
+    inflight.current = undefined;
+    atBottom.current = true;
+    counted.current = new Set();
     client
       .request("slack.history", { channelId, limit: PAGE })
       .then((r) => {
         if (gen !== generation.current) return;
         anchor.current = { kind: "bottom" };
-        setMessages(merge([], r.messages));
+        // Live and pending messages that arrived while the page was loading stay.
+        setMessages((cur) => mergeMessages(r.messages, cur));
         setCursor(r.nextCursor);
         setCached(r.fromCache);
         setState("ready");
@@ -58,22 +60,7 @@ export function History({ bridge, channelId, onOpenLink, onOpenThread }: History
       .catch(() => {
         if (gen === generation.current) setState("failed");
       });
-  }, [client, channelId]);
-
-  // Resolve display names and (safe) avatars for authors we have not asked about yet.
-  useEffect(() => {
-    const ids = [...new Set(messages.map((m) => m.author.id))].filter((id) => !asked.current.has(id));
-    if (ids.length === 0) return;
-    ids.forEach((id) => asked.current.add(id));
-    const gen = generation.current;
-    client
-      .request("slack.users", { ids })
-      .then((list) => {
-        if (gen !== generation.current) return;
-        setUsers((u) => ({ ...u, ...Object.fromEntries(list.map((x) => [x.id, x])) }));
-      })
-      .catch(() => undefined);
-  }, [client, messages]);
+  }, [client, channelId, attempt]);
 
   useLayoutEffect(() => {
     const el = scroller.current;
@@ -84,8 +71,10 @@ export function History({ bridge, channelId, onOpenLink, onOpenThread }: History
   }, [messages]);
 
   const loadOlder = useCallback(() => {
-    if (!cursor || loadingOlder.current) return;
-    loadingOlder.current = true;
+    if (!cursor || inflight.current) return;
+    const token = {};
+    inflight.current = token;
+    setOlderFailed(false);
     const gen = generation.current;
     const height = scroller.current?.scrollHeight ?? 0;
     client
@@ -93,14 +82,47 @@ export function History({ bridge, channelId, onOpenLink, onOpenThread }: History
       .then((r) => {
         if (gen !== generation.current) return;
         anchor.current = { kind: "keep", height };
-        setMessages((m) => merge(m, r.messages));
-        setCursor(r.nextCursor);
+        setMessages((m) => mergeMessages(m, r.messages));
+        // A cursor that does not advance would loop forever; treat it as the end.
+        setCursor(r.nextCursor === cursor ? undefined : r.nextCursor);
       })
-      .catch(() => undefined)
+      .catch(() => {
+        if (gen === generation.current) setOlderFailed(true);
+      })
       .finally(() => {
-        loadingOlder.current = false;
+        if (inflight.current === token) inflight.current = undefined;
       });
   }, [client, channelId, cursor]);
+
+  // Paging is driven by scroll events, which never come if the pane does not overflow or the page we just
+  // loaded added no height; keep loading while the top is in view and older pages exist.
+  useEffect(() => {
+    const el = scroller.current;
+    if (state !== "ready" || !cursor || olderFailed || !el || el.clientHeight <= 0) return;
+    if (el.scrollHeight <= el.clientHeight || el.scrollTop <= 0) loadOlder();
+  }, [state, cursor, olderFailed, messages, loadOlder]);
+
+  useSlackLive(client, channelId, (m, kind) => {
+    if (isReply(m)) {
+      // Replies belong to the thread pane; the parent only shows a count.
+      if (kind === "message" && !counted.current.has(m.id)) {
+        counted.current.add(m.id);
+        setMessages((l) => l.map((p) => (p.ts === m.threadTs ? { ...p, replyCount: (p.replyCount ?? 0) + 1 } : p)));
+      }
+      return;
+    }
+    if (atBottom.current) anchor.current = { kind: "bottom" };
+    setMessages((l) => (kind === "message_changed" ? mergeMessages(l, [m]) : applyIncoming(l, m)));
+  });
+
+  const outbox = useOutbox(client, { channelId }, setMessages, () => {
+    anchor.current = { kind: "bottom" };
+  });
+
+  const openThread = (m: ChatMessage, target: HTMLElement) => {
+    if (!onOpenThread || m.pending || m.failed || target.closest("button")) return;
+    onOpenThread(m);
+  };
 
   return (
     <div className="chat-history-pane">
@@ -110,7 +132,7 @@ export function History({ bridge, channelId, onOpenLink, onOpenThread }: History
         </div>
       ) : null}
       {state === "failed" ? (
-        <EmptyState message="could not load history" />
+        <EmptyState message="could not load history" action={{ label: "RETRY", onClick: () => setAttempt((n) => n + 1) }} />
       ) : state === "ready" && messages.length === 0 ? (
         <EmptyState message="no messages yet" />
       ) : (
@@ -118,21 +140,36 @@ export function History({ bridge, channelId, onOpenLink, onOpenThread }: History
           ref={scroller}
           className="chat-history"
           onScroll={(e) => {
-            if (e.currentTarget.scrollTop <= 0) loadOlder();
+            const el = e.currentTarget;
+            atBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight <= BOTTOM_SLOP;
+            if (el.scrollTop <= 0) loadOlder();
           }}
         >
+          {olderFailed ? (
+            <StatusLine tone="error">
+              could not load older messages{" "}
+              <Button onClick={loadOlder}>RETRY</Button>
+            </StatusLine>
+          ) : null}
           {messages.map((m) => (
-            <MessageRow
+            <div
               key={m.id}
-              message={m}
-              displayName={users[m.author.id]?.displayName}
-              avatarUrl={users[m.author.id]?.avatarUrl}
-              onOpenLink={onOpenLink}
-              onOpenThread={onOpenThread}
-            />
+              className={[m.failed ? "chat-failed" : "", onOpenThread && !m.pending && !m.failed ? "chat-row-open" : ""].filter(Boolean).join(" ") || undefined}
+              onClick={(e) => openThread(m, e.target as HTMLElement)}
+            >
+              <MessageRow
+                message={m}
+                displayName={users[m.author.id]?.displayName}
+                avatarUrl={users[m.author.id]?.avatarUrl}
+                onOpenLink={onOpenLink}
+                onOpenThread={onOpenThread}
+              />
+              {m.failed ? <FailedBar onRetry={() => outbox.retry(m)} /> : null}
+            </div>
           ))}
         </div>
       )}
+      <Composer onSend={outbox.send} />
     </div>
   );
 }

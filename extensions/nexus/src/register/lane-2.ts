@@ -55,7 +55,18 @@ export function registerLane2(context: vscode.ExtensionContext): Lane2Wiring {
     secret: key => Promise.resolve(context.secrets.get(key)),
     env: process.env,
     // The first workspace folder is the repo; GitCli refuses clearly if it is not one. No folder: no git, so Lane 1 keeps its refusal.
-    ...(folder ? { git: new GitCli(folder.uri.fsPath) } : {}),
+    ...(folder ? { git: new GitCli(folder.uri.fsPath, { sessionsDir: join(context.globalStorageUri.fsPath, "sessions", workspaceSlug) }) } : {}),
+    slackCacheDir: join(context.globalStorageUri.fsPath, "slack"),
+    ...(folder ? {
+      watcher: {
+        machineId: vscode.env.machineId,
+        watch: (onChange: () => void) => {
+          const fsw = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(folder, ".git/{HEAD,packed-refs,refs/**}"));
+          const subs = [fsw.onDidChange(onChange), fsw.onDidCreate(onChange), fsw.onDidDelete(onChange)];
+          return () => { for (const s of subs) s.dispose(); fsw.dispose(); };
+        },
+      },
+    } : {}),
     allowlist: () => vscode.workspace.getConfiguration("nexus").get<string[]>("agent.allowedCommands") ?? [],
     openExternal: url => Promise.resolve(vscode.env.openExternal(vscode.Uri.parse(url, true))),
     log: m => log(m),
@@ -96,7 +107,7 @@ export function registerLane2(context: vscode.ExtensionContext): Lane2Wiring {
 
   return {
     router, store,
-    slack: lane2.slack,
+    slack: lane2.served,
     approvalHooks: lane2.approvalHooks,
     ...(lane2.git ? { git: lane2.git } : {}),
     ...(lane2.makeGate ? { makeGate: lane2.makeGate } : {}),

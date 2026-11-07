@@ -94,6 +94,29 @@ describe("buildLane2", () => {
     await vi.waitFor(() => expect(api.chat.update).toHaveBeenCalledWith(expect.objectContaining({ channel: "C9", ts: "50.000100" })));
   });
 
+  it("merges an agent branch through git.mergeAgentBranch", async () => {
+    const git = new FakeGit();
+    await git.createSessionWorktree({ sessionId: "s1", workspaceId: "w" });
+    const { router } = setup({ git });
+    expect(await router.call("git.mergeAgentBranch", { sessionId: "s1" })).toMatchObject({ ok: true });
+    expect(await router.call("git.mergeAgentBranch", { sessionId: "nope" })).toMatchObject({ ok: false });
+  });
+
+  it("starts the git watcher, which writes commit events into the store", async () => {
+    const git = new FakeGit();
+    let fire: () => void = () => {};
+    const { store, built } = setup({ git, watcher: { machineId: "m1", watch: cb => { fire = cb; return () => {}; } } });
+    await built.watcherReady;
+    const window = { from: "2000-01-01T00:00:00Z", to: "2100-01-01T00:00:00Z", limit: 5000 };
+    const before = await store.queryEvents(window);
+    const w = await git.createSessionWorktree({ sessionId: "s9", workspaceId: "w" });
+    git.setDiff(w.worktreePath, "+x\n");
+    await git.mergeAgentBranch("s9");
+    fire();
+    await vi.waitFor(async () => expect((await store.queryEvents(window)).length).toBeGreaterThan(before.length), { timeout: 3000 });
+    built.dispose();
+  });
+
   it("does not post a card for a task that did not come from Slack", async () => {
     const { store, built, api } = setup({}, { [SLACK_SECRET_KEYS.bot]: "xoxb-1", [SLACK_SECRET_KEYS.app]: "xapp-1" });
     await store.putTask({ ...fx.task, source: { kind: "manual" } });

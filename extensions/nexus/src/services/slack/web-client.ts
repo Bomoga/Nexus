@@ -15,9 +15,9 @@ export type UserTokenSource = SlackStatus["userTokenSource"];
 export type TokenProvider = () => Promise<{ token: string; source: UserTokenSource } | null>;
 
 // Loose shapes for the parts of Slack payloads we read.
-interface SlackMsg { blocks?: unknown; ts?: string; thread_ts?: string; user?: string; bot_id?: string; username?: string; bot_profile?: { name?: string }; text?: string; reply_count?: number; subtype?: string }
+export interface SlackMsg { type?: string; blocks?: unknown; ts?: string; thread_ts?: string; user?: string; bot_id?: string; username?: string; bot_profile?: { name?: string }; text?: string; reply_count?: number; subtype?: string }
 interface SlackChannel { id?: string; name?: string; is_private?: boolean; is_member?: boolean; is_archived?: boolean; unread_count_display?: number }
-interface SlackUserInfo { id?: string; name?: string; real_name?: string; is_bot?: boolean; profile?: { display_name?: string; real_name?: string; image_72?: string } }
+export interface SlackUserInfo { id?: string; name?: string; real_name?: string; is_bot?: boolean; deleted?: boolean; is_restricted?: boolean; is_ultra_restricted?: boolean; is_stranger?: boolean; is_app_user?: boolean; team_id?: string; profile?: { display_name?: string; real_name?: string; image_72?: string } }
 interface Paged { response_metadata?: { next_cursor?: string } }
 
 /** The slice of @slack/web-api's WebClient we call; tests inject a fake. */
@@ -122,7 +122,7 @@ async function paginate<R extends Paged>(fetchPage: (cursor?: string) => Promise
   }
 }
 
-function safeError(e: unknown, what: string): Error {
+export function safeError(e: unknown, what: string): Error {
   // Only a short Slack error code, a rate-limit hint or "timeout" is forwarded; never the original message, which could echo headers.
   const err = e as { code?: unknown; data?: { error?: unknown }; retryAfter?: unknown; original?: { name?: unknown; code?: unknown } } | null;
   const parts: string[] = [];
@@ -131,6 +131,38 @@ function safeError(e: unknown, what: string): Error {
   else if (/timeout|timedout|abort/i.test(String(err?.original?.name ?? "") + String(err?.original?.code ?? "") + String(err?.code ?? ""))) parts.push("timeout");
   else if (typeof err?.code === "string" && /^slack_webapi_[a-z_]+$/.test(err.code)) parts.push(err.code);
   return new Error(`slack ${what} failed${parts.length ? `: ${parts[0]}` : ""}`);
+}
+
+/** Maps a users.info payload to the contract SlackUser. */
+export function toSlackUser(id: string, u: SlackUserInfo): SlackUser {
+  const displayName = u.profile?.display_name || u.profile?.real_name || u.real_name || u.name || id;
+  return { id, name: u.name ?? id, displayName, isBot: !!u.is_bot, ...(u.profile?.image_72 ? { avatarUrl: u.profile.image_72 } : {}) };
+}
+
+/** True when a raw message is one we show (has a ts and an author, and is not a join/leave notice). */
+export function isShownSlackMsg(m: SlackMsg): boolean {
+  return !!m.ts && !!(m.user || m.bot_id) && m.subtype !== "channel_join" && m.subtype !== "channel_leave";
+}
+
+/**
+ * Maps one raw Slack message. A person's own post through the Nexus app also carries bot_id/app_id/bot_profile, so a known user's
+ * is_bot is trusted; bot_id is only the fallback when the user is unknown (section 14: never show agent text as human).
+ */
+export function mapSlackMessage(channelId: string, m: SlackMsg, known?: SlackUser): ChatMessage {
+  const ts = m.ts as string;
+  const isBot = known ? known.isBot : !!m.bot_id;
+  const id = m.user ?? (m.bot_id as string);
+  const name = known?.name || m.username || m.bot_profile?.name || id;
+  const text = m.text ?? "";   // verbatim: untrusted (§14)
+  return {
+    id: `${channelId}:${ts}`, channelId, ts,
+    ...(m.thread_ts && m.thread_ts !== ts ? { threadTs: m.thread_ts } : {}),
+    author: { id, name, isBot },
+    text, codeRefs: extractCodeRefs(text),
+    ...(m.reply_count ? { replyCount: m.reply_count } : {}),
+    sentVia: isBot ? "bot" : "user",
+    ...(isBot && m.blocks !== undefined ? { blocks: m.blocks } : {}),   // approval buttons survive a reload; humans' blocks are never mapped
+  } satisfies ChatMessage;
 }
 
 export class SlackWebClient implements UserSlack {
@@ -281,33 +313,14 @@ export class SlackWebClient implements UserSlack {
       try {
         const u = (await api.users.info({ user: id })).user;
         if (!u) { this.failedUsers.set(id, this.now()); return; }
-        const displayName = u.profile?.display_name || u.profile?.real_name || u.real_name || u.name || id;
-        this.userCache.set(id, { id, name: u.name ?? id, displayName, isBot: !!u.is_bot, ...(u.profile?.image_72 ? { avatarUrl: u.profile.image_72 } : {}) });
+        this.userCache.set(id, toSlackUser(id, u));
       } catch { this.failedUsers.set(id, this.now()); /* unknown user: fall back to the raw id */ }
     });
   }
 
   private async mapMessages(api: SlackApi, channelId: string, raw: SlackMsg[]): Promise<ChatMessage[]> {
-    const real = raw.filter(m => m.ts && (m.user || m.bot_id) && m.subtype !== "channel_join" && m.subtype !== "channel_leave");
+    const real = raw.filter(isShownSlackMsg);
     await this.loadUsers(api, real.flatMap(m => (m.user ? [m.user] : [])));
-    return real.map(m => {
-      const ts = m.ts as string;
-      // A person's own post through the Nexus app also carries bot_id/app_id/bot_profile, so trust users.info when it answered;
-      // bot_id is only the fallback when the lookup failed (section 14: never show agent text as human).
-      const cached = m.user ? this.userCache.get(m.user) : undefined;
-      const isBot = cached ? cached.isBot : !!m.bot_id;
-      const id = m.user ?? (m.bot_id as string);
-      const name = (m.user && this.userCache.get(m.user)?.name) || m.username || m.bot_profile?.name || id;
-      const text = m.text ?? "";   // verbatim: untrusted (§14)
-      return {
-        id: `${channelId}:${ts}`, channelId, ts,
-        ...(m.thread_ts && m.thread_ts !== ts ? { threadTs: m.thread_ts } : {}),
-        author: { id, name, isBot },
-        text, codeRefs: extractCodeRefs(text),
-        ...(m.reply_count ? { replyCount: m.reply_count } : {}),
-        sentVia: isBot ? "bot" : "user",
-        ...(isBot && m.blocks !== undefined ? { blocks: m.blocks } : {}),   // approval buttons survive a reload; humans' blocks are never mapped
-      } satisfies ChatMessage;
-    });
+    return real.map(m => mapSlackMessage(channelId, m, m.user ? this.userCache.get(m.user) : undefined));
   }
 }

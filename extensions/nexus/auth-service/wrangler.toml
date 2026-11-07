@@ -1,0 +1,12 @@
+name = "nexus-auth-service"
+main = "src/index.ts"
+compatibility_date = "2026-11-01"
+
+# Non-secret config. Set these in the dashboard or here; AUTH0_DOMAIN is a bare host such as your-tenant.eu.auth0.com.
+# [vars]
+# AUTH0_DOMAIN = "your-tenant.eu.auth0.com"
+# AUTH0_CLIENT_ID = "<confidential app client id>"
+# AUTH0_AUDIENCE = "<optional API audience the Nexus app requests>"
+
+# Secret (never put the value in this file):
+#   wrangler secret put AUTH0_CLIENT_SECRET

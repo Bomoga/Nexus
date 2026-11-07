@@ -11,9 +11,24 @@
 - L3-13 task editor (attempt 2 disputed only for §14 labels while the optimizer state is unknown; Elkin approved a lead fix: unknown optimizer ⇒ "data use unknown" + LEAVES MACHINE, fields locked during START, regression test proven to fail without the fix; merged T+5).
 - After both merges: 134 tests / 11 files, typechecks, lint, build of chat/globe/task, contributes:check all green; 0 fixture strings in production bundles; 0 NUL bytes. Browser check on ?fake=1: task editor renders; globe live count rises with cubes/diamonds on the activity rings.
 
+- Morning run (scheduled, Elkin asleep): merged origin/main into lane-3 (35 lane-2 commits: bridge router + webview host, slack web client, local event store) — clean, 291 tests green, pushed.
+
+## Blocked — DECISION FOR ELKIN: L3-09 (Slack threads + composer)
+- Not merged. Branch lane-3-wt/L3-09, worktree C:\dev\nexus-wt\L3-09. Commits: 085b63ed (attempt 1), dd52edc0 (attempt 2), 7a988ac1 (approved fix round: app-owned outbox store, MAKE TASK keyed by thread). All 129 tests pass; the four bugs from last night are fixed for their tested scenarios (their regression tests fail on dd52edc0).
+- The fix round was DISPUTED (Opus reviewer, reproduced with probes in a scratch copy):
+  1. NEW silent loss (regression vs dd52edc0): dropConfirmed (live.ts:157-167) matches identity + text with no ts bound, so an OLDER message of ours with the same text ("ok", "thanks") deletes a genuinely failed send and its RETRY — on return to the channel, or even with no navigation when the page loads after the failure. Fix: only our own copy with ts ≥ the echo's send time (minus skew) confirms it, one copy confirms at most one echo.
+  2. Bug (b) still open for restored PENDING echoes: Slack delivers while away, user returns, pending echo shown beside the real message; the 30 s timeout then turns it into RETRY → double post.
+  3. Post results reach only the view that sent them: close/reopen the thread pane while a reply is in flight → the row stays pending forever (failure) or a stale pending row stays beside the reply (success). Fix: the store notifies subscribed views per target; settlement must not go through the sender's closure.
+- Root cause: without a clientId on ChatMessage, the view has to guess which Slack copy is "ours". The robust fix is cross-lane: an optional `clientId` on ChatMessage echoed by the host (contract change, Lane 1) and/or slack.post idempotent by clientId (Lane 2) — then every match is exact and RETRY after a timeout is safe.
+- Options: (A) merge dd52edc0 (attempt 2) as the cp-1 version — its known issues are edge cases around switching channels/threads mid-send — and do the store work after the clientId contract lands; (B) one more focused fix round on 7a988ac1 for items 1-3 with probe-based tests; (C) hold until the contract change. Lead recommendation: (A) for cp-1 + push the clientId ask to Adrian/Brandon today; never merge 7a988ac1 as-is (item 1 is a regression).
+
+- L3-04 globe picking + detail strip (attempt 2 confirmed by review; merged in the morning run). Click picks markers (individual + instanced), merge arcs and activity cubes/diamonds; drag never selects; one-row DetailStrip with OPEN/Enter → ui.openTarget; T+ origin 2026-11-07T03:00Z (22:00 ET). After merge: 312 tests / 21 files, typechecks, lint, builds, contributes:check green; 0 fixture strings; 0 NUL bytes. Not checked in a real browser: raycasting (jsdom can't render the Canvas) — worth a manual click test on /globe/?fake=1.
+- Not done for L3-04: ?debug=1 pause/speed controls (no seam in Globe.tsx; small follow-up).
+
 ## In flight
-- L3-09 Slack threads + composer: attempt 2 disputed (unsent/failed echoes lost or shown with RETRY after a channel/thread switch or pane close; MAKE TASK result shown on the wrong thread). Waiting on Elkin's decision.
-- Next after L3-09: L3-04 globe picking + detail strip; then wave 4 (L3-05 search/tracking, L3-11 session view, L3-10 code refs).
+- (none) — morning run stopped as planned after L3-04.
+- Next: wave 4 (L3-05 search/tracking, L3-11 session view, L3-10 code refs) — not started; the hourly poll may start it.
+- Lane 2's webview host (src/bridge/host.ts) renders a plain <body>; the task editor needs <body data-task-id="…"> (ask Brandon).
 - Lead merge checklist now includes a NUL-byte scan (literal NULs slipped in twice and make git treat files as binary).
 - style.test.tsx is ready (13 tests, pass with css enabled) and parked at C:\dev\nexus-hello\pending\ until vitest.config.ts has `test.css: true`
 

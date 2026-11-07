@@ -1,7 +1,7 @@
 import { memo, useLayoutEffect, useMemo, useRef } from "react";
 import type { MouseEvent } from "react";
 import type { NexusEvent, TimeWindow } from "../../src/contracts";
-import { familiesOf } from "../globe/model";
+import { familiesOf, windowMs } from "../globe/model";
 import { DEFAULT_T0_MS, formatEventTime } from "../globe/model/picking";
 import { ACTIVITY_H, BLOCK_H, LANE_H, MARK, PLOT_W, eventX, layoutEvents, plotHeight, scrollFor, ticksFor } from "./model";
 import type { Layout, Mark } from "./model";
@@ -66,7 +66,16 @@ const Marks = memo(function Marks({ layout, families }: { layout: Layout; famili
 /** Horizontal lanes (one per branch family), time on the x-axis, now at the right edge. DOM/SVG only. */
 export function Timeline({ events, now, window: w, selected, onSelect, reveal, t0Ms = DEFAULT_T0_MS }: TimelineProps) {
   const families = useMemo(() => familiesOf(events), [events]);
-  const layout = useMemo(() => layoutEvents(events, families, now, w), [events, families, now, w]);
+  // Marks are laid out against a reference time and the whole group is shifted by the drift since then,
+  // so the 5 s clock tick moves one transform instead of recreating every mark. The reference moves
+  // only when the events or window change, or the drift reaches 1 px.
+  const ref = useRef({ now, events, w });
+  if (ref.current.events !== events || ref.current.w !== w || now < ref.current.now || ((now - ref.current.now) / windowMs(w)) * PLOT_W >= 1) {
+    ref.current = { now, events, w };
+  }
+  const refNow = ref.current.now;
+  const drift = ((now - refNow) / windowMs(w)) * PLOT_W;
+  const layout = useMemo(() => layoutEvents(events, families, refNow, w), [events, families, refNow, w]);
   const ticks = useMemo(() => ticksFor(now, w, t0Ms), [now, w, t0Ms]);
   const byId = useMemo(() => new Map(events.map((e) => [e.id, e])), [events]);
   const scroller = useRef<HTMLDivElement>(null);
@@ -129,8 +138,10 @@ export function Timeline({ events, now, window: w, selected, onSelect, reveal, t
             {families.map((f, i) => (
               <rect key={`a-${f}`} className="tl-activity" x={0} y={i * BLOCK_H + LANE_H} width={PLOT_W} height={ACTIVITY_H} />
             ))}
-            <Marks layout={layout} families={families} />
-            {selection ? <rect data-testid="selection" data-event-id={selected?.id} className="tl-selection" x={selection.x} y={selection.y} width={selection.w} height={selection.h} /> : null}
+            <g data-testid="marks" transform={`translate(${-drift},0)`}>
+              <Marks layout={layout} families={families} />
+              {selection ? <rect data-testid="selection" data-event-id={selected?.id} className="tl-selection" x={selection.x} y={selection.y} width={selection.w} height={selection.h} /> : null}
+            </g>
           </g>
           <line className="tl-now" x1={PLOT_W - 0.5} x2={PLOT_W - 0.5} y1={0} y2={AXIS_H + height} />
         </svg>

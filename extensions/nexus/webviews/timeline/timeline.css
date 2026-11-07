@@ -14,7 +14,7 @@ body { overflow: hidden; }
 .tl-tick text { fill: var(--nx-muted); font-size: 10px; font-variant-numeric: tabular-nums; }
 .tl-lane-line { stroke: var(--nx-border); stroke-width: 1; }
 .tl-activity { fill: var(--nx-hover-bg); }
-.tl-commit rect { fill: var(--nx-accent); }
+.tl-square rect { fill: var(--nx-accent); }
 .tl-cube rect { fill: var(--nx-accent-hi); }
 .tl-diamond polygon { fill: var(--nx-accent-hi); }
 .tl-mark { cursor: pointer; }

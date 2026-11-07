@@ -308,7 +308,7 @@ describe("run(channel) entry point", () => {
   it("reports a failure when the provider is not available in this process", async () => {
     const w = wire({ NEXUS_FAKE_PROVIDER: "0" });
     await w.runEntry();
-    await w.host.startSession(start({ session: { ...start().session, model: { provider: "google", modelId: "x" } } }));
+    await w.host.startSession(start({ session: { ...start().session, model: { provider: "no-such-provider", modelId: "x" } } }));
     await vi.waitFor(() => expect(w.finished).toHaveLength(1));
     expect(w.finished[0].outcome).toBe("failed");
     w.host.dispose();

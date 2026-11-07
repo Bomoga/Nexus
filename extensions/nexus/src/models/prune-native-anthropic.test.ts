@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { ModelCallReceipt } from "../contracts";
 import { FakeProvider } from "./fake-provider";
 import type { PruneConfig } from "./prune-adapter";
-import { PRUNE_NATIVE_ANTHROPIC_PATH, nativeRouteFor, wrapAnthropicNative } from "./prune-native-anthropic";
+import { PRUNE_NATIVE_ANTHROPIC_PATH, wrapAnthropicNative } from "./prune-native-anthropic";
 import type { PruneMetadata } from "./prune-receipt";
 import { collectTurn, type TurnRequest } from "./provider";
 
@@ -16,7 +16,7 @@ const metadata = (over: Partial<PruneMetadata> = {}): PruneMetadata => ({
   original_model: MODEL, routed_model: MODEL, route_applied: false, optimizations_applied: ["prompt_trimmed"],
   cost_with_prune_usd: 0.004, cost_without_prune_usd: 0.007, receipt_signature: "c2ln", ...over,
 });
-// Recorded shape: normal Anthropic message plus top-level prune_metadata; tool_use echoes extra keys.
+// Shape per live test 2026-11-07 (hand-written, not a captured response): normal Anthropic message plus top-level prune_metadata; tool_use echoes extra keys.
 const message = (over: Record<string, unknown> = {}) => ({
   id: "msg_1", type: "message", role: "assistant", model: MODEL, stop_reason: "end_turn",
   content: [{ type: "text", text: "Done." }], usage: { input_tokens: 10, output_tokens: 4 }, prune_metadata: metadata(), ...over,
@@ -48,15 +48,6 @@ function setup(respond: () => Response | Promise<Response>, over: Partial<PruneC
   });
   return { provider, sent, receipts, notes };
 }
-
-describe("nativeRouteFor", () => {
-  it("names the verified native routes only", () => {
-    expect(nativeRouteFor("anthropic")).toBe("anthropic-messages");
-    expect(nativeRouteFor("google")).toBe("gemini-chat-completions");
-    expect(nativeRouteFor("swarms")).toBeUndefined();
-    expect(nativeRouteFor("openai")).toBeUndefined();
-  });
-});
 
 describe("request", () => {
   it("posts an Anthropic-shaped body to the native route with the Prune headers and no provider key", async () => {
@@ -189,5 +180,47 @@ describe("scope", () => {
     const r = await collectTurn(s.provider.turn(req(), PROVIDER_KEY));
     expect(r.text).toBe("direct answer");
     expect(s.sent).toEqual([]);
+  });
+});
+
+describe("served-model verification beyond the receipt", () => {
+  it("discards an agent answer whose body.model differs when routed_model is missing", async () => {
+    const s = setup(() => json(200, message({ model: "claude-haiku-4-5-20251001", prune_metadata: metadata({ routed_model: undefined }) })));
+    const r = await collectTurn(s.provider.turn(req(), PROVIDER_KEY));
+    expect(r.error).toMatch(/claude-haiku-4-5-20251001 instead of claude-sonnet-5-5/);
+    expect(r.text).toBe("");
+    expect(s.receipts[0]!.servedModel).toBe("claude-haiku-4-5-20251001");
+  });
+
+  it("accepts a trailing date suffix on the same base id", async () => {
+    const s = setup(() => json(200, message({ model: "claude-sonnet-5-5-20251001", prune_metadata: metadata({ routed_model: undefined }) })));
+    expect((await collectTurn(s.provider.turn(req(), PROVIDER_KEY))).text).toBe("Done.");
+  });
+
+  it("treats a missing prune_metadata as unverified and discards an agent answer", async () => {
+    const s = setup(() => json(200, message({ prune_metadata: undefined })));
+    const r = await collectTurn(s.provider.turn(req(), PROVIDER_KEY));
+    expect(r.error).toMatch(/did not report/);
+    expect(r.text).toBe("");
+  });
+});
+
+describe("incomplete or odd responses", () => {
+  it("errors on an unknown stop_reason", async () => {
+    const s = setup(() => json(200, message({ stop_reason: "something_new" })));
+    expect((await collectTurn(s.provider.turn(req(), PROVIDER_KEY))).error).toMatch(/something_new/);
+  });
+  it("errors on end_turn with empty content", async () => {
+    const s = setup(() => json(200, message({ content: [] })));
+    const r = await collectTurn(s.provider.turn(req(), PROVIDER_KEY));
+    expect(r.error).toMatch(/no text and no tool call/);
+    expect(r.done).toBeUndefined();
+  });
+  it("errors on a tool_use block with no id and emits nothing", async () => {
+    const s = setup(() => json(200, message({ stop_reason: "tool_use", content: [{ type: "text", text: "x" }, { type: "tool_use", name: "fs_read", input: {} }] })));
+    const r = await collectTurn(s.provider.turn(req(), PROVIDER_KEY));
+    expect(r.error).toMatch(/without an id/);
+    expect(r.toolCalls).toEqual([]);
+    expect(r.text).toBe("");
   });
 });

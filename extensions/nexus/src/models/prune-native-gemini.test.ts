@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { ModelCallReceipt } from "../contracts";
 import { FakeProvider } from "./fake-provider";
 import type { PruneConfig } from "./prune-adapter";
+import { DEFAULT_MAX_OUTPUT_TOKENS } from "./gemini";
 import { wrapGeminiNative } from "./prune-native-gemini";
 import type { PruneMetadata } from "./prune-receipt";
 import { collectTurn, type TurnRequest } from "./provider";
@@ -16,7 +17,7 @@ const metadata = (over: Partial<PruneMetadata> = {}): PruneMetadata => ({
   original_model: MODEL, routed_model: MODEL, route_applied: false, optimizations_applied: ["output_cap:400"],
   cost_with_prune_usd: 0.001, cost_without_prune_usd: 0.002, receipt_signature: "c2ln", ...over,
 });
-// Recorded shape: Gemini-native body returned on /v1/chat/completions, plus prune_metadata.
+// Shape per live test 2026-11-07 (hand-written, not a captured response): Gemini-native body returned on /v1/chat/completions, plus prune_metadata.
 const gemini = (parts: unknown[], finishReason = "STOP", over: Record<string, unknown> = {}) => ({
   candidates: [{ content: { role: "model", parts }, finishReason }],
   usageMetadata: { promptTokenCount: 12, candidatesTokenCount: 5 }, modelVersion: MODEL, prune_metadata: metadata(), ...over,
@@ -71,6 +72,7 @@ describe("request", () => {
 describe("response mapping", () => {
   it("maps text and functionCall parts, keeps thoughtSignature as providerMeta, skips thought parts", async () => {
     const s = setup(() => json(200, gemini([
+      { text: "", thoughtSignature: "sig-0" },
       { text: "thinking...", thought: true },
       { text: "Reading." },
       { functionCall: { id: "fc1", name: "fs_read", args: { path: "a.ts" } }, thoughtSignature: "sig-1" },
@@ -145,5 +147,92 @@ describe("model pinning and failures", () => {
     const t = setup(() => json(200, {}), { scope: "text_roles" });
     expect((await collectTurn(t.provider.turn(req(), PROVIDER_KEY))).text).toBe("direct answer");
     expect(t.sent).toEqual([]);
+  });
+});
+
+const ARGS_SECRET = "ANTHROPIC_API_KEY=sk-ant-api03-TESTTESTTESTTEST1234567890";
+
+describe("replay and redaction", () => {
+  it("redacts tool call arguments, tool results, system and user text", async () => {
+    const s = setup(() => json(200, gemini([{ text: "ok" }])));
+    await collectTurn(s.provider.turn(req({
+      system: `sys ${ARGS_SECRET}`,
+      messages: [
+        { role: "user", content: `u ${ARGS_SECRET}` },
+        { role: "assistant", content: `a ${ARGS_SECRET}`, toolCalls: [{ id: "c1", name: "cmd_run", args: { command: `export ${ARGS_SECRET}`, nested: { k: [ARGS_SECRET] } } }] },
+        { role: "tool", toolCallId: "c1", content: `t ${ARGS_SECRET}` },
+      ],
+    }), PROVIDER_KEY));
+    expect(JSON.stringify(s.sent[0]!.body)).not.toContain("sk-ant-api03-TESTTEST");
+  });
+
+  it("carries a saved thoughtSignature on the replayed tool_call as extra_content.google.thought_signature", async () => {
+    const s = setup(() => json(200, gemini([{ text: "ok" }])));
+    await collectTurn(s.provider.turn(req({
+      messages: [
+        { role: "user", content: "go" },
+        { role: "assistant", content: "", toolCalls: [{ id: "c1", name: "fs_read", args: {}, providerMeta: { thoughtSignature: "sig-1" } }, { id: "c2", name: "fs_list", args: {} }] },
+        { role: "tool", toolCallId: "c1", content: "a" },
+        { role: "tool", toolCallId: "c2", content: "b" },
+      ],
+    }), PROVIDER_KEY));
+    const calls = s.sent[0]!.body.messages[1].tool_calls;
+    expect(calls[0].extra_content).toEqual({ google: { thought_signature: "sig-1" } });
+    expect(calls[1].extra_content).toBeUndefined();
+  });
+
+  it("always sends a max token cap", async () => {
+    const s = setup(() => json(200, gemini([{ text: "ok" }])));
+    await collectTurn(s.provider.turn(req(), PROVIDER_KEY));
+    expect(s.sent[0]!.body.max_tokens).toBe(DEFAULT_MAX_OUTPUT_TOKENS);
+    await collectTurn(s.provider.turn(req({ maxTokens: 77 }), PROVIDER_KEY));
+    expect(s.sent[1]!.body.max_tokens).toBe(77);
+  });
+});
+
+describe("served-model verification", () => {
+  it("only notes (does not fail) when modelVersion differs and routed_model is missing", async () => {
+    const s = setup(() => json(200, gemini([{ text: "ok" }], "STOP", { modelVersion: "gemini-3.6-flash", prune_metadata: metadata({ routed_model: undefined }) })));
+    const r = await collectTurn(s.provider.turn(req(), PROVIDER_KEY));
+    expect(r.text).toBe("ok");
+    expect(r.error).toBeUndefined();
+    expect(s.notes.join(" ")).toContain("gemini-3.6-flash");
+    expect(s.notes.join(" ")).toContain("gemini-3.8-flash");
+  });
+
+  it("discards an agent answer when prune_metadata is missing entirely", async () => {
+    const s = setup(() => json(200, gemini([{ text: "ok" }], "STOP", { prune_metadata: undefined })));
+    const r = await collectTurn(s.provider.turn(req(), PROVIDER_KEY));
+    expect(r.error).toMatch(/did not report/);
+    expect(r.text).toBe("");
+  });
+});
+
+describe("empty or odd successes are errors", () => {
+  const cases: Array<[string, unknown[], string | undefined]> = [
+    ["no parts", [], "STOP"],
+    ["only an empty text part with a signature", [{ text: "", thoughtSignature: "sig-9" }], "STOP"],
+    ["no finishReason", [{ text: "hi" }], undefined],
+    ["MALFORMED_RESPONSE", [{ text: "hi" }], "MALFORMED_RESPONSE"],
+    ["TOO_MANY_TOOL_CALLS", [], "TOO_MANY_TOOL_CALLS"],
+    ["LANGUAGE", [{ text: "hi" }], "LANGUAGE"],
+    ["FINISH_REASON_UNSPECIFIED", [{ text: "hi" }], "FINISH_REASON_UNSPECIFIED"],
+    ["MAX_TOKENS with no content", [], "MAX_TOKENS"],
+  ];
+  for (const [name, parts, finish] of cases) {
+    it(name, async () => {
+      const body = gemini(parts, finish);
+      if (finish === undefined) delete (body.candidates[0] as { finishReason?: string }).finishReason;
+      const s = setup(() => json(200, body));
+      const r = await collectTurn(s.provider.turn(req(), PROVIDER_KEY));
+      expect(r.error).toBeDefined();
+      expect(r.done).toBeUndefined();
+    });
+  }
+  it("a functionCall without a name is an error and emits nothing", async () => {
+    const s = setup(() => json(200, gemini([{ text: "hi" }, { functionCall: { args: {} } }])));
+    const r = await collectTurn(s.provider.turn(req(), PROVIDER_KEY));
+    expect(r.error).toMatch(/without a name/);
+    expect(r.text).toBe("");
   });
 });

@@ -9,6 +9,7 @@ import { OptimizerService } from "../features/accounts/optimizer";
 import type { AccountsService } from "../features/accounts/accounts-service";
 import { secretKeyFor } from "../features/accounts/accounts-service";
 import type { ModelPicker } from "../features/accounts/model-picker";
+import { connectSlackApprovals, type SlackApprovalResolver } from "./slack-approvals";
 import { approvalsHookFor } from "../features/adapters/approvals-hook";
 import type { ApprovalHook, NotifyPort } from "../features/approvals/approvals-controller";
 import { makeConfiguredCibaHook } from "../features/approvals/ciba-wiring";
@@ -33,6 +34,8 @@ export interface Lane2Services {
   makeGate(hook: ReturnType<typeof approvalsHookFor>): Gate;
   /** Further surfaces told about every approval, such as the Slack approval message. */
   approvalHooks: ApprovalHook[];
+  /** Lane 2's Slack APPROVE / REJECT buttons: Lane 1 gives it the approvals controller's resolve once the controller exists. */
+  setSlackApprovalResolver?(resolve: SlackApprovalResolver): void;
 }
 
 const unavailable = (what: string) => new Error(`${what} is not available in this build yet (Lane 2 has not delivered it).`);
@@ -56,6 +59,7 @@ export function withFallbacks(given: Partial<Lane2Services> = {}, log: (m: strin
     git: pick("git", () => ({ createSessionWorktree: async () => { throw unavailable("The git service"); } })),
     makeGate: pick("makeGate", () => () => ({ request: async () => { throw unavailable("The agent gate"); } })),
     approvalHooks: given.approvalHooks ?? [],
+    ...(given.setSlackApprovalResolver ? { setSlackApprovalResolver: given.setSlackApprovalResolver } : {}),
   };
   if (missing.length > 0) log(`using stand-ins for Lane 2: ${missing.join(", ")}`);
   return services;
@@ -115,6 +119,7 @@ export function registerFeatures(context: vscode.ExtensionContext, accounts: Acc
   });
 
   ref.lane = lane;
+  connectSlackApprovals(l2, lane.approvals);
 
   const ui = {
     info: (m: string) => void vscode.window.showInformationMessage(m),

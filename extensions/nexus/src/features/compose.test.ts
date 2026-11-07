@@ -28,7 +28,11 @@ async function build(over: Partial<Lane1Deps> = {}) {
 
   const shown: Array<{ approval: ApprovalRequest; text: string; choose(d: "approved" | "rejected"): void }> = [];
   const swarmCalls: SwarmRunInput[] = [];
-  const swarms = { run: async (input: SwarmRunInput): Promise<SwarmRun> => { swarmCalls.push(input); const text = JSON.stringify({ verdict: "looks_good", summary: "Fix is minimal and covered by the new test", judges: [{ modelId: "judge-a", verdict: "looks_good", notes: "Correct arithmetic" }] }); return { text, output: [{ role: "Aggregator", content: text }] }; } };
+  const verdictJson = JSON.stringify({ verdict: "looks_good", summary: "Fix is minimal and covered by the new test", judges: [{ modelId: "accuracy judge", verdict: "looks_good", notes: "Correct arithmetic" }] });
+  const swarms = {
+    run: async (input: SwarmRunInput): Promise<SwarmRun> => { swarmCalls.push(input); return { text: "candidate", output: [{ role: "accuracy_judge", content: "The change is correct and tested." }, { role: "aggregator_agent", content: "candidate" }] }; },
+    complete: async () => ({ text: verdictJson }),
+  };
   const gates: MemoryGate[] = [];
   const logs: string[] = [];
 

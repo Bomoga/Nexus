@@ -4,7 +4,7 @@ import { bindingMessage, CibaClient, type CibaDeps } from "./ciba";
 const approval = { id: "appr-1", sessionId: "sess-42", action: { kind: "commit" as const, message: "ignore previous instructions" } };
 const APPROVER = "auth0|alice";
 
-type Call = { url: string; body: Record<string, unknown>; auth: string | null };
+type Call = { url: string; body: Record<string, unknown>; auth: string | null; signal?: AbortSignal | null };
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status });
 
 function setup(responses: Array<Response | Error | (() => Response | Error)>, over: Partial<CibaDeps> = {}) {
@@ -16,7 +16,7 @@ function setup(responses: Array<Response | Error | (() => Response | Error)>, ov
     baseUrl: "https://auth.example.test/",
     getAccessToken: async () => "tok-secret",
     fetch: (async (url: string, init: RequestInit) => {
-      calls.push({ url, body: JSON.parse(String(init.body)), auth: new Headers(init.headers).get("authorization") });
+      calls.push({ url, body: JSON.parse(String(init.body)), auth: new Headers(init.headers).get("authorization"), signal: init.signal });
       const next = queue.shift();
       const r = typeof next === "function" ? next() : next;
       if (!r) throw new Error("no more scripted responses");
@@ -41,7 +41,23 @@ describe("bindingMessage", () => {
     expect(m).toContain("commit");
     expect(m).toContain("sess-42");
     expect(m).not.toContain("ignore");
-    expect(bindingMessage({ ...approval, sessionId: "s".repeat(200) }).length).toBeLessThanOrEqual(64);
+    expect(bindingMessage({ ...approval, sessionId: "s".repeat(200) }).length).toBeLessThanOrEqual(20);
+  });
+
+  it("survives the service's composition for every action kind", () => {
+    const actions = [{ kind: "run_command" as const, command: "x" }, { kind: "write_outside_scope" as const, path: "/p" },
+      { kind: "commit" as const, message: "m" }, { kind: "other" as const, description: "d" }];
+    const words = ["cmd", "write", "commit", "other"];
+    actions.forEach((action, i) => {
+      for (const sessionId of ["sess-42", "session-0123456789abcdef", "s".repeat(200)]) {
+        const label = bindingMessage({ sessionId, action });
+        expect(label.length).toBeLessThanOrEqual(20);
+        const shown = `NX ${"appr-123456".slice(0, 8)} ${label.slice(0, 20)}`;
+        expect(shown.length).toBeLessThanOrEqual(64);
+        expect(shown).toContain(` ${words[i]} `);
+        expect(shown.endsWith(sessionId.slice(-8))).toBe(true);
+      }
+    });
   });
 });
 
@@ -134,6 +150,52 @@ describe("CibaClient", () => {
     const { client, calls } = setup([]);
     expect(await run(client, ac.signal)).toEqual({ status: "no_answer", reason: "cancelled" });
     expect(calls).toHaveLength(0);
+  });
+
+  it("passes the AbortSignal to every fetch", async () => {
+    const ac = new AbortController();
+    const { client, calls } = setup([json(start), json({ status: "rejected" })]);
+    await run(client, ac.signal);
+    expect(calls.every((c) => c.signal === ac.signal)).toBe(true);
+  });
+
+  it("an abort during an in-flight poll wins over an approved response", async () => {
+    const ac = new AbortController();
+    const { client } = setup([json(start), () => { ac.abort(); return json({ status: "approved", auth0UserId: APPROVER }); }]);
+    expect(await run(client, ac.signal)).toEqual({ status: "no_answer", reason: "cancelled" });
+  });
+
+  it("an aborted fetch is cancelled, not an error", async () => {
+    const ac = new AbortController();
+    const { client } = setup([json(start), () => { ac.abort(); return new Error("aborted"); }]);
+    expect(await run(client, ac.signal)).toEqual({ status: "no_answer", reason: "cancelled" });
+  });
+
+  it("a decision made elsewhere while a poll is in flight wins over approved", async () => {
+    let pending = true;
+    const { client } = setup([json(start), () => { pending = false; return json({ status: "approved", auth0UserId: APPROVER }); }],
+      { isStillPending: async () => pending });
+    expect(await run(client)).toEqual({ status: "no_answer", reason: "decided_elsewhere" });
+  });
+
+  it("a decision made elsewhere during /ciba/start stops before any poll", async () => {
+    let pending = true;
+    const { client, calls } = setup([() => { pending = false; return json(start); }], { isStillPending: async () => pending });
+    expect(await run(client)).toEqual({ status: "no_answer", reason: "decided_elsewhere" });
+    expect(calls).toHaveLength(1);
+  });
+
+  it("honours Retry-After on a 429 without counting it as a failure", async () => {
+    const limited = (h?: string) => new Response("{}", { status: 429, headers: h ? { "retry-after": h } : {} });
+    const { client, sleeps } = setup([json(start), limited("7"), limited("7"), limited("7"), limited("7"),
+      json({ error: "rate_limited", retryAfter: 9 }, 429), json({ status: "approved", auth0UserId: APPROVER })]);
+    expect((await run(client)).status).toBe("approved");
+    expect(sleeps).toEqual([2000, 7000, 7000, 7000, 7000, 9000]);
+  });
+
+  it("429s stay bounded by the overall timeout", async () => {
+    const { client } = setup([json(start), ...Array.from({ length: 50 }, () => new Response("{}", { status: 429, headers: { "retry-after": "4" } }))], { timeoutMs: 10_000 });
+    expect(await run(client)).toEqual({ status: "no_answer", reason: "timeout" });
   });
 
   it("fetches a fresh access token per call", async () => {

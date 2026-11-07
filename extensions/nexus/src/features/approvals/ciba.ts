@@ -35,10 +35,14 @@ export interface CibaRequest {
   signal?: AbortSignal;
 }
 
-/** Action kind and session id only (no model-written text), at most 64 characters. */
+const ACTION_WORD = { run_command: "cmd", write_outside_scope: "write", commit: "commit", other: "other" } as const;
+/** The auth service shows the phone `NX <approvalId8> <label.slice(0,20)>`, so the label itself must fit in 20 characters. */
+export const LABEL_MAX = 20;
+
+/** Short action word + last 8 characters of the session id (no model-written text); always at most 20 characters. */
 export function bindingMessage(approval: Pick<ApprovalRequest, "sessionId" | "action">): string {
-  const clean = (s: string) => s.replace(/[^A-Za-z0-9 _.,:#-]/g, "");
-  return clean(`${approval.action.kind} ${approval.sessionId}`).slice(0, 64);
+  const session = approval.sessionId.replace(/[^A-Za-z0-9_.,:#-]/g, "").slice(-8);
+  return `${ACTION_WORD[approval.action.kind]} ${session}`.slice(0, LABEL_MAX);
 }
 
 const defaultSleep = (ms: number, signal?: AbortSignal): Promise<void> =>
@@ -54,16 +58,18 @@ const NO = (reason: Extract<CibaOutcome, { status: "no_answer" }>["reason"]): Ci
 export class CibaClient {
   constructor(private readonly deps: CibaDeps) {}
 
-  private async post(path: string, body: unknown): Promise<{ ok: boolean; status: number; data: Record<string, unknown> }> {
+  private async post(path: string, body: unknown, signal?: AbortSignal): Promise<{ ok: boolean; status: number; data: Record<string, unknown>; retryAfterHeader?: number }> {
     const token = await this.deps.getAccessToken();
     const res = await (this.deps.fetch ?? fetch)(`${this.deps.baseUrl.replace(/\/+$/, "")}${path}`, {
       method: "POST",
       headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
       body: JSON.stringify(body),
+      signal,
     });
+    const header = Number(res.headers.get("retry-after"));
     let data: Record<string, unknown> = {};
     try { const v = await res.json(); if (v && typeof v === "object") data = v as Record<string, unknown>; } catch { /* empty body */ }
-    return { ok: res.ok, status: res.status, data };
+    return { ok: res.ok, status: res.status, data, retryAfterHeader: header > 0 ? header : undefined };
   }
 
   async requestApproval(req: CibaRequest): Promise<CibaOutcome> {
@@ -82,7 +88,9 @@ export class CibaClient {
       const begun = now();
       const started = await this.post("/ciba/start", {
         approvalId: approval.id, sessionId: approval.sessionId, actionLabel: bindingMessage(approval), approverAuth0UserId,
-      });
+      }, signal);
+      const afterStart = await stop();
+      if (afterStart) return afterStart;
       const authReqId = started.data.authReqId;
       if (!started.ok || typeof authReqId !== "string") return NO("error");
       let intervalMs = typeof started.data.interval === "number" && started.data.interval > 0 ? started.data.interval * 1000 : (this.deps.pollIntervalMs ?? 5000);
@@ -95,7 +103,14 @@ export class CibaClient {
         if (halt) return halt;
         if (now() >= deadline) return NO("timeout");
         let polled: Awaited<ReturnType<CibaClient["post"]>>;
-        try { polled = await this.post("/ciba/poll", { authReqId }); } catch { polled = { ok: false, status: 0, data: {} }; }
+        try { polled = await this.post("/ciba/poll", { authReqId }, signal); } catch { polled = { ok: false, status: 0, data: {} }; }
+        const afterPoll = await stop();   // cancelled or decided elsewhere while the poll was in flight: never report a decision
+        if (afterPoll) return afterPoll;
+        if (polled.status === 429) {      // rate limited: honour Retry-After, not a failure, still bounded by the deadline
+          const wait = polled.retryAfterHeader ?? (typeof polled.data.retryAfter === "number" && polled.data.retryAfter > 0 ? polled.data.retryAfter : undefined);
+          if (wait !== undefined) intervalMs = wait * 1000;
+          continue;
+        }
         if (!polled.ok) {
           if (polled.status === 400 || polled.status === 401 || polled.status === 403) return NO("error");
           if (++failures >= maxFailures) return NO("error");
@@ -119,6 +134,7 @@ export class CibaClient {
         }
       }
     } catch {
+      if (signal?.aborted) return NO("cancelled");
       return NO("error");   // never echo the underlying error: it could carry a token
     }
   }

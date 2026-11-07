@@ -79,6 +79,8 @@ export class SessionsController implements SessionEvents {
   private reserved = false;
   /** Endings in flight, so a second caller waits for the first instead of seeing a half-written session. */
   private readonly ending = new Map<string, Promise<AgentSession>>();
+  /** The terminal session and task of each ended session, so a late write can be corrected. */
+  private readonly settled = new Map<string, { session: AgentSession; task: Task }>();
   private readonly counters = new Map<string, Counter>();
   private readonly subscribers = new Map<string, Set<(e: AgentEvent) => void>>();
   private readonly allSubscribers = new Set<(e: AgentEvent) => void>();
@@ -174,9 +176,21 @@ export class SessionsController implements SessionEvents {
     if (!a || a.session.id !== sessionId || TERMINAL.has(a.session.status) || a.session.status === status) return;
     a.session = { ...a.session, status };
     a.task = { ...a.task, status };
+    const live = () => this.active === a && !TERMINAL.has(a.session.status);
+    // The session can end while a write below is in flight; its late non-terminal write would then land after the
+    // terminal one. After every await, if it ended, put the terminal state back and drop the stale status event.
     await this.deps.store.putSession(a.session);
+    if (!live()) return this.reassertTerminal(sessionId);
     await this.putTask(a.task);
+    if (!live()) return this.reassertTerminal(sessionId);
     await this.emit(sessionId, { type: "status", status });
+  }
+
+  private async reassertTerminal(sessionId: string): Promise<void> {
+    const t = this.settled.get(sessionId);
+    if (!t) return;
+    await this.attempt("restore the session", () => this.deps.store.putSession(t.session));
+    await this.attempt("restore the task", () => this.putTask(t.task));
   }
 
   private async putTask(task: Task): Promise<void> {
@@ -202,6 +216,7 @@ export class SessionsController implements SessionEvents {
     // Release anything still waiting on a human; a cancelled session's APPROVE must run nothing afterwards.
     await this.attempt("release approvals", () => this.deps.approvals?.sessionEnded?.(sessionId, status) ?? Promise.resolve());
     const ended: AgentSession = { ...a.session, status, endedAt: this.deps.clock.now() };
+    this.settled.set(sessionId, { session: ended, task: { ...a.task, status } });
     // Each write is best effort: a store hiccup must never leave the controller wedged or the agent host un-ended.
     await this.attempt("save the session", () => this.deps.store.putSession(ended));
     await this.attempt("save the task", () => this.putTask({ ...a.task, status }));

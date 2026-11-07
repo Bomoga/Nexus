@@ -488,5 +488,7 @@ export interface IInternalMoveCopyOptions extends IInternalEditorOpenOptions {
 export const NEXUS_HOME_EDITOR_ID = 'nexus.home';
 
 export function isNexusHomeEditor(editor: EditorInput | null | undefined): boolean {
-	return editor?.editorId === NEXUS_HOME_EDITOR_ID;
+	const id = editor?.editorId;
+	// A custom editor reports its view type; an extension webview panel reports it behind the 'mainThreadWebview-' prefix.
+	return id === NEXUS_HOME_EDITOR_ID || id === `mainThreadWebview-${NEXUS_HOME_EDITOR_ID}`;
 }

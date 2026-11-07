@@ -15,9 +15,9 @@ export type UserTokenSource = SlackStatus["userTokenSource"];
 export type TokenProvider = () => Promise<{ token: string; source: UserTokenSource } | null>;
 
 // Loose shapes for the parts of Slack payloads we read.
-export interface SlackMsg { blocks?: unknown; ts?: string; thread_ts?: string; user?: string; bot_id?: string; username?: string; bot_profile?: { name?: string }; text?: string; reply_count?: number; subtype?: string }
+export interface SlackMsg { type?: string; blocks?: unknown; ts?: string; thread_ts?: string; user?: string; bot_id?: string; username?: string; bot_profile?: { name?: string }; text?: string; reply_count?: number; subtype?: string }
 interface SlackChannel { id?: string; name?: string; is_private?: boolean; is_member?: boolean; is_archived?: boolean; unread_count_display?: number }
-export interface SlackUserInfo { id?: string; name?: string; real_name?: string; is_bot?: boolean; profile?: { display_name?: string; real_name?: string; image_72?: string } }
+export interface SlackUserInfo { id?: string; name?: string; real_name?: string; is_bot?: boolean; deleted?: boolean; profile?: { display_name?: string; real_name?: string; image_72?: string } }
 interface Paged { response_metadata?: { next_cursor?: string } }
 
 /** The slice of @slack/web-api's WebClient we call; tests inject a fake. */

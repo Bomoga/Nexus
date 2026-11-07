@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { devNull, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { decodeCodeRef, Requests, type CodeRef } from "../../contracts";
@@ -10,11 +10,12 @@ import { coderefRoute } from "./coderef-route";
 import { CodeRefError, createCodeRef, linesOf, MAX_LINK_PATH_CHARS, MAX_SNIPPET_CHARS } from "./create";
 import { openCodeRef, type ResolveDeps } from "./resolve";
 import { formatCodeRefForSlack, MAX_MESSAGE_CHARS } from "./slack-format";
+import { emptyGitConfig } from "../git/empty-config";
 
 let root: string;
 const sh = (...args: string[]) => execFileSync("git", args, {
   cwd: root, encoding: "utf8",
-  env: { ...process.env, GIT_AUTHOR_NAME: "T", GIT_AUTHOR_EMAIL: "t@example.com", GIT_COMMITTER_NAME: "T", GIT_COMMITTER_EMAIL: "t@example.com", GIT_CONFIG_GLOBAL: devNull, GIT_CONFIG_SYSTEM: devNull },
+  env: { ...process.env, GIT_AUTHOR_NAME: "T", GIT_AUTHOR_EMAIL: "t@example.com", GIT_COMMITTER_NAME: "T", GIT_COMMITTER_EMAIL: "t@example.com", GIT_CONFIG_GLOBAL: emptyGitConfig(), GIT_CONFIG_SYSTEM: emptyGitConfig() },
 }).trim();
 const write = (rel: string, text: string) => { mkdirSync(path.dirname(path.join(root, rel)), { recursive: true }); writeFileSync(path.join(root, rel), text); };
 const commit = (msg: string) => { sh("add", "-A"); sh("-c", "commit.gpgsign=false", "commit", "-q", "-m", msg); return sh("rev-parse", "HEAD"); };

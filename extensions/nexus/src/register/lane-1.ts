@@ -8,6 +8,7 @@ import { connectProvider, type ConnectUi } from "../features/accounts/connect-pr
 import { ModelPicker, type PickerItem, type PickerUi } from "../features/accounts/model-picker";
 import { Auth0Session } from "../features/auth/auth0-signin";
 import { setCurrentAuth } from "../features/auth/current";
+import { safeMessageUi, safeText } from "../features/notify-safe";
 import { reseedDemoRepo } from "../features/demo/reseed";
 import { HomeKeeper } from "../features/home/open-home";
 import { createProviders } from "../models/registry";
@@ -44,9 +45,9 @@ function registerAuth(context: vscode.ExtensionContext): Auth0Session {
     vscode.commands.registerCommand("nexus.signIn", async () => {
       try {
         const status = await auth.signIn();
-        void vscode.window.showInformationMessage(`Signed in to Nexus as ${status.name ?? status.auth0UserId}.`);
+        void vscode.window.showInformationMessage(safeText(`Signed in to Nexus as ${String(status.name ?? status.auth0UserId)}.`));
       } catch (e) {
-        void vscode.window.showErrorMessage(e instanceof Error ? e.message : "Sign-in failed.");
+        void vscode.window.showErrorMessage(safeText(e instanceof Error ? e.message : "Sign-in failed."));
       }
     }),
     vscode.commands.registerCommand("nexus.signOut", async () => {
@@ -90,7 +91,7 @@ function registerModelPicker(context: vscode.ExtensionContext, accounts: Account
 }
 
 function registerConnectProvider(context: vscode.ExtensionContext, accounts: AccountsService, picker: ModelPicker): void {
-  const ui: ConnectUi = {
+  const ui: ConnectUi = safeMessageUi({
     pickProvider: async items => (await vscode.window.showQuickPick(items.map(i => ({ label: i.label, id: i.id })), { placeHolder: "Which provider?" }))?.id,
     promptKey: label => Promise.resolve(vscode.window.showInputBox({ prompt: `${label}: paste the key`, password: true, ignoreFocusOut: true })),
     askYesNo: async q => {
@@ -99,7 +100,7 @@ function registerConnectProvider(context: vscode.ExtensionContext, accounts: Acc
     },
     info: m => void vscode.window.showInformationMessage(m),
     error: m => void vscode.window.showErrorMessage(m),
-  };
+  });
   context.subscriptions.push(
     vscode.commands.registerCommand("nexus.connectProvider", async () => {
       await connectProvider({ accounts, ui, aux: { saveAuxKey: (name, key) => Promise.resolve(context.secrets.store(secretKeyFor(name), key)) } });
@@ -125,8 +126,8 @@ function registerReseedDemoRepo(context: vscode.ExtensionContext): void {
           });
         }),
       });
-      if (res.ok) void vscode.window.showInformationMessage(res.message);
-      else void vscode.window.showErrorMessage(res.message);
+      if (res.ok) void vscode.window.showInformationMessage(safeText(res.message));
+      else void vscode.window.showErrorMessage(safeText(res.message));
     }),
   );
 }

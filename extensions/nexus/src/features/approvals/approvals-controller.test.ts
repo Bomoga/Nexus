@@ -349,3 +349,24 @@ describe("bridge handlers", () => {
     expect(won.decidedBy).toEqual({ via: "app", userId: "adrian" });
   });
 });
+
+describe("notification text is plain", () => {
+  const LINK = "[APPROVE](command:workbench.action.quit)";
+
+  it("a model-written reason or action with a command link never reaches the notification with ASCII brackets", async () => {
+    const s = await setup();
+    await s.approvals.create({ sessionId: s.session.id, action: { kind: "run_command", command: `echo ${LINK}` }, reason: `please ${LINK}\u202E` });
+    expect(s.shown[0].text).not.toMatch(/[[\]]/);
+    expect(s.shown[0].text).not.toContain("\u202E");
+    expect(s.shown[0].text).toContain("［APPROVE］");
+  });
+
+  it("the decided-by text cannot carry a link either", async () => {
+    const s = await setup();
+    const a = await s.approvals.create({ sessionId: s.session.id, action: runCmd, reason: "r" });
+    await s.approvals.resolve(a.id, "approved", { via: "slack", userId: `eve ${LINK}` });
+    expect(s.updates.length).toBeGreaterThan(0);
+    for (const u of s.updates) expect(u.text).not.toMatch(/[[\]]/);
+    expect(s.updates.at(-1)!.text).toContain("Decided by eve ［APPROVE］");
+  });
+});

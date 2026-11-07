@@ -24,6 +24,8 @@ export interface GateDeps {
   platform?: NodeJS.Platform;
   env?: NodeJS.ProcessEnv;
   fileExists?: (file: string) => boolean;
+  /** How long to wait for taskkill before giving up on it (Windows). Default 3000. */
+  taskkillTimeoutMs?: number;
 }
 
 export const OUTPUT_TAIL_CHARS = 8000;
@@ -55,7 +57,7 @@ export function createGate(deps: GateDeps): Gate {
       return new Promise<void>(resolve => {
         let killer: ChildProcess | undefined;
         const end = () => { clearTimeout(limit); resolve(); };
-        const limit = setTimeout(() => { try { killer?.kill(); } catch { /* best effort */ } resolve(); }, TASKKILL_MS);
+        const limit = setTimeout(() => { try { killer?.kill(); } catch { /* best effort */ } resolve(); }, deps.taskkillTimeoutMs ?? TASKKILL_MS);
         try {
           killer = spawn("taskkill", ["/pid", String(child.pid), "/T", "/F"], { stdio: "ignore", windowsHide: true });
           killer.on("error", end);

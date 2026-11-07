@@ -106,12 +106,12 @@
       "properties": {
         "nexus.auth0.domain": {
           "type": "string",
-          "default": "",
+          "default": "dev-pun3bnu12p3pivae.us.auth0.com",
           "description": "Auth0 tenant host name, for example your-tenant.eu.auth0.com (no https://)."
         },
         "nexus.auth0.clientId": {
           "type": "string",
-          "default": "",
+          "default": "NW4fvDI8BM1RwiwewACkHnffXn2cE7Zn",
           "description": "Client ID of the Auth0 Native application. Not a secret."
         },
         "nexus.auth0.audience": {

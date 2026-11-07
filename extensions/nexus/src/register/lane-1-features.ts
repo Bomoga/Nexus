@@ -15,6 +15,7 @@ import type { ApprovalHook, NotifyPort } from "../features/approvals/approvals-c
 import { makeConfiguredCibaHook } from "../features/approvals/ciba-wiring";
 import type { Auth0Session } from "../features/auth/auth0-signin";
 import { lane1Commands } from "../features/commands";
+import { safeCommandUi, safeNotifyPort } from "../features/notify-safe";
 import { composeLane1, type Lane1 } from "../features/compose";
 import type { Clock, GatePort, GitPort, StorePort } from "../features/ports";
 import { SwarmsClient } from "../features/swarms/swarms-client";
@@ -110,7 +111,7 @@ export function registerFeatures(context: vscode.ExtensionContext, accounts: Acc
       onSessionFinished: cb.onSessionFinished, onSessionError: (id, message) => cb.onSessionError(id, message),
       log: (level, message) => { if (level !== "debug") log(`agent process: ${message}`); },
     }),
-    accounts, optimizer, notify: vscodeNotify(),
+    accounts, optimizer, notify: safeNotifyPort(vscodeNotify()),
     swarms: new SwarmsClient(), getSwarmsKey: () => accounts.getKey("swarms"),
     identity,
     workspaceId: () => `ws_${(vscode.workspace.workspaceFolders?.[0]?.name ?? "default").toLowerCase().replace(/[^a-z0-9]+/g, "_")}`,
@@ -121,11 +122,11 @@ export function registerFeatures(context: vscode.ExtensionContext, accounts: Acc
   ref.lane = lane;
   connectSlackApprovals(l2, lane.approvals);
 
-  const ui = {
+  const ui = safeCommandUi({
     info: (m: string) => void vscode.window.showInformationMessage(m),
     error: (m: string) => void vscode.window.showErrorMessage(m),
     pickApproval: async (items: Array<{ id: string; label: string; detail: string }>) => (await vscode.window.showQuickPick(items, { placeHolder: "Which approval?" }))?.id,
-  };
+  });
   const commands = lane1Commands(lane, ui, () => identity().userId);
   context.subscriptions.push(
     wireLane1ToRouter(lane, l2.router),

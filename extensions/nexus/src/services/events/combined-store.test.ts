@@ -398,10 +398,13 @@ describe("CombinedStore approvals", () => {
     const store = new CombinedStore({ local, remote: through(remote, link), readBudgetMs: 50, writeBudgetMs: 500 });
     await store.putApproval(approval);
     await store.idle();
+    link.reject = name => name === "putNexusEvent" ? Object.assign(new Error("reset"), { code: "ECONNRESET" }) : undefined;   // the events stay queued while the mirror runs
     const deciding = store.decideApproval(approval.id, "approved", by("U_A"), T1);
     await sleep(15);
     for (let i = 0; i < 50; i++) await store.putNexusEvent(evt(`c${i}`, "2026-11-07T03:00:00Z"));
     await deciding;
+    expect(local.pendingOutbox()).toHaveLength(50);
+    link.reject = () => undefined;
     await store.flushOutbox();
     await store.idle();
     expect((await remote.queryEvents(ALL)).length).toBe(50);

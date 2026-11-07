@@ -179,10 +179,11 @@ export class ApprovalsController implements ApprovalRequester {
     if (sessionId === undefined) return;                              // not ours: nothing to wake
     this.pending.delete(approval.id);
     await this.deps.sessions.emit(sessionId, { type: "approval_resolved", approvalId: approval.id, decision });
+    // The session reads "running" again before the agent is woken, so no surface shows a working agent as waiting.
+    if (![...this.pending.values()].includes(sessionId)) await this.deps.sessions.setStatus(sessionId, "running");
     this.deps.host.sendEvent("approval.resolved", { approvalId: approval.id, decision });
     for (const w of this.waiters.get(approval.id) ?? []) w(decision);
     this.waiters.delete(approval.id);
-    if (![...this.pending.values()].includes(sessionId)) await this.deps.sessions.setStatus(sessionId, "running");
   }
 }
 

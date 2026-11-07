@@ -1,6 +1,7 @@
 // The session's single Slack progress message (CLAUDE.md sections 6 and 8): one bot message in the task's thread,
 // edited in place. vscode-free. Bot token only; everything model-written is redacted, escaped and labeled.
-import { encodeCodeRef, type AgentEvent, type AgentSession, type CodeRef, type Task } from "../../contracts";
+import { CodeRef, encodeCodeRef, type AgentEvent, type AgentSession, type Task } from "../../contracts";
+import { escapeAndTruncate } from "./interactivity";
 import type { SlackService } from "./types";
 
 /** Slack's section text limit; the whole message stays under it. */
@@ -21,6 +22,8 @@ export interface ProgressMessagesDeps {
   getSession(id: string): Promise<AgentSession | undefined>;
   putSession(session: AgentSession): Promise<void>;
   redact(text: string): string;
+  /** The git workspace id (GitService.workspaceId): the id coderef open compares links against. */
+  workspaceId(): Promise<string>;
   /** Injectable for deterministic tests; defaults to Date and the global timers. */
   clock?: ProgressClock;
   /** Never receives text from a Slack error. */
@@ -38,28 +41,14 @@ export interface ProgressMessages {
 interface Tracked {
   session: AgentSession;
   ref: NonNullable<AgentSession["slackProgress"]>;
-  workspaceId: string;
   status: AgentSession["status"];
   text?: string;
   timer?: unknown;
   lastEditAt: number;
-  files: Map<string, { start: number; end: number }>;
+  files: Map<string, FileState>;
   commit?: string;
   finished: boolean;
   chain: Promise<void>;
-}
-
-const ESC: Record<string, string> = { "&": "&amp;", "<": "&lt;", ">": "&gt;" };
-
-/** Cuts on code points so the escaped result is at most `max` characters; never splits an entity or a surrogate pair. */
-function clip(raw: string, max: number): string {
-  let out = "";
-  for (const ch of raw) {
-    const piece = ESC[ch] ?? ch;
-    if (out.length + piece.length > max - 1) return `${out}…`;
-    out += piece;
-  }
-  return out;
 }
 
 const STATUS_LABEL: Record<AgentSession["status"], string> = {
@@ -69,18 +58,50 @@ const STATUS_LABEL: Record<AgentSession["status"], string> = {
   failed: "failed",
   cancelled: "cancelled",
 };
+const TERMINAL = new Set<AgentSession["status"]>(["done", "failed", "cancelled"]);
 
-/** New-side line range covered by a unified diff's hunks; null when there are none. */
-function diffRange(diff: string): { start: number; end: number } | null {
-  let start = Infinity;
-  let end = 0;
-  for (const m of diff.matchAll(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/gm)) {
-    const s = Math.max(1, Number(m[1]));
-    const len = m[2] === undefined ? 1 : Number(m[2]);
-    start = Math.min(start, s);
-    end = Math.max(end, len === 0 ? s : s + len - 1);
+/** One file's state in the cumulative worktree diff. range null: no usable hunks or an unparseable path, so no link. */
+type FileState = { range: { start: number; end: number } | null; deleted: boolean };
+
+/**
+ * Per-file new-side line ranges from a unified diff. file_edit.diff is the whole worktree diff against the base commit,
+ * so each file's section is parsed on its own. Only unquoted paths are understood; anything else is skipped.
+ */
+function parseDiff(diff: string): Map<string, FileState> {
+  const out = new Map<string, FileState>();
+  let cur: { oldPath?: string; path?: string; deleted: boolean; bad: boolean; inHunk: boolean; start: number; end: number } | undefined;
+  const flush = () => {
+    if (cur && !cur.bad) {
+      const path = cur.deleted ? cur.oldPath : cur.path;
+      if (path) out.set(path, { deleted: cur.deleted, range: cur.deleted || !Number.isFinite(cur.start) ? null : { start: cur.start, end: Math.max(cur.end, cur.start) } });
+    }
+    cur = undefined;
+  };
+  const pathOf = (rest: string, prefix: string): string | undefined => {
+    const r = rest.replace(/\t.*$/, "");
+    return r.startsWith(prefix) && !r.startsWith('"') ? r.slice(prefix.length) : undefined;
+  };
+  for (const line of diff.split("\n")) {
+    if (line.startsWith("diff --git ")) { flush(); cur = { deleted: false, bad: false, inHunk: false, start: Infinity, end: 0 }; continue; }
+    if (!cur) continue;
+    if (!cur.inHunk && line.startsWith("--- ")) { cur.oldPath = pathOf(line.slice(4), "a/"); continue; }
+    if (!cur.inHunk && line.startsWith("+++ ")) {
+      const rest = line.slice(4);
+      if (rest === "/dev/null") cur.deleted = true;
+      else { cur.path = pathOf(rest, "b/"); if (cur.path === undefined) cur.bad = true; }
+      continue;
+    }
+    const m = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/.exec(line);
+    if (m) {
+      cur.inHunk = true;
+      const s = Math.max(1, Number(m[1]));
+      const len = m[2] === undefined ? 1 : Number(m[2]);
+      cur.start = Math.min(cur.start, s);
+      cur.end = Math.max(cur.end, len === 0 ? s : s + len - 1);
+    }
   }
-  return Number.isFinite(start) ? { start, end: Math.max(end, start) } : null;
+  flush();
+  return out;
 }
 
 export function createProgressMessages(deps: ProgressMessagesDeps): ProgressMessages {
@@ -91,45 +112,56 @@ export function createProgressMessages(deps: ProgressMessagesDeps): ProgressMess
   };
   const log = (m: string) => { try { deps.log?.(m); } catch { /* logging never throws */ } };
   const tracked = new Map<string, Tracked>();
+  const finishedIds = new Set<string>();
+  const starting = new Map<string, Promise<AgentSession | undefined>>();
+
+  const safe = (text: string, max: number) => escapeAndTruncate(deps.redact(text), max);
+  const fence = (text: string, max: number) => `\`\`\`\n${safe(text, max)}\n\`\`\``;
 
   const header = (t: Tracked) =>
-    `⬡ Nexus agent ${STATUS_LABEL[t.status]} on ${clip(deps.redact(t.session.branch), 100)} · ${clip(deps.redact(`${t.session.model.provider}/${t.session.model.modelId}`), 100)}`;
+    `⬡ Nexus agent ${STATUS_LABEL[t.status]} on ${safe(t.session.branch, 100)} · ${safe(`${t.session.model.provider}/${t.session.model.modelId}`, 100)}`;
 
-  function render(t: Tracked, summary?: string): string {
+  async function render(t: Tracked, summary?: string): Promise<string> {
     const head = header(t);
-    const parts: string[] = [head];
-    if (t.finished) {
-      const files = [...t.files.entries()];
-      const lines: string[] = [];
-      for (const [path, range] of files.slice(0, MAX_FILES)) {
-        const safePath = deps.redact(path);
-        const label = clip(safePath, MAX_PATH_CHARS).replace(/\|/g, "¦");
-        const ref = t.commit ? buildRef(t, safePath, range) : null;
-        lines.push(ref ? `• <${encodeCodeRef(ref)}|${label}>` : `• ${label}`);
+    if (!t.finished) {
+      if (!t.text) return head;
+      const label = "\nLatest (model-written):\n";
+      return head + label + fence(t.text, MAX_PROGRESS_CHARS - head.length - label.length - 10);
+    }
+    let out = head;
+    if (summary) {
+      const label = "\nSummary (model-written):\n";
+      out += label + fence(summary, Math.min(1200, MAX_PROGRESS_CHARS - head.length - label.length - 10));
+    }
+    const files = [...t.files.entries()];
+    if (files.length) {
+      let workspaceId: string | undefined;
+      try { workspaceId = await deps.workspaceId(); } catch { log("could not read the workspace id for progress links"); }
+      const title = "\nEdited files:";
+      const reserve = 30;   // room for the "and N more" line
+      let block = "";
+      let shown = 0;
+      for (const [path, state] of files.slice(0, MAX_FILES)) {
+        const label = safe(path, MAX_PATH_CHARS).replace(/\|/g, "¦");
+        const parsed = workspaceId && t.commit && state.range && !state.deleted
+          ? CodeRef.safeParse({ workspaceId, commit: t.commit, path, startLine: state.range.start, endLine: state.range.end })
+          : undefined;
+        const line = `\n• ${parsed?.success ? `<${encodeCodeRef(parsed.data)}|${label}>` : `${label}${state.deleted ? " (deleted)" : ""}`}`;
+        if (out.length + title.length + block.length + line.length + reserve > MAX_PROGRESS_CHARS) break;
+        block += line;
+        shown++;
       }
-      if (files.length > MAX_FILES) lines.push(`and ${files.length - MAX_FILES} more`);
-      const filesBlock = lines.length ? `\nEdited files:\n${lines.join("\n")}` : "";
-      const used = head.length + filesBlock.length + 60;
-      if (summary) parts.push(`\nSummary (model-written):\n${clip(deps.redact(summary), Math.max(40, MAX_PROGRESS_CHARS - used))}`);
-      return (parts.join("\n") + filesBlock).slice(0, MAX_PROGRESS_CHARS);
+      out += title + block;
+      if (files.length > shown) out += `\nand ${files.length - shown} more`;
     }
-    if (t.text) {
-      const used = head.length + 40;
-      parts.push(`\nLatest (model-written):\n${clip(deps.redact(t.text), Math.max(40, MAX_PROGRESS_CHARS - used))}`);
-    }
-    return parts.join("\n").slice(0, MAX_PROGRESS_CHARS);
-  }
-
-  function buildRef(t: Tracked, path: string, range: { start: number; end: number }): CodeRef | null {
-    if (!/^[0-9a-f]{40}$/.test(t.commit ?? "") || path.startsWith("/") || path.includes("..")) return null;
-    return { workspaceId: t.workspaceId, commit: t.commit!, path, startLine: range.start, endLine: range.end };
+    return out.length <= MAX_PROGRESS_CHARS ? out : head;
   }
 
   /** Serialized per session; a Slack failure is logged and reported as false, never thrown. */
   function edit(t: Tracked, summary?: string): Promise<boolean> {
     const run = async (): Promise<boolean> => {
       try {
-        await deps.slack.updateBotMessage(t.ref.channelId, t.ref.messageTs, render(t, summary));
+        await deps.slack.updateBotMessage(t.ref.channelId, t.ref.messageTs, await render(t, summary));
         t.lastEditAt = clock.now();
         return true;
       } catch {
@@ -146,48 +178,63 @@ export function createProgressMessages(deps: ProgressMessagesDeps): ProgressMess
     if (t.timer !== undefined) { clock.clearTimeout(t.timer); t.timer = undefined; }
   }
 
-  async function lookup(session: AgentSession): Promise<Tracked | undefined> {
+  function adopt(session: AgentSession, ref: NonNullable<AgentSession["slackProgress"]>): Tracked {
+    const existing = tracked.get(session.id);
+    if (existing) return existing;
+    const t: Tracked = { session, ref, status: session.status, lastEditAt: -Infinity, files: new Map(), finished: false, chain: Promise.resolve() };
+    tracked.set(session.id, t);
+    return t;
+  }
+
+  /** The tracker for a session with a progress message. A session already terminal in the store is finished (unless the caller is finishing it). */
+  async function lookup(session: AgentSession, finishing = false): Promise<Tracked | undefined> {
+    if (finishedIds.has(session.id)) return undefined;
     const known = tracked.get(session.id);
     if (known) return known;
     const latest = (await deps.getSession(session.id)) ?? session;
     const ref = latest.slackProgress ?? session.slackProgress;
     if (!ref) return undefined;
-    const task = await deps.getTask(latest.taskId);
-    return adopt(latest, ref, task?.workspaceId ?? "");
+    if (!finishing && TERMINAL.has(latest.status)) { finishedIds.add(session.id); return undefined; }
+    return adopt(latest, ref);
   }
 
-  function adopt(session: AgentSession, ref: NonNullable<AgentSession["slackProgress"]>, workspaceId: string): Tracked {
-    const existing = tracked.get(session.id);
-    if (existing) return existing;
-    const t: Tracked = { session, ref, workspaceId, status: session.status, lastEditAt: -Infinity, files: new Map(), finished: false, chain: Promise.resolve() };
-    tracked.set(session.id, t);
-    return t;
+  async function doStart(session: AgentSession): Promise<AgentSession | undefined> {
+    try {
+      if (finishedIds.has(session.id)) return undefined;
+      const known = tracked.get(session.id);
+      if (known) return known.session;
+      const task = await deps.getTask(session.taskId);
+      if (!task || task.source.kind !== "thread") return undefined;
+      const latest = (await deps.getSession(session.id)) ?? session;
+      if (latest.slackProgress) { adopt(latest, latest.slackProgress); return latest; }
+      const text = `⬡ Nexus agent started on ${safe(latest.branch, 100)} · ${safe(`${latest.model.provider}/${latest.model.modelId}`, 100)}`;
+      const posted = await deps.slack.postAsBot({ channelId: task.source.channelId, threadTs: task.source.threadTs, text });
+      const updated: AgentSession = { ...latest, slackProgress: { channelId: task.source.channelId, threadTs: task.source.threadTs, messageTs: posted.ts } };
+      adopt(updated, updated.slackProgress!);   // kept even if the store write fails, so a repeat start never posts again
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try { await deps.putSession(updated); return updated; } catch { /* retried once */ }
+      }
+      log(`could not store the progress message for session ${session.id}`);
+      return updated;
+    } catch {
+      log(`could not post the progress message for session ${session.id}`);
+      return undefined;
+    }
   }
 
   return {
-    async start(session) {
-      try {
-        const task = await deps.getTask(session.taskId);
-        if (!task || task.source.kind !== "thread") return undefined;
-        const latest = (await deps.getSession(session.id)) ?? session;
-        if (latest.slackProgress) { adopt(latest, latest.slackProgress, task.workspaceId); return latest; }
-        const text = `⬡ Nexus agent started on ${clip(deps.redact(latest.branch), 100)} · ${clip(deps.redact(`${latest.model.provider}/${latest.model.modelId}`), 100)}`;
-        const posted = await deps.slack.postAsBot({ channelId: task.source.channelId, threadTs: task.source.threadTs, text });
-        const updated: AgentSession = { ...latest, slackProgress: { channelId: task.source.channelId, threadTs: task.source.threadTs, messageTs: posted.ts } };
-        adopt(updated, updated.slackProgress!, task.workspaceId);
-        await deps.putSession(updated);
-        return updated;
-      } catch {
-        log(`could not post the progress message for session ${session.id}`);
-        return undefined;
-      }
+    start(session) {
+      const running = starting.get(session.id);
+      if (running) return running;
+      const p = doStart(session).finally(() => { starting.delete(session.id); });
+      starting.set(session.id, p);
+      return p;
     },
 
     async update(session, text) {
       try {
         const t = await lookup(session);
-        if (!t) return false;
-        if (t.finished) return false;
+        if (!t || t.finished) return false;
         t.text = text;
         if (t.timer === undefined) {
           const wait = Math.max(0, t.lastEditAt + EDIT_DEBOUNCE_MS - clock.now());
@@ -211,9 +258,13 @@ export function createProgressMessages(deps: ProgressMessagesDeps): ProgressMess
         cancelTimer(t);
         void edit(t);
       } else if (event.type === "file_edit") {
-        const range = diffRange(event.diff) ?? { start: 1, end: 1 };
-        const prev = t.files.get(event.path);
-        t.files.set(event.path, prev ? { start: Math.min(prev.start, range.start), end: Math.max(prev.end, range.end) } : range);
+        // The diff is cumulative (the whole worktree against the base), so the latest one replaces earlier ranges.
+        const parsed = parseDiff(event.diff);
+        const next = new Map<string, FileState>();
+        for (const [path, state] of t.files) if (!parsed.has(path)) next.set(path, { range: null, deleted: state.deleted });
+        for (const [path, state] of parsed) next.set(path, state);
+        if (!next.has(event.path)) next.set(event.path, { range: null, deleted: false });
+        t.files = next;
       } else if (event.type === "commit") {
         t.commit = event.sha;
       }
@@ -221,11 +272,13 @@ export function createProgressMessages(deps: ProgressMessagesDeps): ProgressMess
 
     async finish(session, summary) {
       try {
-        const t = await lookup(session);
+        const t = await lookup(session, true);
         if (!t || t.finished) return;
         cancelTimer(t);
-        t.status = session.status === "running" || session.status === "awaiting_approval" ? t.status : session.status;
+        if (TERMINAL.has(session.status)) t.status = session.status;
         t.finished = true;
+        tracked.delete(session.id);
+        finishedIds.add(session.id);
         await edit(t, summary);
       } catch {
         log(`progress finish failed for session ${session.id}`);

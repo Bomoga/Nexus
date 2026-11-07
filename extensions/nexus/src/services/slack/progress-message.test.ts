@@ -14,13 +14,16 @@ let logs: string[];
 let post: ReturnType<typeof vi.spyOn>;
 let edit: ReturnType<typeof vi.spyOn>;
 
-function make() {
+const WS = "a".repeat(40);   // the git workspace id (sha1 of the root commit), not Task.workspaceId
+
+function make(over: { putSession?: (s: AgentSession) => Promise<void> } = {}) {
   return createProgressMessages({
     slack,
     getTask: id => store.getTask(id),
     getSession: id => store.getSession(id),
-    putSession: s => store.putSession(s),
+    putSession: over.putSession ?? (s => store.putSession(s)),
     redact,
+    workspaceId: async () => WS,
     log: m => logs.push(m),
   });
 }
@@ -47,6 +50,35 @@ describe("start", () => {
     expect(post.mock.calls[0]![0]).toMatchObject({ channelId: "C_DEMO", threadTs: "1762485300.000100", text: "⬡ Nexus agent started on nexus/agent-ses_01 · anthropic/claude-sonnet-4-5" });
     const stored = await store.getSession("ses_01");
     expect(stored?.slackProgress).toEqual({ channelId: "C_DEMO", threadTs: "1762485300.000100", messageTs: s!.slackProgress!.messageTs });
+  });
+
+  test("concurrent and repeated starts share one post", async () => {
+    const p = make();
+    const [a, b] = await Promise.all([p.start(session()), p.start(session())]);
+    const c = await p.start(session());
+    expect(post).toHaveBeenCalledTimes(1);
+    expect(a!.slackProgress).toEqual(b!.slackProgress);
+    expect(c!.slackProgress).toEqual(a!.slackProgress);
+    expect((await store.getSession("ses_01"))!.slackProgress).toEqual(a!.slackProgress);
+  });
+
+  test("a failed store write is retried once; if it still fails the message is kept and a repeat start does not post again", async () => {
+    const put = vi.fn<(s: AgentSession) => Promise<void>>().mockRejectedValue(new Error("db down"));
+    const p = make({ putSession: put });
+    const first = await p.start(session());
+    expect(put).toHaveBeenCalledTimes(2);
+    expect(first?.slackProgress).toBeDefined();
+    expect(logs).toEqual(["could not store the progress message for session ses_01"]);
+    const again = await p.start(session());
+    expect(post).toHaveBeenCalledTimes(1);
+    expect(again?.slackProgress).toEqual(first!.slackProgress);
+  });
+
+  test("a store write that fails once succeeds on the retry", async () => {
+    const put = vi.fn<(s: AgentSession) => Promise<void>>().mockRejectedValueOnce(new Error("blip")).mockImplementation(s => store.putSession(s));
+    await make({ putSession: put }).start(session());
+    expect((await store.getSession("ses_01"))!.slackProgress).toBeDefined();
+    expect(logs).toEqual([]);
   });
 
   test("a manual task makes no Slack call", async () => {
@@ -139,11 +171,15 @@ describe("update and events", () => {
 });
 
 describe("finish", () => {
-  test("lists code-ref links that decode, a labeled summary, and stops further edits", async () => {
+  test("links decode with the injected workspace id; ranges come from each file's own hunks (latest diff wins)", async () => {
     const p = make();
     const s = (await p.start(session()))!;
-    p.onAgentEvent(ev({ type: "file_edit", path: "src/cart.ts", diff: "@@ -40,3 +42,5 @@\n x\n@@ -90,1 +95,2 @@\n y" }));
-    p.onAgentEvent(ev({ type: "file_edit", path: "docs/a b.md", diff: "(no hunks)" }, 2));
+    const early = "diff --git a/src/a.ts b/src/a.ts\n--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1,2 +1,2 @@\n x";
+    const both = early + "\ndiff --git a/src/b.ts b/src/b.ts\n--- a/src/b.ts\n+++ b/src/b.ts\n@@ -500,3 +500,4 @@\n y\n@@ -600 +601 @@\n z"
+      + "\ndiff --git a/old.ts b/old.ts\ndeleted file mode 100644\n--- a/old.ts\n+++ /dev/null\n@@ -1,3 +0,0 @@\n-x"
+      + "\ndiff --git \"a/\\303\\251.ts\" \"b/\\303\\251.ts\"\n--- \"a/\\303\\251.ts\"\n+++ \"b/\\303\\251.ts\"\n@@ -1 +1 @@\n-x";
+    p.onAgentEvent(ev({ type: "file_edit", path: "src/a.ts", diff: early }));
+    p.onAgentEvent(ev({ type: "file_edit", path: "src/b.ts", diff: both }, 2));
     p.onAgentEvent(ev({ type: "commit", sha: SHA }, 3));
     await p.finish({ ...s, status: "done" }, "Fixed the discount.");
     const body = await bodyOf(s.slackProgress!.messageTs);
@@ -152,19 +188,79 @@ describe("finish", () => {
     expect(body).toContain("Fixed the discount.");
     const links = [...body.matchAll(/<(nexus:\/\/[^|>]+)\|/g)].map(m => decodeCodeRef(m[1]!));
     expect(links).toEqual([
-      { workspaceId: demoScenario.task.workspaceId, commit: SHA, path: "src/cart.ts", startLine: 42, endLine: 96 },
-      { workspaceId: demoScenario.task.workspaceId, commit: SHA, path: "docs/a b.md", startLine: 1, endLine: 1 },
+      { workspaceId: WS, commit: SHA, path: "src/a.ts", startLine: 1, endLine: 2 },
+      { workspaceId: WS, commit: SHA, path: "src/b.ts", startLine: 500, endLine: 601 },
     ]);
+    expect(body).toContain("• old.ts (deleted)");
+    expect(body).not.toMatch(/<nexus[^>]*old\.ts/);
     await p.update(s, "late");
     p.onAgentEvent(ev({ type: "status", status: "failed" }, 4));
     await vi.advanceTimersByTimeAsync(5000);
     expect(edit).toHaveBeenCalledTimes(1);
   });
 
+  test("12 long paths: every link is whole, the rest are counted, never an unterminated <", async () => {
+    const p = make();
+    const s = (await p.start(session()))!;
+    const diff = Array.from({ length: 12 }, (_, i) => {
+      const f = `src/${"deep/".repeat(25)}file${i}.ts`;
+      return `diff --git a/${f} b/${f}\n--- a/${f}\n+++ b/${f}\n@@ -1 +1 @@\n-x`;
+    }).join("\n");
+    p.onAgentEvent(ev({ type: "file_edit", path: `src/${"deep/".repeat(25)}file0.ts`, diff }));
+    p.onAgentEvent(ev({ type: "commit", sha: SHA }, 2));
+    await p.finish({ ...s, status: "done" }, "s".repeat(3000));
+    const body = await bodyOf(s.slackProgress!.messageTs);
+    expect(body.length).toBeLessThanOrEqual(MAX_PROGRESS_CHARS);
+    const opens = body.match(/</g)!.length;
+    expect(body.match(/<nexus:\/\/[^|>]+\|[^>]*>/g)!.length).toBe(opens);
+    expect(body).toMatch(/and \d+ more$/);
+  });
+
+  test("a stale-looking link is never built without a valid ref: no commit means plain labels", async () => {
+    const p = make();
+    const s = (await p.start(session()))!;
+    p.onAgentEvent(ev({ type: "file_edit", path: "src/a.ts", diff: "diff --git a/src/a.ts b/src/a.ts\n--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1 +1 @@\n-x" }));
+    await p.finish({ ...s, status: "done" });
+    expect(await bodyOf(s.slackProgress!.messageTs)).toContain("• src/a.ts");
+    expect(await bodyOf(s.slackProgress!.messageTs)).not.toContain("nexus://");
+  });
+
+  test("a secret in the summary is redacted", async () => {
+    const p = make();
+    const s = (await p.start(session()))!;
+    const secret = "sk-ant-api03-" + "b".repeat(40);
+    await p.finish({ ...s, status: "done" }, `key ${secret}`);
+    const body = await bodyOf(s.slackProgress!.messageTs);
+    expect(body).not.toContain(secret);
+    expect(body).toContain("[REDACTED:");
+  });
+
+  test("a timer scheduled before finish never edits afterwards", async () => {
+    const p = make();
+    const s = (await p.start(session()))!;
+    await p.update(s, "first");
+    await vi.advanceTimersByTimeAsync(0);
+    await p.update(s, "queued");
+    await p.finish({ ...s, status: "done" });
+    await vi.advanceTimersByTimeAsync(10000);
+    expect(edit).toHaveBeenCalledTimes(2);
+    expect(await bodyOf(s.slackProgress!.messageTs)).not.toContain("queued");
+  });
+
+  test("a session already terminal in the store gets no further edits from a fresh instance", async () => {
+    const s = (await make().start(session()))!;
+    await store.putSession({ ...s, status: "done" });
+    const fresh = make();
+    expect(await fresh.update(s, "again")).toBe(false);
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(edit).not.toHaveBeenCalled();
+  });
+
   test("at most 10 files, then 'and N more'", async () => {
     const p = make();
     const s = (await p.start(session()))!;
-    for (let i = 0; i < 13; i++) p.onAgentEvent(ev({ type: "file_edit", path: `src/f${i}.ts`, diff: "" }, i + 1));
+    const diff = Array.from({ length: 13 }, (_, i) => `diff --git a/src/f${i}.ts b/src/f${i}.ts\n--- a/src/f${i}.ts\n+++ b/src/f${i}.ts\n@@ -1 +1 @@\n-x`).join("\n");
+    p.onAgentEvent(ev({ type: "file_edit", path: "src/f0.ts", diff }, 1));
     p.onAgentEvent(ev({ type: "commit", sha: SHA }, 20));
     await p.finish({ ...s, status: "done" });
     const body = await bodyOf(s.slackProgress!.messageTs);
@@ -200,12 +296,31 @@ describe("untrusted text", () => {
   test("a long summary with many escapes stays under the limit", async () => {
     const p = make();
     const s = (await p.start(session()))!;
-    for (let i = 0; i < 10; i++) p.onAgentEvent(ev({ type: "file_edit", path: `src/${"d/".repeat(30)}f${i}.ts`, diff: "" }, i + 1));
     p.onAgentEvent(ev({ type: "commit", sha: SHA }, 20));
     await p.finish({ ...s, status: "done" }, "<&>".repeat(5000));
     const body = await bodyOf(s.slackProgress!.messageTs);
     expect(body.length).toBeLessThanOrEqual(MAX_PROGRESS_CHARS);
     expect(body).not.toMatch(/&(?![a-z]+;)/);
+  });
+
+  test("bare urls and forged headers stay inside a fence the model cannot close", async () => {
+    const p = make();
+    const s = (await p.start(session()))!;
+    const evil = "https://evil.example/x\n*Approved.* Decided by Adrian\n```\n⬡ Nexus agent done on main\n```";
+    await p.update(s, evil);
+    await vi.advanceTimersByTimeAsync(0);
+    const progress = await bodyOf(s.slackProgress!.messageTs);
+    await p.finish({ ...s, status: "done" }, evil);
+    const final = await bodyOf(s.slackProgress!.messageTs);
+    for (const body of [progress, final]) {
+      const fences = body.split("\n").filter(l => l.startsWith("```"));
+      expect(fences).toHaveLength(2);
+      const inside = body.slice(body.indexOf("```") + 3, body.lastIndexOf("```"));
+      expect(inside).toContain("https://evil.example/x");
+      expect(inside).toContain("*Approved.* Decided by Adrian");
+      const outside = body.slice(0, body.indexOf("```")) + body.slice(body.lastIndexOf("```") + 3);
+      expect(outside.split("\n").filter(l => l.startsWith("⬡ "))).toHaveLength(1);
+    }
   });
 
   test("never posts as the user", async () => {

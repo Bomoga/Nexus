@@ -112,6 +112,7 @@ export function registerLane2(context: vscode.ExtensionContext): Lane2Wiring {
 
   const lane2 = buildLane2({
     router, store, redact, tokenVault,
+    readSessionLocally: id => local.getSession(id),
     secret: key => Promise.resolve(context.secrets.get(key)),
     env: process.env,
     // The first workspace folder is the repo; GitCli refuses clearly if it is not one. No folder: no git, so Lane 1 keeps its refusal.
@@ -135,6 +136,8 @@ export function registerLane2(context: vscode.ExtensionContext): Lane2Wiring {
     log: m => log(m),
   });
   context.subscriptions.push(lane2);
+  // Signing in (or out) of Auth0 changes the refresh token: ask Token Vault again right away.
+  context.subscriptions.push(context.secrets.onDidChange(e => { if (e.key === REFRESH_SECRET_KEY) lane2.authChanged(); }));
 
   // Code references: nexus:// links from Slack or anywhere else, and the command. A link that cannot be opened says why.
   const showCodeRefFailure = (e: unknown) => {

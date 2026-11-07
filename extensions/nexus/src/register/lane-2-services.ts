@@ -1,6 +1,6 @@
 // Lane 2's services and bridge handlers, built without vscode so the wiring itself is unit-tested. register/lane-2.ts
 // supplies the editor pieces (secrets, settings, the repo root, openExternal) and returns what Lane 1 consumes.
-import { decodeCodeRef, type ApprovalRequest, type CodeRef, type DecidedBy, type ErrorCode, type Req } from "../contracts";
+import { decodeCodeRef, type AgentSession, type ApprovalRequest, type CodeRef, type DecidedBy, type ErrorCode, type Req } from "../contracts";
 import { BridgeError, type BridgeRouter } from "../bridge/types";
 import type { Disposable } from "../bridge/types";
 import type { ApprovalHook } from "../features/approvals/approvals-controller";
@@ -61,6 +61,8 @@ export interface Lane2Inputs {
   tokenVault?: { getUserToken(): Promise<{ token: string; source: "token_vault" } | null> };
   /** The shared store's client for the activity strip's continuous aggregate; counted from the local copy without it. */
   activityQuery?: ActivityQueryClient;
+  /** Reads a session from this machine's own copy (never a remote round trip): used under the per-session write lock. */
+  readSessionLocally?: (id: string) => Promise<AgentSession | undefined>;
   /** Milliseconds since the epoch (test seam). */
   now?: () => number;
   /** Test seams for the Slack service. */
@@ -110,6 +112,8 @@ export interface Lane2Built extends Pick<Lane2Services, "approvalHooks"> {
   observedStore: EventStore;
   /** The session's single Slack progress message; `update` is Lane 1's ProgressPort. Needs a repository (for link ids). */
   progress?: Pick<ProgressMessages, "update">;
+  /** Call when the Auth0 sign-in changes, so Token Vault is asked again at once instead of after its quiet minute. */
+  authChanged(): void;
   /** Lane 1 calls this with its approvals controller's resolve once it exists. Until then a Slack click is refused. */
   setApprovalResolver(resolve: SlackApprovalResolver): void;
   /** True when a bot and app token are configured, so Socket Mode can start. */
@@ -239,18 +243,19 @@ export function buildLane2(i: Lane2Inputs): Lane2Built {
   if (i.git) {
     const git = i.git;
     const lock = perKeyLock();
+    const readSession = i.readSessionLocally ?? (id => i.store.getSession(id));
     const pm = createProgressMessages({
       slack, redact: i.redact, workspaceId: () => git.workspaceId(),
       getTask: id => i.store.getTask(id), getSession: id => i.store.getSession(id),
       // Adds only the message reference to the session as stored now, in turn with Lane 1's own writes to that session.
       putSession: s => lock(s.id, async () => {
-        const stored = await i.store.getSession(s.id);
+        const stored = await readSession(s.id);
         await i.store.putSession(stored ? { ...stored, slackProgress: s.slackProgress } : s);
       }),
       log: m => i.log(`slack progress: ${m}`),
     });
     progress = pm;
-    observedStore = observeForProgress(i.store, pm, m => i.log(`slack progress: ${m}`), lock);
+    observedStore = observeForProgress(i.store, pm, m => i.log(`slack progress: ${m}`), lock, readSession);
   }
 
   // The Slack approval card: posted in the task's own thread, its ts stored on the approval (a click is accepted only on
@@ -289,6 +294,7 @@ export function buildLane2(i: Lane2Inputs): Lane2Built {
       makeGate: (hook: ApprovalsHook) => createGate({ git: i.git!, approvals: hook, allowlist: i.allowlist, redact: i.redact }),
     } : {}),
     ...(codeRefs ? { codeRefs } : {}),
+    authChanged: () => { vaultQuietUntil = 0; },
     setApprovalResolver: fn => { resolver = fn; },
     hasBotTokens: async () => !!((await fromSecretOrEnv(SLACK_SECRET_KEYS.bot, "SLACK_BOT_TOKEN")) && (await fromSecretOrEnv(SLACK_SECRET_KEYS.app, "SLACK_APP_TOKEN"))),
     dispose: () => {
@@ -304,7 +310,7 @@ const TERMINAL_SESSION = new Set(["done", "failed", "cancelled"]);
  * The store with session writes and agent events also fed to the progress message: a running session starts it, a terminal
  * one finishes it, and every agent event updates it. The write itself always completes first and is never failed by Slack.
  */
-export function observeForProgress(store: EventStore, pm: Pick<ProgressMessages, "start" | "onAgentEvent" | "finish">, log: (m: string) => void, lock: KeyLock = perKeyLock()): EventStore {
+export function observeForProgress(store: EventStore, pm: Pick<ProgressMessages, "start" | "onAgentEvent" | "finish">, log: (m: string) => void, lock: KeyLock = perKeyLock(), readSession: (id: string) => Promise<AgentSession | undefined> = id => store.getSession(id)): EventStore {
   const quietly = (work: () => Promise<unknown> | void) => {
     try { void Promise.resolve(work()).catch(() => log("could not update the progress message")); } catch { log("could not update the progress message"); }
   };
@@ -317,7 +323,7 @@ export function observeForProgress(store: EventStore, pm: Pick<ProgressMessages,
           const written = await lock(session.id, async () => {
             let next = session;
             if (!next.slackProgress) {
-              const stored = await target.getSession(session.id);
+              const stored = await readSession(session.id);
               if (stored?.slackProgress) next = { ...next, slackProgress: stored.slackProgress };
             }
             await target.putSession(next);

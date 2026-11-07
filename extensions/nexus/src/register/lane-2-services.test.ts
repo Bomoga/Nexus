@@ -254,4 +254,43 @@ describe("buildLane2", () => {
     await built.served.status();
     expect(vault.getUserToken).toHaveBeenCalledTimes(2);
   });
+
+  it("asks Token Vault again right after a sign-in, instead of waiting out its quiet minute", async () => {
+    let signedIn = false;
+    const vault = { getUserToken: vi.fn(async () => (signedIn ? { token: "xoxp-vault", source: "token_vault" as const } : null)) };
+    const webOptions = { makeApi: () => new Proxy({}, { get: () => new Proxy({}, { get: () => async () => { throw new Error("offline"); } }) }) };
+    const { built } = setup({ tokenVault: vault, now: () => 1_000_000, slackSeams: { webOptions } as never }, { [SLACK_SECRET_KEYS.user]: "xoxp-pasted" });
+    await built.served.status();   // before sign-in: a miss, remembered
+    signedIn = true;
+    built.authChanged();
+    await built.served.status();
+    expect(vault.getUserToken).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps a session's newest status and its message reference when writes race on a slow store", async () => {
+    for (let round = 0; round < 25; round++) {
+      const base = new FakeEventStore();
+      const pause = () => new Promise(r => setTimeout(r, Math.floor(Math.random() * 5)));
+      // a store whose session reads and writes each take 0-5 ms, like real I/O
+      const slow = new Proxy(base, {
+        get(target, key) {
+          const value = Reflect.get(target, key) as unknown;
+          if (key === "getSession" || key === "putSession") return async (...a: unknown[]) => { await pause(); return (value as (...x: unknown[]) => unknown).apply(target, a); };
+          return typeof value === "function" ? (value as (...x: unknown[]) => unknown).bind(target) : value;
+        },
+      }) as unknown as FakeEventStore;
+      const { built, api } = setup({ store: slow, git: new FakeGit() }, { [SLACK_SECRET_KEYS.bot]: "xoxb-1", [SLACK_SECRET_KEYS.app]: "xapp-1" });
+      const task = { ...fx.task, source: { kind: "thread" as const, channelId: "C9", threadTs: "40.000100" } };
+      await base.putTask(task);
+      const session = { ...fx.session, taskId: task.id, status: "running" as const, slackProgress: undefined, endedAt: undefined };
+      const failed = { ...session, status: "failed" as const, endedAt: "2026-11-07T05:00:00.000Z" };
+      await built.observedStore.putSession(session);
+      await pause();
+      await Promise.all([built.observedStore.putSession(session), built.observedStore.putSession(failed)]);
+      await vi.waitFor(async () => expect((await base.getSession(session.id))?.slackProgress).toBeDefined());
+      await vi.waitFor(() => expect(api.chat.update).toHaveBeenCalled());
+      expect(await base.getSession(session.id), `round ${round}`).toMatchObject({ status: "failed", endedAt: failed.endedAt });
+      expect(api.chat.postMessage).toHaveBeenCalledTimes(1);
+    }
+  }, 20_000);
 });

@@ -88,6 +88,9 @@ export class ApprovalsController implements ApprovalRequester {
     this.creating.set(approval.id, undefined);
     this.pending.set(approval.id, approval.sessionId);
     this.known.add(approval.id);
+    // From here on the approval may exist in the store, on screen and on other machines. ANY failure before it is handed back
+    // means the caller (the gate) fails, so nobody waits on it: it must never be decidable afterwards (see abandon()).
+    let early: ApprovalRequest | undefined;
     try {
       await store.putApproval(approval);
       await sessions.emit(approval.sessionId, { type: "approval_request", approvalId: approval.id });
@@ -95,35 +98,30 @@ export class ApprovalsController implements ApprovalRequester {
       this.announce(approval);
       this.emitChange(approval);
       for (const hook of this.deps.hooks ?? []) {
-        // A broken surface must never block the human from deciding on another one.
-        hook.onCreated(approval).catch(e => this.deps.log?.(`approval hook ${hook.name} failed: ${e instanceof Error ? e.message : "unknown error"}`));
+        // A broken surface must never block the human from deciding on another one (also when the hook throws before returning a promise).
+        Promise.resolve().then(() => hook.onCreated(approval)).catch(e => this.deps.log?.(`approval hook ${hook.name} failed: ${e instanceof Error ? e.message : "unknown error"}`));
       }
+      // A decision made while we were still creating (another machine, a Slack button) is applied after approval_request.
+      const stored = await store.getApproval(approval.id);
+      early = this.creating.get(approval.id) ?? stored;                // read the parked decision AFTER the await: one may land during it
     } catch (e) {
-      this.pending.delete(approval.id);
-      this.creating.delete(approval.id);
+      await this.abandon(approval);
       throw e;
     }
-    // A decision made while we were still creating (another machine, a Slack button) is applied now, after approval_request.
-    let stored: ApprovalRequest | undefined;
-    try {
-      stored = await store.getApproval(approval.id);
-    } catch (e) {
-      // The caller gets this error and no agent waits on this approval.
-      const parked = this.creating.get(approval.id);
-      this.creating.delete(approval.id);
-      if (parked?.decision) {
-        // A human already decided it while we were reading: that decision is real, so record and deliver it.
-        await this.settle(parked);
-      } else {
-        // Nobody decided and nobody is waiting: the approval is dead. No decision is ever written for it.
-        await this.markDead(approval);
-      }
-      throw e;
-    }
-    const early = this.creating.get(approval.id) ?? stored;          // read the parked decision AFTER the await: one may land during it
     this.creating.delete(approval.id);
     if (early?.decision) await this.settle(early);
     return approval;
+  }
+
+  /**
+   * create() failed after registering the approval. A human decision that already landed is real, so it is recorded and delivered;
+   * otherwise the approval is dead: no decision is ever written for it, its notification says so, the session stops showing "awaiting".
+   */
+  private async abandon(approval: ApprovalRequest): Promise<void> {
+    const parked = this.creating.get(approval.id);
+    this.creating.delete(approval.id);
+    if (parked?.decision) await this.settle(parked);
+    else await this.markDead(approval);
   }
 
   /** Resolves when ANY surface or machine decides. There is no timeout path: a silent human leaves it pending. */
@@ -185,8 +183,8 @@ export class ApprovalsController implements ApprovalRequester {
     if (approval.decision) { await this.settle(approval); return; }
     if (!this.known.has(approval.id)) {                               // a teammate's agent asking: tell this window too
       this.known.add(approval.id);
-      this.announce(approval);
-      this.emitChange(approval);
+      // A teammate's approval is not ours to wait on: a broken surface is logged, never thrown at the store subscription.
+      try { this.announce(approval); this.emitChange(approval); } catch (e) { this.deps.log?.(`could not announce approval ${approval.id}: ${e instanceof Error ? e.message : "unknown error"}`); }
     }
   }
 
@@ -306,8 +304,8 @@ export class ApprovalsController implements ApprovalRequester {
     for (const id of waiting) {
       if (!this.pending.has(id)) continue;                            // already settled above
       this.pending.delete(id);
-      this.deps.notify.update(id, "The session ended; there is nothing to approve.");
-      this.wake(id, "rejected");
+      // A throwing notification must never keep the gate waiting.
+      try { this.deps.notify.update(id, "The session ended; there is nothing to approve."); } catch (e) { this.deps.log?.(`could not update the notification: ${e instanceof Error ? e.message : "unknown error"}`); } finally { this.wake(id, "rejected"); }
     }
   }
 }

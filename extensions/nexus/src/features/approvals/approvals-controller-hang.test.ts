@@ -23,7 +23,7 @@ async function setup() {
   const logs: string[] = [];
   const updates: Array<{ id: string; text: string }> = [];
   const hostEvents: Array<{ approvalId: string; decision: string }> = [];
-  const flags = { updateThrows: false };
+  const flags = { updateThrows: false, showThrows: false, sendThrows: false };
   // eslint-disable-next-line prefer-const
   let approvalsRef!: ApprovalsController;
   const requester = { request: (i: Parameters<ApprovalsController["request"]>[0]) => approvalsRef.request(i), sessionEnded: (id: string, how: "cancelled" | "failed" | "done") => approvalsRef.sessionEnded(id, how) };
@@ -35,8 +35,8 @@ async function setup() {
   });
   const approvals = new ApprovalsController({
     store, clock, sessions, log: m => logs.push(m), identity: () => "adrian",
-    host: { sendEvent: (_n, body) => { hostEvents.push(body); return true; } },
-    notify: { show: (approval, _t, onChoice) => shown.push({ approval, choose: onChoice }), update: (id, text) => { updates.push({ id, text }); if (flags.updateThrows) throw new Error("ui exploded"); } },
+    host: { sendEvent: (_n, body) => { if (flags.sendThrows) throw new Error("host exploded"); hostEvents.push(body); return true; } },
+    notify: { show: (approval, _t, onChoice) => { if (flags.showThrows) throw new Error("ui exploded"); shown.push({ approval, choose: onChoice }); }, update: (id, text) => { updates.push({ id, text }); if (flags.updateThrows) throw new Error("ui exploded"); } },
   });
   approvalsRef = approvals;
   const session = await sessions.start("task_01", model);
@@ -249,5 +249,128 @@ describe("approvals: store failures never leave the agent waiting", () => {
     await bounded(s.sessions.onProcessError(s.session.id, "agent process crashed"));
     expect(await bounded(result)).toBe("rejected by a human");
     expect(s.store.approvals.get(id)!.decision).toBeUndefined();
+  });
+});
+
+// ---- systematic probes: one per call site of notify / subscribers / sessions / host / store in the controller ----
+//  (a) a UI, notification, subscriber or event-append failure is logged and never skips wake() or the status restore;
+//  (b) any failure after the approval is stored and before it is decided kills it: the gate fails, a later decision is refused.
+
+type S = Awaited<ReturnType<typeof setup>>;
+const human = { via: "slack", userId: "brandon" } as const;
+
+async function expectKilled(s: S, arm: () => void) {
+  arm();
+  const outcome = await bounded(s.runCommand());                    // the gate returns (with the error), it does not hang
+  expect(outcome).not.toBe("ran");
+  const [stored] = await s.store.listApprovals();
+  const res = await bounded(s.approvals.resolve(stored.id, "approved", human));
+  expect(res.won).toBe(false);
+  expect((await s.store.getApproval(stored.id))!.decision).toBeUndefined();
+  expect(s.sessions.activeSession?.status).toBe("running");
+  expect((s.approvals as unknown as { pending: Map<string, string> }).pending.size).toBe(0);
+  expect(await s.approvals.list({ pendingOnly: true })).toEqual([]);
+}
+
+describe("probe (b): create() failures after putApproval kill the approval", () => {
+  it("sessions.emit(approval_request) throws", async () => {
+    const s = await setup();
+    await expectKilled(s, () => { vi.spyOn(s.sessions, "emit").mockImplementationOnce(boom); });
+  });
+  it("sessions.setStatus(awaiting_approval) throws after flipping the in-memory status", async () => {
+    const s = await setup();
+    await expectKilled(s, () => { vi.spyOn(s.store, "putSession").mockImplementationOnce(boom); });
+  });
+  it("notify.show throws", async () => {
+    const s = await setup();
+    await expectKilled(s, () => { s.flags.showThrows = true; });
+  });
+  it("an approvals subscriber throws in emitChange", async () => {
+    const s = await setup();
+    await expectKilled(s, () => { s.approvals.subscribe(() => { throw new Error("subscriber exploded"); }); });
+  });
+  it("the read-back getApproval throws", async () => {
+    const s = await setup();
+    await expectKilled(s, () => { vi.spyOn(s.store, "getApproval").mockImplementationOnce(boom); });
+  });
+  it("putApproval throws", async () => {
+    const s = await setup();
+    vi.spyOn(s.store, "putApproval").mockImplementationOnce(boom);
+    expect(await bounded(s.runCommand())).toBe("store I/O failed");   // the gate fails; nothing was stored, nothing is parked
+    expect(await s.store.listApprovals()).toEqual([]);
+    expect(s.sessions.activeSession?.status).toBe("running");
+  });
+});
+
+describe("probe (a): failures that must not stop the agent", () => {
+  it("a hook that throws synchronously never fails create(); the human can still approve", async () => {
+    const s = await setup();
+    (s.approvals as unknown as { deps: { hooks: unknown[] } }).deps.hooks = [{ name: "sync", onCreated: () => { throw new Error("hook exploded"); } }];
+    const result = s.runCommand();
+    await vi.waitFor(() => expect(s.shown).toHaveLength(1));
+    s.shown[0].choose("approved");
+    expect(await bounded(result)).toBe("ran");
+    await vi.waitFor(() => expect(s.logs.some(l => l.includes("approval hook sync failed"))).toBe(true));
+  });
+
+  it("settle: host.sendEvent throws, the gate still returns", async () => {
+    const s = await setup();
+    const result = s.runCommand();
+    await vi.waitFor(() => expect(s.shown).toHaveLength(1));
+    s.flags.sendThrows = true;
+    s.shown[0].choose("approved");
+    expect(await bounded(result)).toBe("ran");
+  });
+
+  it("settle: sessions.setStatus throws, the gate still returns and the host is told", async () => {
+    const s = await setup();
+    const result = s.runCommand();
+    await vi.waitFor(() => expect(s.shown).toHaveLength(1));
+    vi.spyOn(s.sessions, "setStatus").mockImplementation(boom);
+    s.shown[0].choose("approved");
+    expect(await bounded(result)).toBe("ran");
+    expect(s.hostEvents).toHaveLength(1);
+  });
+
+  it("resolve: decideApproval throwing rejects the click, writes nothing, leaves the gate waiting, and a retry still works", async () => {
+    const s = await setup();
+    const result = s.runCommand();
+    await vi.waitFor(() => expect(s.shown).toHaveLength(1));
+    const id = s.shown[0].approval.id;
+    vi.spyOn(s.store, "decideApproval").mockImplementationOnce(boom);
+    await expect(bounded(s.approvals.resolve(id, "approved", human))).rejects.toThrow("store I/O failed");
+    expect(await Promise.race([result, new Promise(r => setTimeout(() => r("still waiting"), 50))])).toBe("still waiting");
+    expect((await s.store.getApproval(id))!.decision).toBeUndefined();
+    expect((await bounded(s.approvals.resolve(id, "approved", human))).won).toBe(true);
+    expect(await bounded(result)).toBe("ran");
+  });
+
+  it("sessionEnded(failed): notify.update throwing still releases the gate as rejected", async () => {
+    const s = await setup();
+    const result = s.runCommand();
+    await vi.waitFor(() => expect(s.shown).toHaveLength(1));
+    s.flags.updateThrows = true;
+    await bounded(s.sessions.onProcessError(s.session.id, "crash"));
+    expect(await bounded(result)).toBe("rejected by a human");
+  });
+
+  it("sessionEnded(cancelled): decideApproval and notify.update both throwing still release the gate as rejected, nothing written", async () => {
+    const s = await setup();
+    const result = s.runCommand();
+    await vi.waitFor(() => expect(s.shown).toHaveLength(1));
+    const id = s.shown[0].approval.id;
+    s.flags.updateThrows = true;
+    vi.spyOn(s.store, "decideApproval").mockImplementation(boom);
+    await bounded(s.sessions.cancel(s.session.id));
+    expect(await bounded(result)).toBe("rejected by a human");
+    expect((await s.store.getApproval(id))!.decision).toBeUndefined();
+  });
+
+  it("observe: a teammate's approval whose notification throws is logged, not thrown at the store subscription", async () => {
+    const s = await setup();
+    s.flags.showThrows = true;
+    const other = { id: "apr_foreign", sessionId: "ses_other", action: { kind: "run_command", command: "ls" }, reason: "r", requestedAt: "2026-11-07T00:00:00.000Z" } as ApprovalRequest;
+    await bounded(s.approvals.observe(other));
+    expect(s.logs.some(l => l.includes("could not announce approval apr_foreign"))).toBe(true);
   });
 });

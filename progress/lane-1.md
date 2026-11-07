@@ -27,7 +27,7 @@ Lead session, no workers: everything below was written, tested and independently
 - none
 
 ## Blocked
-- cp-0 is not tagged, so `lane-1` exists only locally (CLAUDE.md §10: no lane branch before cp-0). Needs Adrian: branding in product.json, branch protection, the T+0 minute, GitHub handles in CODEOWNERS, then the tag.
+- cp-0 IS tagged (origin has it). Branch protection dropped by decision; CODEOWNERS handles filled. Still open: branding in product.json and the exact T+0 minute.
 - Core work stays with Adrian: L1-S1 (register extensions/nexus with the fork build), L1-02 (tab-less home), L1-22 core half (startup defaults, Nexus Dark, chat/Copilot off).
 - Live checks need Adrian's keys and accounts: `npm run test:int -- anthropic|gemini|swarms` (ANTHROPIC_API_KEY, GEMINI_API_KEY, SWARMS_API_KEY); Prune live check (L1-S4: tool-calling passthrough decides `all_roles`); Auth0 tenant + Native app for L1-S6.
 - Overnight watch tick 2 (T+? 02:00 local, 2026-11-07): main f601dad1 merged into lane-1 (clean merge; `LocalStore`, bridge router/host, search, Slack web-client arrived). contributes:check, typecheck, lint pass; `npm test` 680/681. The one red test is Lane 2's `local-store.test.ts` "opens a reversed journal of 100k events in under 1 s" (1.6 s here, fails alone too, so a slow-machine timing bound, not the merge). Not patched (Lane 2's file); Lane 2 to loosen or Adrian to decide.

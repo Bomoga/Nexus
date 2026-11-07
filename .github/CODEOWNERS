@@ -1,9 +1,10 @@
-# Nexus (PLAN §3.3). Placeholders until each person's GitHub handle is filled in at hour 0.
-/extensions/nexus/src/contracts/ @<adrian-github> @<brandon-github> @<elkin-github>
-/src/ @<adrian-github>
-/build/ @<adrian-github>
-/product.json @<adrian-github>
-/resources/ @<adrian-github>
-/extensions/nexus/package.json @<adrian-github>
-/extensions/nexus/package-lock.json @<adrian-github>
-/extensions/nexus/src/extension.ts @<adrian-github>
+# Nexus (PLAN §3.3). Adrian = Bomoga, Brandon = brandondelgadoo, Elkin = aeer0c.
+# Not enforced by GitHub (no branch protection); the team follows it by convention.
+/extensions/nexus/src/contracts/ @Bomoga @brandondelgadoo @aeer0c
+/src/ @Bomoga
+/build/ @Bomoga
+/product.json @Bomoga
+/resources/ @Bomoga
+/extensions/nexus/package.json @Bomoga
+/extensions/nexus/package-lock.json @Bomoga
+/extensions/nexus/src/extension.ts @Bomoga

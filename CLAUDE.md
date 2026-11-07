@@ -129,7 +129,7 @@ Nothing Nexus-specific is written before the start: no repo, no Nexus code. Prer
    ```
    Untracked build output and `node_modules` stay out (upstream's `.gitignore` covers them) and stay on disk, so nothing rebuilds. The tag uses Git LFS for a couple of files; if the push complains about LFS, run `git lfs push --all origin main`, then push again.
 3. Keep upstream's `LICENSE.txt` and `ThirdPartyNotices.txt` untouched; they are the MIT attribution for the code we build on.
-4. Commit the rest of `cp-0` on top (branding, `CLAUDE.md`, the extension skeleton, contracts), then turn on branch protection and auto-merge (section 10).
+4. Commit the rest of `cp-0` on top (branding, `CLAUDE.md`, the extension skeleton, contracts). There is no branch protection or auto-merge (section 10).
 5. Brandon and the new member keep their pre-built checkouts (same tag, same files) and switch them to the team repo:
    ```
    git remote rename origin upstream
@@ -148,7 +148,7 @@ Nobody creates a lane branch until `cp-0` is tagged on `main`. Hour 0 is all thr
 |---|---|
 | All | Read this file and `docs/PLAN.md`. Write and agree the demo script (section 8) before any code. Read the sponsor challenges (section 18). |
 | All | Claude Code authenticated (`claude doctor`). Git `user.name`/`user.email` set to your real identity. Your fork checkout builds and launches (it did in the pre-event test). |
-| Adrian | Branding in `product.json` (name Nexus, application and data-folder names, URL protocol `nexus`), the extension skeleton `extensions/nexus` with the per-lane contribution fragments merge script, CI, CODEOWNERS, branch protection (section 10). |
+| Adrian | Branding in `product.json` (name Nexus, application and data-folder names, URL protocol `nexus`), the extension skeleton `extensions/nexus` with the per-lane contribution fragments merge script, CI, CODEOWNERS (no branch protection; section 10). |
 | Adrian | Commit `extensions/nexus/src/contracts` with fixtures from the plan's draft after Brandon and the new member review it in person. |
 | Adrian | Create the Slack test workspace and the Nexus Slack app: Socket Mode on (app-level `xapp-` token), bot scopes, **user scopes** for reading channels and threads and posting as the user, interactivity on. Create `#nexus-demo` and `#nexus-build` and invite the bot to both. |
 | Adrian | Anthropic and Gemini API key smoke tests on the demo machine (list models, one tool-calling turn each); set a spend limit if the Console offers one. Each teammate uses their own key for development. Seed the demo repo. |
@@ -173,7 +173,7 @@ Nobody creates a lane branch until `cp-0` is tagged on `main`. Hour 0 is all thr
 
 | Service | Used for |
 |---|---|
-| GitHub | The team repo (an import of Code-OSS, not a GitHub fork), Actions CI, branch protection, CODEOWNERS, auto-merge |
+| GitHub | The team repo (an import of Code-OSS, not a GitHub fork), Actions CI, CODEOWNERS (no branch protection or auto-merge) |
 | Slack (a free workspace the team controls) | The in-app Slack client, the demo channel, `#nexus-build` |
 | Anthropic Console | API keys: the demo key plus one per developer |
 | Google AI Studio / Gemini API | Gemini API keys: a demo key **on a billing-enabled project** (unpaid-quota prompts may be used by Google to improve products and read by human reviewers) plus per-developer keys |
@@ -521,7 +521,7 @@ The demo repo is a small app seeded at hour 0 with realistic multi-branch histor
 | 2 | `lane-2` | Brandon | Backend |
 | 3 | `lane-3` | New member (name to be filled in at hour 0) | General full-stack |
 
-**Lane 1, agents, models, the fork, and integration (Adrian).** Includes all Swarms work (the Swarms provider, swarm review, and swarm task breakdown), the Prune optimization toggle and receipts, and the Auth0 setup that isn't Slack-specific: the tenant, sign-in, CIBA approvals, and the Nexus auth service function. The fork itself: branding, the tab-less home (the one core change that hides the Nexus home editor's tab and title area and keeps it from being closed, split, or dragged; section 7), startup defaults (including the "Nexus Dark" default theme, and turning off VS Code's built-in AI chat, agent, and Copilot surfaces and their GitHub sign-in prompts, which compete with Nexus's own agents and cost memory; the build test showed them loading by default), build scripts, the only person who edits VS Code's core. The extension's activation wiring and the contribution-fragment merge. `src/models` (provider interface, Anthropic provider, model listing, stretch: a second provider); accounts and secret storage; `src/agent` and the agent process (runtime, tools as gate requests, thread-to-task brief builder, Slack progress messages through Lane 2's service); the task, session, approval, Swarms, and model-picker features end to end on the extension side (controllers, notifications, status bar item, protocol messages); Lane 3 builds their webview UIs against Lane 1's messages. Also CI, branch protection, CODEOWNERS, the Slack app's configuration, the demo machine, the seeded demo repo, and **integration**: tagging checkpoints and owning shared files. After `cp-2`, Lane 1 picks up remaining Lane 3 tasks if Lane 3 is behind.
+**Lane 1, agents, models, the fork, and integration (Adrian).** Includes all Swarms work (the Swarms provider, swarm review, and swarm task breakdown), the Prune optimization toggle and receipts, and the Auth0 setup that isn't Slack-specific: the tenant, sign-in, CIBA approvals, and the Nexus auth service function. The fork itself: branding, the tab-less home (the one core change that hides the Nexus home editor's tab and title area and keeps it from being closed, split, or dragged; section 7), startup defaults (including the "Nexus Dark" default theme, and turning off VS Code's built-in AI chat, agent, and Copilot surfaces and their GitHub sign-in prompts, which compete with Nexus's own agents and cost memory; the build test showed them loading by default), build scripts, the only person who edits VS Code's core. The extension's activation wiring and the contribution-fragment merge. `src/models` (provider interface, Anthropic provider, model listing, stretch: a second provider); accounts and secret storage; `src/agent` and the agent process (runtime, tools as gate requests, thread-to-task brief builder, Slack progress messages through Lane 2's service); the task, session, approval, Swarms, and model-picker features end to end on the extension side (controllers, notifications, status bar item, protocol messages); Lane 3 builds their webview UIs against Lane 1's messages. Also CI, CODEOWNERS, the Slack app's configuration, the demo machine, the seeded demo repo, and **integration**: tagging checkpoints and owning shared files. After `cp-2`, Lane 1 picks up remaining Lane 3 tasks if Lane 3 is behind.
 
 **Lane 2, the backend (Brandon).** Everything in the extension host that isn't Lane 1's, including all TigerData work (the Tiger Cloud schema, hypertables and continuous aggregate, the shared store with its local copy and outbox, `LISTEN/NOTIFY` sync) and fetching Slack tokens from Auth0 Token Vault: the Slack service (user-token reads and posts, bot-token posts and in-place message updates, Socket Mode events, interactive approval buttons, user and channel lookups, the local message cache), the git service (the built-in git extension's API plus the git CLI: log, show, branches, worktrees for agent sessions, merge) and the watcher that turns repo changes into `NexusEvent`s, the event store and search, code-ref creation and resolution and the `nexus://` URI handler, the webview message bridge, and the agent gate (path checks, command execution, approval gating). No webview UI.
 
@@ -552,15 +552,15 @@ This governs how every Claude Code session commits, pushes, and merges while bui
 ### Branch model
 
 ```
-main                       always builds and launches; protected; receives only lane PRs
+main                       always builds and launches; receives only lane PRs (by convention, no GitHub protection)
  ├─ lane-1 / lane-2 / lane-3        one per lane, long-lived, owned by that lane's lead
- │    └─ lane-N/<task-id>           one per worker task, in its own worktree (section 11)
+ │    └─ lane-N-wt/<task-id>           one per worker task, in its own worktree (section 11)
  └─ tags: cp-0, cp-1, cp-2, cp-3    checkpoints; the fallback video is recorded from a tag
 ```
 
 There is no `dev` branch for the hackathon. `main` must always build and launch, and checkpoints are tags. Upstream VS Code is never merged during the event.
 
-**GitHub settings (Adrian at hour 0):** `main` protected: no direct pushes, no force pushes, no deletion, changes only by PR, required status checks. CODEOWNERS requires review from the other two engineers on `extensions/nexus/src/contracts/**`, and only on PRs that touch it. Auto-merge enabled.
+**No GitHub branch protection (decided: it costs too much time for 36 hours).** The rules it would have enforced are team rules instead: nobody pushes to `main` directly, nobody force pushes anything, changes reach `main` only by PR from a lane branch, and a PR is merged only after CI is green and the lane lead's launch check passed. Auto-merge is not used (it needs protection); the lead merges the PR itself. CODEOWNERS stays in the repo as documentation of who owns what and who must approve a contracts PR; GitHub does not enforce it.
 
 **CI** runs on every PR, inside `extensions/nexus` only: install, typecheck, lint, unit tests, build the extension and webviews, and a check that the contribution fragments merge cleanly. CI does not build the whole fork; that is too slow. The **launch check** (the full fork compiles and launches with Nexus loaded, home screen appears) is run by the lane lead on its own machine before every PR to `main`, and by Lane 1 at every checkpoint.
 
@@ -585,8 +585,8 @@ There is no `dev` branch for the hackathon. `main` must always build and launch,
 
 ### Merging into `main`
 
-- A lane's lead opens a PR from `lane-N` into `main` when a set of tasks is done, the branch is green, and the launch check passed. **The lead merges it automatically once the required checks pass**, using GitHub auto-merge. No human approval needed, except:
-- **Any PR touching `extensions/nexus/src/contracts/**` never auto-merges.** It needs approval from both other engineers (CODEOWNERS) and a heads-up in `#nexus-build`. Contracts change only when something is genuinely wrong, and the PR states in one line what changed and why.
+- A lane's lead opens a PR from `lane-N` into `main` when a set of tasks is done, the branch is green, and the launch check passed. **The lead merges it itself once CI is green**, with no waiting for human approval, except:
+- **Any PR touching `extensions/nexus/src/contracts/**` is never merged by its author alone.** It needs a written approval from both other engineers (named in CODEOWNERS; checked by people, not by GitHub) and a heads-up in `#nexus-build`. Contracts change only when something is genuinely wrong, and the PR states in one line what changed and why.
 - **Any PR touching VS Code's core** (outside `extensions/nexus`) comes only from Lane 1 and gets a heads-up in `#nexus-build`.
 - After a lane PR merges, every other lead merges `main` into its lane within the hour.
 - Checkpoint tags (`cp-1`, `cp-2`, `cp-3`) are created by Lane 1 on `main` after that checkpoint's acceptance steps pass on a fresh build.
@@ -612,7 +612,7 @@ Each lane is **one lead session** that the lane's human commands, running **suba
 
 - Each worker task gets its own branch and worktree, created by the lead from the current lane branch, **with a sparse checkout** so the worktree holds only what Nexus work needs, not the whole VS Code source:
   ```
-  git worktree add --no-checkout ../nexus-wt/<task-id> -b lane-N/<task-id> lane-N
+  git worktree add --no-checkout ../nexus-wt/<task-id> -b lane-N-wt/<task-id> lane-N
   cd ../nexus-wt/<task-id>
   git sparse-checkout set extensions/nexus docs progress CLAUDE.md
   git checkout
@@ -642,7 +642,7 @@ Workers start with no memory of the lead's conversation, so every brief stands o
 
 ```
 TASK <id>: <one-line imperative title>
-LANE: lane-N    BRANCH: lane-N/<id>    WORKTREE: ../nexus-wt/<id> (sparse: extensions/nexus)
+LANE: lane-N    BRANCH: lane-N-wt/<id>    WORKTREE: ../nexus-wt/<id> (sparse: extensions/nexus)
 GOAL: <2-4 sentences: what exists when this is done, from the user's or caller's view>
 OWNS (may edit only these): <paths/globs under extensions/nexus>
 READ FIRST: CLAUDE.md sections <n>, src/contracts/<files>, <specific existing files>
@@ -663,7 +663,7 @@ REPORT (final message, exactly these headings):
 ### The lead's merge procedure, per task
 
 1. Run the brief's acceptance command and the lane's full unit suite inside the task's worktree. Red means it goes back to the worker with the output.
-2. Dispatch a **reviewer** with only the brief, `git diff lane-N...lane-N/<id>`, and the test output. The reviewer answers `confirmed` or `disputed`, with notes. It checks:
+2. Dispatch a **reviewer** with only the brief, `git diff lane-N...lane-N-wt/<id>`, and the test output. The reviewer answers `confirmed` or `disputed`, with notes. It checks:
    - the diff stays inside OWNS;
    - it does what GOAL says, for the contracts named, including their semantics notes (section 5);
    - the tests exercise real behavior: no deleted, skipped, or weakened tests, no mocking the very thing under test, no special-casing of the test environment;
@@ -671,7 +671,7 @@ REPORT (final message, exactly these headings):
    - section 14's rails: no secret in code or logs, webviews never import Node or receive secrets, Slack and repo text treated as untrusted, agent tool calls still pass through the gate;
    - commit messages follow section 10.
 3. `disputed`: the notes go back to a worker (attempt 2), or to the human after attempt 2.
-4. `confirmed`: `git merge --no-ff lane-N/<id>` into `lane-N`, re-run the unit suite, push, then remove the worktree and delete the task branch.
+4. `confirmed`: `git merge --no-ff lane-N-wt/<id>` into `lane-N`, re-run the unit suite, push, then remove the worktree and delete the task branch.
 5. Update `progress/lane-N.md`.
 6. Before any PR to `main`: run the launch check in the main checkout (full fork compiles, launches, Nexus loads).
 
@@ -692,7 +692,7 @@ REPORT (final message, exactly these headings):
 | Window | Milestone |
 |---|---|
 | **Before** | The fork build test passes on every event machine, from upstream clones (section 3). No team repo and no Nexus code yet. Event rules checked. |
-| **T+0 to T+2** | Hour 0 (section 3). Team repo created with the Code-OSS `1.145.2` import as its first commit; everyone switched to it. Demo script agreed. Branding, extension skeleton, contracts and fixtures committed. CI, protection, Slack app, keys, per-person Slack tokens, and the smoke tests (Socket Mode, git API, agent child process, WebGL webview, bridge ping). Demo repo seeded. Routine created. **Tag `cp-0`**, then create the lane branches. |
+| **T+0 to T+2** | Hour 0 (section 3). Team repo created with the Code-OSS `1.145.2` import as its first commit; everyone switched to it. Demo script agreed. Branding, extension skeleton, contracts and fixtures committed. CI, Slack app, keys, per-person Slack tokens, and the smoke tests (Socket Mode, git API, agent child process, WebGL webview, bridge ping). Demo repo seeded. Routine created. **Tag `cp-0`**, then create the lane branches. |
 | **T+2 to T+10** | Parallel build against fixtures. No lane waits on another. Lane 1: provider and model listing, agent tool loop against a fake gate, connect-provider and model-picker commands. Lane 2: Slack service, git service and watcher, event store, bridge. Lane 3: webview kit, globe on fixture events, Slack view on fixture threads. |
 | **T+10 to T+12** | **`cp-1`, first real end-to-end slice:** a real Slack message appears in the Slack view; "Make task" starts a real agent on the demo repo that edits one file through the gate; its session and commit appear on the real globe. Ugly is fine; wired together is the goal. |
 | **T+12 to T+22** | Deepen: approvals from Slack and the app, the session view, code refs both ways, search and tracking, git views. |
@@ -757,7 +757,7 @@ What the Repro git history showed, and what this file does about each:
 | What happened at ShellHacks | Rule here |
 |---|---|
 | Contracts were built about four times by three people (an early package, a "mirror" in another lane, a rebuild, then fix-ups), and copied code had to be deleted later. | One owner commits contracts and fixtures at hour 0; nobody branches until `cp-0`; workers can't touch contracts; fixtures remove any reason to mirror. |
-| The plan said four lanes; reality had `lane-4-fallback`, `lane-5`, and over a dozen `lane-5-*` branches. | Exactly three lane branches plus `lane-N/<task-id>` worker branches; the lane-going-dark rule replaces improvised fallback lanes. |
+| The plan said four lanes; reality had `lane-4-fallback`, `lane-5`, and over a dozen `lane-5-*` branches. | Exactly three lane branches plus `lane-N-wt/<task-id>` worker branches; the lane-going-dark rule replaces improvised fallback lanes. |
 | One shared progress log caused merge conflicts. | One progress file per lane, written only by that lane; per-lane contribution fragments instead of one shared `package.json` block. |
 | Commits appeared under a bare "Claude" author and a bot merged branches. | Commits use the human lane owner's identity; only lane leads merge, by PR. |
 | `CLAUDE.md` was untracked during the event, so each person had their own copy. | `CLAUDE.md` is tracked at the repo root from `cp-0`; personal notes go in a gitignored `CLAUDE.local.md`. |
@@ -848,7 +848,7 @@ Rules for adapting:
 - Infrastructure: GitHub, a Slack workspace, Anthropic, Google Gemini and Swarms keys, Claude subscriptions, an Auth0 tenant, a Tiger Cloud service, and one serverless function (the Nexus auth service). Each machine keeps a local copy so Nexus works offline.
 - Sponsor challenges: Auth0, TigerData, Prune, and Swarms (section 18); Grok Bot and Cursor dropped.
 - Prune: an "Optimize with Prune" toggle in the model picker (Tier 2), off by default; text-only roles until tool calling through Prune is verified; never routes the code-editing agent to another model; receipts shown per call and as session savings.
-- Git: `main` plus three lane branches, sparse worker worktrees, auto-merge to `main` on green checks plus a lead's launch check, contracts need both other engineers, checkpoint tags.
+- Git: `main` plus three lane branches, sparse worker worktrees, PRs to `main` merged by the lead on green CI plus a launch check (no branch protection, no auto-merge), contracts need both other engineers' written approval, checkpoint tags.
 - Supervision: no Dispatch; one hourly merge-check Routine reporting to `#nexus-build`.
 - `CLAUDE.md` is tracked at the repo root and committed in `cp-0`; personal notes go in a gitignored `CLAUDE.local.md`.
 - Pinned upstream tag: `1.145.2`. Nobody upgrades it during the event.

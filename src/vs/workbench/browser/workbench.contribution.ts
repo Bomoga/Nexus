@@ -1025,6 +1025,22 @@ const registry = Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Con
 		}
 	});
 
+	// Nexus: product defaults. Registered without a `source` so they behave like built-in defaults and
+	// apply to settings declared elsewhere (the registry resolves the override when the property is registered).
+	// Users can still override every one of these in their own settings.json.
+	registry.registerDefaultConfigurations([{
+		overrides: {
+			'chat.disableAIFeatures': true, // hides the built-in Chat view, Copilot sign-in and onboarding; the agent host is never started
+			'chat.agent.enabled': false,
+			'workbench.startupEditor': 'none', // the Nexus home is opened by the Nexus extension
+			'workbench.welcomePage.experimentalOnboarding': false,
+			'workbench.secondarySideBar.defaultVisibility': 'hidden',
+			'security.workspace.trust.enabled': false, // Restricted Mode would stop vscode.git (untrustedWorkspaces.supported = false)
+			'workbench.colorTheme': 'Nexus Dark',
+			'telemetry.telemetryLevel': 'off'
+		}
+	}]);
+
 })();
 
 if (isNative) {

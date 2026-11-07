@@ -479,3 +479,16 @@ export interface IInternalMoveCopyOptions extends IInternalEditorOpenOptions {
 	 */
 	readonly keepCopy?: boolean;
 }
+
+/**
+ * The editor id (custom editor view type) of the Nexus home webview, contributed by the
+ * built-in `extensions/nexus`. The home is shown without a tab strip or title area and
+ * cannot be closed, split, moved or dragged.
+ */
+export const NEXUS_HOME_EDITOR_ID = 'nexus.home';
+
+export function isNexusHomeEditor(editor: EditorInput | null | undefined): boolean {
+	const id = editor?.editorId;
+	// A custom editor reports its view type; an extension webview panel reports it behind the 'mainThreadWebview-' prefix.
+	return id === NEXUS_HOME_EDITOR_ID || id === `mainThreadWebview-${NEXUS_HOME_EDITOR_ID}`;
+}

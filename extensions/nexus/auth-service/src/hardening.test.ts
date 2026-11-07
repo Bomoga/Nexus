@@ -1,4 +1,5 @@
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { makeBinding } from "./binding";
 import { handle, resetState, type Env } from "./index";
 import { DOMAIN, ISS, json, makeKey, mockFetch, nowSec, rawToken, signJwt, unsignedJwt, type Responder, type TestKey } from "./test-helpers";
 
@@ -132,7 +133,7 @@ describe("malformed tokens", () => {
 describe("poll with an unusable id_token", () => {
   const approvedWith = async (idToken: string) => {
     const m = setup(() => [k1], { [TOKEN_URL]: () => json({ access_token: "AT-secret", id_token: idToken }) });
-    const res = await handle(post("/ciba/poll", { authReqId: "req-1" }, await bearer(k1)), env, { fetch: m.fn });
+    const res = await handle(post("/ciba/poll", { authReqId: "req-1", binding: await makeBinding("test-secret", "req-1", "auth0|caller") }, await bearer(k1)), env, { fetch: m.fn });
     return { res, text: await res.text(), idToken };
   };
   it("502 when the id_token has no sub", async () => {

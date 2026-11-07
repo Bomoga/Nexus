@@ -3,9 +3,10 @@
 A Cloudflare Worker that starts and polls Auth0 CIBA (push approval) requests. It holds the confidential app's
 client secret, which the desktop app must never have. It stores nothing durable.
 
-- `POST /ciba/start` body `{approvalId, sessionId, actionLabel, approverAuth0UserId}` returns `{authReqId, expiresIn, interval}`
-- `POST /ciba/poll` body `{authReqId}` returns `{status: "pending" | "approved" | "rejected" | "expired", auth0UserId?}`
+- `POST /ciba/start` body `{approvalId, sessionId, actionLabel, approverAuth0UserId}` returns `{authReqId, binding, expiresIn, interval}`
+- `POST /ciba/poll` body `{authReqId, binding}` returns `{status: "pending" | "approved" | "rejected" | "expired", auth0UserId?}`
 - The duplicate-approval guard is per Worker isolate and best effort (simultaneous starts share one Auth0 call).
+- `binding` is an HMAC-SHA256 (keyed by the client secret) of the authReqId and the caller's verified `sub`; poll returns 403 for a missing, tampered or other-user binding, and a second user starting the same approval gets 403. Stateless.
 - Both need `Authorization: Bearer <Nexus Auth0 access token>`, verified against the tenant JWKS.
 
 ## Config (Worker env)

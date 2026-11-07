@@ -2,7 +2,7 @@
 // Implemented by LocalStore (JSONL + outbox) and, later, the Tiger-backed store; faked by fake-store.ts.
 import type {
   AgentEvent, AgentSession, ApprovalRequest, DecidedBy, EventQuery, EventSearchHit, ModelCallReceipt,
-  NexusEvent, SwarmReview, Task, TaskPlan,
+  NexusEvent, Res, SubEvt, SwarmReview, Task, TaskPlan,
 } from "../../contracts";
 
 export type Unsubscribe = () => void;
@@ -10,11 +10,11 @@ export type Unsubscribe = () => void;
 /** Result of a conditional decision: `won` is true only for the call that actually set it. */
 export interface DecideResult { approval: ApprovalRequest; won: boolean }
 
-/** Mirrors the `store.status` response in the protocol. */
-export interface StoreStatus { online: boolean; outboxDepth: number; lastSyncAt?: string }
+/** The `store.status` response in the protocol. */
+export type StoreStatus = Res<"store.status">;
 
-/** Mirrors the `store.subscribe` event in the protocol. */
-export interface StatusEvent { online: boolean; outboxDepth: number }
+/** The `store.subscribe` event in the protocol. */
+export type StatusEvent = SubEvt<"store.subscribe">;
 
 export interface EventStore {
   putTask(task: Task): Promise<void>;
@@ -28,6 +28,7 @@ export interface EventStore {
   appendAgentEvent(event: AgentEvent): Promise<void>;
   agentEvents(sessionId: string, fromSeq: number): Promise<AgentEvent[]>;
 
+  /** Creates or updates an approval. Decision fields are ignored here: only decideApproval sets them. */
   putApproval(approval: ApprovalRequest): Promise<void>;
   getApproval(id: string): Promise<ApprovalRequest | undefined>;
   listApprovals(): Promise<ApprovalRequest[]>;

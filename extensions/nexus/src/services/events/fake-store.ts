@@ -63,10 +63,16 @@ export class FakeEventStore implements EventStore {
 
   async putApproval(approval: ApprovalRequest) {
     const existing = this.approvals.get(approval.id);
-    if (existing?.decision) return;   // a decision is never erased by a stale copy
-    if (existing && JSON.stringify(existing) === JSON.stringify(approval)) return;   // no change, no notification
-    this.approvals.set(approval.id, clone(approval));
-    this.emitApproval(approval);
+    const next = clone(approval);
+    delete next.decision; delete next.decidedBy; delete next.decidedAt;   // only decideApproval sets these
+    if (existing?.decision) {
+      next.decision = existing.decision;
+      if (existing.decidedBy) next.decidedBy = clone(existing.decidedBy);
+      if (existing.decidedAt) next.decidedAt = existing.decidedAt;
+    }
+    if (existing && JSON.stringify(existing) === JSON.stringify(next)) return;   // no change, no notification
+    this.approvals.set(next.id, next);
+    this.emitApproval(next);
   }
   async getApproval(id: string) { const a = this.approvals.get(id); return a && clone(a); }
   async listApprovals() { return cloneAll([...this.approvals.values()]); }
@@ -74,7 +80,7 @@ export class FakeEventStore implements EventStore {
     const current = this.approvals.get(id);
     if (!current) throw new Error(`unknown approval ${id}`);
     if (current.decision) return { approval: clone(current), won: false };   // first answer wins
-    const approval: ApprovalRequest = { ...current, decision, decidedBy, decidedAt: at };
+    const approval: ApprovalRequest = { ...current, decision, decidedBy: clone(decidedBy), decidedAt: at };
     this.approvals.set(id, approval);
     this.emitApproval(approval);
     return { approval: clone(approval), won: true };

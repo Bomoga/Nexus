@@ -16,6 +16,38 @@ describe("FakeEventStore", () => {
     expect(seen).toEqual([]);
   });
 
+  it("putApproval cannot set a decision", async () => {
+    const s = new FakeEventStore({ seed: false });
+    const decided = { ...fx.approval, decision: "approved" as const, decidedBy: by, decidedAt: "2026-11-07T04:00:00Z" };
+    await s.putApproval(decided);   // first insert
+    const stored = (await s.getApproval(fx.approval.id))!;
+    expect([stored.decision, stored.decidedBy, stored.decidedAt]).toEqual([undefined, undefined, undefined]);
+    await s.putApproval(decided);   // over an undecided record
+    expect((await s.getApproval(fx.approval.id))?.decision).toBeUndefined();
+    const first = await s.decideApproval(fx.approval.id, "rejected", by, "t1");
+    expect(first.won).toBe(true);   // the conditional path is still open
+  });
+
+  it("putApproval cannot change a decision but still updates other fields", async () => {
+    const s = new FakeEventStore({ seed: false });
+    await s.putApproval(fx.approval);
+    await s.decideApproval(fx.approval.id, "approved", by, "t1");
+    const other = { via: "slack" as const, userId: "U_OTHER" };
+    await s.putApproval({ ...fx.approval, decision: "rejected", decidedBy: other, decidedAt: "t2", slackMessage: { channelId: "C1", ts: "1.2" } });
+    const stored = (await s.getApproval(fx.approval.id))!;
+    expect([stored.decision, stored.decidedBy, stored.decidedAt]).toEqual(["approved", by, "t1"]);
+    expect(stored.slackMessage).toEqual({ channelId: "C1", ts: "1.2" });
+  });
+
+  it("does not alias the caller's decidedBy", async () => {
+    const s = new FakeEventStore({ seed: false });
+    await s.putApproval(fx.approval);
+    const mine = { via: "app" as const, userId: "U_ME" };
+    await s.decideApproval(fx.approval.id, "approved", mine, "t1");
+    mine.userId = "U_TAMPERED";
+    expect((await s.getApproval(fx.approval.id))?.decidedBy?.userId).toBe("U_ME");
+  });
+
   it("first decision wins", async () => {
     const s = new FakeEventStore();
     const a = await s.decideApproval("apr_01", "approved", by, "t1");

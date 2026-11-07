@@ -28,14 +28,15 @@ export interface UriLike { scheme: string; authority: string; path: string; quer
 
 /**
  * Rebuilds the nexus://<route>/<path>?<query> string from a vscode.Uri's decoded parts, so a handler can read the query with
- * new URL(...).searchParams (Uri.toString() would percent-encode "=" and "&"). The path is decoded: the coderef route must
- * take its fields from it, not percent-decode again.
+ * new URL(...).searchParams (Uri.toString() would percent-encode "=" and "&"). Each path segment is percent-encoded again, so
+ * every route receives the same encoded form a link string has (decodeCodeRef decodes exactly once, and a decoded "?" or "%"
+ * in a file name cannot change the meaning).
  */
 export function fromUri(uri: UriLike): string | null {
   if (uri.scheme !== CODEREF_SCHEME || uri.authority.toLowerCase() !== EXTENSION_ID) return null;
   const path = uri.path.replace(/^\/+/, "");
   if (!path) return null;
-  return `${CODEREF_SCHEME}://${path}${uri.query ? `?${uri.query}` : ""}`;
+  return `${CODEREF_SCHEME}://${path.split("/").map(encodeURIComponent).join("/")}${uri.query ? `?${uri.query}` : ""}`;
 }
 
 export class UriRouter {

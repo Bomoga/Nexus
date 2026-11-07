@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import type { Channel } from "../../src/contracts";
-import { EmptyState, getBridge } from "../shared";
+import { EmptyState, friendlyError, getBridge } from "../shared";
 import type { BridgeClient } from "../shared";
 
 export const INVITE_TOOLTIP = "invite @Nexus for live updates";
@@ -15,10 +15,12 @@ export interface ChannelListProps {
 
 export function ChannelList({ bridge, selectedId, onSelect, onLoaded }: ChannelListProps) {
   const [channels, setChannels] = useState<Channel[] | undefined>();
-  const [failed, setFailed] = useState(false);
+  const [failure, setFailure] = useState("");
+  const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
     let live = true;
+    setFailure("");
     (bridge ?? getBridge())
       .request("slack.channels", {})
       .then((c) => {
@@ -26,13 +28,13 @@ export function ChannelList({ bridge, selectedId, onSelect, onLoaded }: ChannelL
         setChannels(c);
         onLoaded?.(c);
       })
-      .catch(() => live && setFailed(true));
+      .catch((e: unknown) => live && setFailure(friendlyError(e, "slack")));
     return () => {
       live = false;
     };
-  }, [bridge]);
+  }, [bridge, attempt]);
 
-  if (failed) return <EmptyState message="could not load channels" />;
+  if (failure) return <EmptyState message={failure} action={{ label: "RETRY", onClick: () => setAttempt((n) => n + 1) }} />;
   if (!channels) return <div className="chat-channels" />;
   if (channels.length === 0) return <EmptyState message="no channels" />;
   return (

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { KeyboardEvent } from "react";
 import type { EventSearchHit, NexusEvent } from "../../src/contracts";
-import { Input, StatusLine, request } from "../shared";
+import { Button, Input, StatusLine, friendlyError, request } from "../shared";
 import { DEFAULT_T0_MS, formatEventTime, shortId } from "./model/picking";
 import { newestFirst } from "./model/tracking";
 
@@ -25,6 +25,7 @@ export function Search({ onPick, search = defaultSearch, t0Ms = DEFAULT_T0_MS }:
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(0);
   const [error, setError] = useState<string | undefined>();
+  const [attempt, setAttempt] = useState(0);
   const wrap = useRef<HTMLDivElement>(null);
   const searchRef = useRef(search);
   useEffect(() => {
@@ -55,14 +56,14 @@ export function Search({ onPick, search = defaultSearch, t0Ms = DEFAULT_T0_MS }:
           if (!live) return;
           setHits([]);
           setOpen(false);
-          setError(e instanceof Error ? e.message : String(e));
+          setError(friendlyError(e, "search"));
         });
     }, SEARCH_DEBOUNCE_MS);
     return () => {
       live = false;
       clearTimeout(timer);
     };
-  }, [q]);
+  }, [q, attempt]);
 
   // "/" (outside inputs) and Ctrl+F focus the box; the host cannot push a focus message (contracts are frozen).
   useEffect(() => {
@@ -81,11 +82,15 @@ export function Search({ onPick, search = defaultSearch, t0Ms = DEFAULT_T0_MS }:
     return () => document.removeEventListener("keydown", onKey);
   }, []);
 
+  // True from a pick until the query changes: Enter in the box then belongs to the page (OPEN on the detail strip).
+  const [picked, setPicked] = useState(false);
   const pick = (hit: EventSearchHit | undefined) => {
     if (!hit) return;
     setOpen(false);
+    setPicked(true);
     onPick(hit.event);
   };
+  const shown = open && hits.length > 0;
 
   const onKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
     if (e.key === "ArrowDown" || e.key === "ArrowUp") {
@@ -95,11 +100,15 @@ export function Search({ onPick, search = defaultSearch, t0Ms = DEFAULT_T0_MS }:
       const step = e.key === "ArrowDown" ? 1 : -1;
       setActive((i) => Math.min(hits.length - 1, Math.max(0, i + step)));
     } else if (e.key === "Enter") {
-      if (!open) return;
+      if (!shown) return;
       e.preventDefault();
       pick(hits[active]);
     } else if (e.key === "Escape") {
-      setOpen(false);
+      // Only a visible dropdown consumes Escape; otherwise it reaches the page (stop tracking).
+      if (shown) {
+        e.preventDefault();
+        setOpen(false);
+      }
     }
   };
 
@@ -108,12 +117,16 @@ export function Search({ onPick, search = defaultSearch, t0Ms = DEFAULT_T0_MS }:
       <Input
         role="combobox"
         aria-label="Search events"
-        aria-expanded={open}
+        aria-expanded={shown}
         aria-controls="globe-search-list"
         aria-autocomplete="list"
+        data-picked={picked && !shown ? "true" : undefined}
         placeholder="SEARCH EVENTS  /"
         value={q}
-        onChange={(e) => setQ(e.target.value)}
+        onChange={(e) => {
+          setPicked(false);
+          setQ(e.target.value);
+        }}
         onKeyDown={onKeyDown}
       />
       {open && hits.length > 0 ? (
@@ -139,7 +152,11 @@ export function Search({ onPick, search = defaultSearch, t0Ms = DEFAULT_T0_MS }:
           ))}
         </ul>
       ) : null}
-      {error ? <StatusLine tone="error">{error}</StatusLine> : null}
+      {error ? (
+        <StatusLine tone="error">
+          {error} <Button onClick={() => setAttempt((n) => n + 1)}>RETRY</Button>
+        </StatusLine>
+      ) : null}
     </div>
   );
 }

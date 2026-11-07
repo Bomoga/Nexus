@@ -10,7 +10,7 @@ import { App } from "./App";
 
 afterEach(cleanup);
 
-type Reply = { ok: false; code: string; message: string };
+type Reply = { ok: false; code?: string; message: string };
 type Overrides = Record<string, (body: unknown) => Reply | unknown | Promise<unknown>>;
 
 /** The fake host plus request recording; `overrides` replace a request's answer. */
@@ -35,7 +35,7 @@ function setup(overrides: Overrides = {}) {
       void Promise.resolve(o(env.body)).then((r) => {
         const failed = typeof r === "object" && r !== null && "ok" in r && (r as { ok: unknown }).ok === false;
         const res: Envelope = failed
-          ? { t: "res", id: env.id, ok: false, error: { code: "invalid_request", message: (r as unknown as { message: string }).message } }
+          ? { t: "res", id: env.id, ok: false, error: { code: ((r as unknown as { code?: string }).code ?? "invalid_request") as "invalid_request", message: (r as unknown as { message: string }).message } }
           : { t: "res", id: env.id, ok: true, body: r };
         handlers.forEach((h) => h(res));
       });
@@ -158,6 +158,34 @@ describe("task panel", () => {
     fireEvent.click(await screen.findByRole("button", { name: "BREAK INTO SUBTASKS" }));
     await waitFor(() => expect(long.reqs("tasks.decompose")).toHaveLength(1));
     expect(long.reqs("tasks.decompose")[0].body).toEqual({ taskId: "task_01" });
+  });
+
+  test("a not_found tasks.get shows the friendly line and RETRY re-requests", async () => {
+    let missing = true;
+    const { bridge, reqs } = setup({
+      "tasks.get": () => (missing ? { ok: false, code: "not_found", message: "no handler for tasks.get" } : fx.task),
+    });
+    render(<App bridge={bridge} taskId="task_01" />);
+    expect(await screen.findByText("task isn't connected yet")).toBeTruthy();
+    expect(screen.queryByText(/no handler/)).toBeNull();
+    missing = false;
+    fireEvent.click(screen.getByRole("button", { name: "RETRY" }));
+    expect(await screen.findByDisplayValue("Fix cart discount for qty > 1")).toBeTruthy();
+    expect(reqs("tasks.get")).toHaveLength(2);
+  });
+
+  test("a failing models.list shows the friendly line, and RETRY re-requests only the models", async () => {
+    let missing = true;
+    const { bridge, reqs } = setup({
+      "models.list": () => (missing ? { ok: false, code: "not_found", message: "no handler for models.list" } : []),
+    });
+    render(<App bridge={bridge} taskId="task_01" />);
+    expect(await screen.findByText("models isn't connected yet")).toBeTruthy();
+    missing = false;
+    fireEvent.click(screen.getByRole("button", { name: "RETRY" }));
+    expect(await screen.findByText("no agent models available")).toBeTruthy();
+    expect(reqs("models.list")).toHaveLength(2);
+    expect(reqs("tasks.get")).toHaveLength(1);
   });
 
   test("no task id: error line and no requests", () => {

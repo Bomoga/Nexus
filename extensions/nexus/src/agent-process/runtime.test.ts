@@ -247,8 +247,8 @@ describe("sanitizeForEvent", () => {
   it("redacts nested strings and clips long ones", () => {
     const out = sanitizeForEvent({ a: [`key ${SECRET}`], b: { c: "y".repeat(3000) }, n: 4, z: null }) as { a: string[]; b: { c: string }; n: number; z: null };
     expect(out.a[0]).toBe("key [REDACTED:anthropic-key]");
-    expect(out.b.c.length).toBeLessThan(2100);
-    expect(out.b.c).toContain("clipped 1000 chars");
+    expect(out.b.c.length).toBeLessThanOrEqual(2000);
+    expect(out.b.c).toMatch(/…\[clipped \d+ chars\]$/);
     expect(out.n).toBe(4);
     expect(out.z).toBeNull();
   });

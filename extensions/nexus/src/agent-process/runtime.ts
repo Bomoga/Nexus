@@ -1,7 +1,10 @@
 import { frame } from "../agent/prompt-framing";
+import type { ModelCallReceipt } from "../contracts";
+import { wrapProvider } from "../models/prune-adapter";
 import type { Provider, ToolCall, TurnMessage } from "../models/provider";
 import { createProviders } from "../models/registry";
 import { redact } from "../shared/redact";
+import { sanitizeForEvent } from "../shared/sanitize";
 import type { AgentChannel, HostReqOut } from "./channel";
 import { SESSION_FINISHED } from "./session-events";
 import { TOOL_DEFS, executeTool, type Gate } from "./tools";
@@ -11,7 +14,7 @@ import { TOOL_DEFS, executeTool, type Gate } from "./tools";
 // Keys arrive per call (credentials.get) and are dropped as soon as the provider call ends.
 
 export const MAX_TURNS = 40;
-const MAX_EVENT_STRING = 2000;
+export { sanitizeForEvent };
 
 export type SessionStart = HostReqOut<"session.start">;
 
@@ -31,15 +34,21 @@ export interface RuntimeDeps {
   onFinished?: (outcome: SessionOutcome) => void;
 }
 
-/** Strings in event payloads are redacted and clipped: they end up in the shared store and in Slack. */
-export function sanitizeForEvent(value: unknown, depth = 0): unknown {
-  if (typeof value === "string") {
-    const clean = redact(value);
-    return clean.length > MAX_EVENT_STRING ? `${clean.slice(0, MAX_EVENT_STRING)}…[clipped ${clean.length - MAX_EVENT_STRING} chars]` : clean;
+/**
+ * Iterates a provider stream but stops waiting the moment the signal aborts, even if the provider ignores the signal:
+ * a cancelled session must free the runtime within one turn.
+ */
+async function* abortable<T>(source: AsyncIterable<T>, signal: AbortSignal): AsyncGenerator<T> {
+  const it = source[Symbol.asyncIterator]();
+  try {
+    for (;;) {
+      const next = await raceAbort(it.next(), signal);
+      if (next === undefined || next.done) return;
+      yield next.value;
+    }
+  } finally {
+    void Promise.resolve(it.return?.()).catch(() => undefined);      // best effort; never waited on
   }
-  if (depth >= 6 || value === null || typeof value !== "object") return value;
-  if (Array.isArray(value)) return value.map(v => sanitizeForEvent(v, depth + 1));
-  return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, sanitizeForEvent(v, depth + 1)]));
 }
 
 function raceAbort<T>(p: Promise<T>, signal: AbortSignal): Promise<T | undefined> {
@@ -110,7 +119,13 @@ export class AgentRuntime {
     }) as never);
   }
 
-  private async emit(type: "message" | "tool_call" | "tool_result" | "error", payload: Record<string, unknown>): Promise<void> {
+  /** Receipts become `receipt` events; a Prune fallback note becomes a plainly labeled message. */
+  private async flushReceipts(receipts: ModelCallReceipt[], notes: string[]): Promise<void> {
+    for (const r of receipts.splice(0)) await this.emit("receipt", r as unknown as Record<string, unknown>);
+    for (const n of notes.splice(0)) await this.emit("message", { text: `[nexus] ${n}` });
+  }
+
+  private async emit(type: "message" | "tool_call" | "tool_result" | "error" | "receipt", payload: Record<string, unknown>): Promise<void> {
     try {
       await this.deps.gate.request("event.emit", { type, payload: sanitizeForEvent(payload) });
     } catch {
@@ -132,7 +147,9 @@ export class AgentRuntime {
     if (!provider) return fail(`no provider "${start.session.model.provider}" in the agent process`);
 
     const system = [start.systemRules, frame(start.untrustedBlocks)].filter(s => s.length > 0).join("\n\n");
-    const messages: TurnMessage[] = [{ role: "user", content: `Task: ${start.task.title}\n\n${start.task.brief}` }];
+    // The title may come from a Slack message, so it is fenced as data like every other untrusted text; the brief is
+    // quoted by the brief builder (its Slack lines start with "> "), and the system rules say how to read both.
+    const messages: TurnMessage[] = [{ role: "user", content: `Task title (data, supplied by a person):\n${frame([{ label: "task title", text: start.task.title }])}\n\nTask brief:\n${start.task.brief}` }];
 
     while (turns < maxTurns) {
       if (signal.aborted) return finish("cancelled");
@@ -146,16 +163,26 @@ export class AgentRuntime {
         const cred = await raceAbort(this.deps.gate.request("credentials.get", { provider: start.session.model.provider, callId }), signal);
         if (!cred) return finish("cancelled");
         let key: string | undefined = cred.apiKey;
+        // The host decides per call whether this call goes through Prune (toggle on, agent in scope, key present).
+        const receipts: ModelCallReceipt[] = [];
+        const notes: string[] = [];
+        const callProvider = cred.prune?.enabled && cred.prune.apiKey
+          ? wrapProvider(provider, {
+              apiKey: cred.prune.apiKey, scope: "all_roles", allowModelRouting: false, sessionId, newCallId: () => callId,
+              now: () => new Date().toISOString(), onReceipt: r => receipts.push(r), onNote: n => notes.push(n),
+            })
+          : provider;
         try {
-          for await (const e of provider.turn({ modelId: start.session.model.modelId, role: "agent", system, messages: [...messages], tools: TOOL_DEFS, signal }, key)) {
+          for await (const e of abortable(callProvider.turn({ modelId: start.session.model.modelId, role: "agent", system, messages: [...messages], tools: TOOL_DEFS, signal }, key), signal)) {
             if (e.type === "text_delta") text += e.text;
             else if (e.type === "tool_call") toolCalls.push({ id: e.id, name: e.name, args: e.args, ...(e.providerMeta !== undefined ? { providerMeta: e.providerMeta } : {}) });
             else if (e.type === "done") stop = e.stopReason;
-            else return await fail(`model error: ${e.message}`);
+            else { await this.flushReceipts(receipts, notes); return await fail(`model error: ${e.message}`); }
           }
         } finally {
           key = undefined;                                    // the key never outlives the provider call
         }
+        await this.flushReceipts(receipts, notes);
       } catch (e) {
         return fail(`model call failed: ${e instanceof Error ? e.message : "unknown error"}`);
       }

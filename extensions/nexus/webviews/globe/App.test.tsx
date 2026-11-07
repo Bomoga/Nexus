@@ -8,7 +8,7 @@ import type { Transport } from "../shared";
 import { App } from "./App";
 
 // The WebGL scene and the global-bridge live hook are not under test here.
-vi.mock("./scene/Scene", () => ({ Scene: ({ events }: { events: unknown[] }) => <div data-testid="scene">{events.length}</div> }));
+vi.mock("./scene/Scene", () => ({ Scene: ({ events, now }: { events: unknown[]; now: number }) => <div data-testid="scene" data-now={now}>{events.length}</div> }));
 vi.mock("./scene/live", () => ({ useLiveEvents: () => undefined, useDriftNow: () => () => Date.now(), markLive: () => undefined }));
 
 afterEach(cleanup);
@@ -17,6 +17,7 @@ afterEach(cleanup);
 function setup(query: () => NexusEvent[] | { code: string }, hit?: NexusEvent, hits?: () => NexusEvent[]) {
   const handlers = new Set<(e: Envelope) => void>();
   let queries = 0;
+  let activityRequests = 0;
   const requested: string[] = [];
   const transport: Transport = {
     listen(h) {
@@ -37,6 +38,9 @@ function setup(query: () => NexusEvent[] | { code: string }, hit?: NexusEvent, h
         } else if (env.name === "events.search" && (hit || hits)) {
           const found = hits ? hits() : [hit as NexusEvent];
           res = { t: "res", id: env.id, ok: true, body: found.map((event) => ({ event, score: 1 })) };
+        } else if (env.name === "events.activity") {
+          activityRequests++;
+          res = { t: "res", id: env.id, ok: true, body: [{ bucketStart: new Date(Date.now() - 30 * 60_000).toISOString(), orbit: "main", count: 2 }] };
         } else if (env.name === "ui.openTarget") {
           res = { t: "res", id: env.id, ok: true, body: {} };
         } else {
@@ -46,8 +50,40 @@ function setup(query: () => NexusEvent[] | { code: string }, hit?: NexusEvent, h
       });
     },
   };
-  return { bridge: createBridgeClient(transport), queries: () => queries, opens: () => requested.filter((n) => n === "ui.openTarget").length };
+  return { bridge: createBridgeClient(transport), queries: () => queries, activity: () => activityRequests, opens: () => requested.filter((n) => n === "ui.openTarget").length };
 }
+
+describe("globe App activity strip", () => {
+  const sceneNow = () => Number(screen.getByTestId("scene").getAttribute("data-now"));
+
+  test("clicking a bar pins the globe to the past, BACK TO LIVE returns to the live clock", async () => {
+    const h = setup(() => [{ ...fx.event, at: new Date().toISOString() }]);
+    const { container } = render(<App bridge={h.bridge} />);
+    const svg = (await waitFor(() => {
+      const el = container.querySelector("svg.globe-activity-svg");
+      if (!el) throw new Error("no strip yet");
+      return el;
+    })) as SVGSVGElement;
+    expect(screen.queryByRole("button", { name: "BACK TO LIVE" })).toBeNull();
+    const live = sceneNow();
+    svg.getBoundingClientRect = () => ({ left: 0, width: 1000, top: 0, height: 30, right: 1000, bottom: 30, x: 0, y: 0, toJSON: () => ({}) });
+    fireEvent.click(svg, { clientX: 1 });
+    await screen.findByRole("button", { name: "BACK TO LIVE" });
+    // the first column of the 36 h window ends about 35.75 h before now
+    expect(live - sceneNow()).toBeGreaterThan(35 * 3_600_000);
+    fireEvent.click(screen.getByRole("button", { name: "BACK TO LIVE" }));
+    await waitFor(() => expect(screen.queryByRole("button", { name: "BACK TO LIVE" })).toBeNull());
+    expect(live - sceneNow()).toBeLessThan(60_000);
+  });
+
+  test("a window change re-queries the activity", async () => {
+    const h = setup(() => []);
+    render(<App bridge={h.bridge} />);
+    await waitFor(() => expect(h.activity()).toBe(1));
+    fireEvent.change(screen.getByRole("combobox", { name: "Time window" }), { target: { value: "24h" } });
+    await waitFor(() => expect(h.activity()).toBe(2));
+  });
+});
 
 describe("globe App states", () => {
   test("a not_found events.query shows the friendly line and RETRY re-requests", async () => {

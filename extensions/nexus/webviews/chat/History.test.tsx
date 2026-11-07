@@ -2,8 +2,8 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { createBridgeClient } from "../shared";
+import { createTestHost } from "./testHost";
 import { createFakeTransport } from "../shared/fakeBridge";
-import type { BridgeClient } from "../shared";
 import type { ChatMessage } from "../../src/contracts";
 import { History } from "./History";
 import { formatTime } from "./MessageRow";
@@ -19,14 +19,7 @@ interface Page { messages: ChatMessage[]; nextCursor?: string; fromCache: boolea
 
 function fakeClient(pages: Record<string, Page>) {
   const history = vi.fn(async (body: { cursor?: string }) => pages[body.cursor ?? "first"]);
-  const client = {
-    request: vi.fn(async (name: string, body: never) => {
-      if (name === "slack.history") return history(body);
-      if (name === "slack.users") return [];
-      throw new Error(`unexpected ${name}`);
-    }),
-    subscribe: vi.fn(),
-  } as unknown as BridgeClient;
+  const client = createTestHost({ history }).client;
   return { client, history };
 }
 
@@ -119,16 +112,13 @@ describe("History", () => {
 
   test("uses a data: avatar from slack.users but ignores remote avatar URLs", async () => {
     const m = [msg(1), msg(2, { author: { id: "U2", name: "brandon", isBot: false } })];
-    const client = {
-      request: vi.fn(async (name: string) =>
-        name === "slack.history"
-          ? { messages: m, fromCache: false }
-          : [
-              { id: "U1", name: "adrian", displayName: "Adrian", isBot: false, avatarUrl: "data:image/png;base64,AAAA" },
-              { id: "U2", name: "brandon", displayName: "Brandon", isBot: false, avatarUrl: "https://avatars.slack-edge.com/x.png" },
-            ]),
-      subscribe: vi.fn(),
-    } as unknown as BridgeClient;
+    const client = createTestHost({
+      history: () => ({ messages: m, fromCache: false }),
+      users: () => [
+        { id: "U1", name: "adrian", displayName: "Adrian", isBot: false, avatarUrl: "data:image/png;base64,AAAA" },
+        { id: "U2", name: "brandon", displayName: "Brandon", isBot: false, avatarUrl: "https://avatars.slack-edge.com/x.png" },
+      ],
+    }).client;
     const { container } = render(<History bridge={client} channelId="C1" />);
     await screen.findByText("message 2");
     await waitFor(() => expect(container.querySelectorAll("img.chat-avatar").length).toBe(1));
@@ -142,5 +132,119 @@ describe("History", () => {
     render(<History bridge={client} channelId="C1" onOpenThread={onOpenThread} />);
     fireEvent.click(await screen.findByText("↳ 3"));
     expect(onOpenThread).toHaveBeenCalledWith(expect.objectContaining({ replyCount: 3 }));
+  });
+
+  test("two scroll-top events while a page is in flight fetch exactly once", async () => {
+    let release!: (p: Page) => void;
+    const gate = new Promise<Page>((r) => (release = r));
+    const pages: Record<string, Page> = { first: { messages: [msg(3), msg(2)], nextCursor: "c2", fromCache: false } };
+    const history = vi.fn(async (body: { cursor?: string }) => (body.cursor ? gate : pages.first));
+    const client = createTestHost({ history }).client;
+    const { container } = render(<History bridge={client} channelId="C1" />);
+    await screen.findByText("message 3");
+    const scroller = container.querySelector(".chat-history") as HTMLElement;
+    fireEvent.scroll(scroller);
+    fireEvent.scroll(scroller);
+    await settle();
+    expect(history).toHaveBeenCalledTimes(2);
+    release({ messages: [msg(1)], fromCache: false });
+    await screen.findByText("message 1");
+  });
+
+  test("overlapping pages de-duplicate by ts", async () => {
+    const { client } = fakeClient({
+      first: { messages: [msg(3), msg(2)], nextCursor: "c2", fromCache: false },
+      c2: { messages: [msg(2, { id: "other-id" }), msg(1)], fromCache: false },
+    });
+    const { container } = render(<History bridge={client} channelId="C1" />);
+    await screen.findByText("message 3");
+    fireEvent.scroll(container.querySelector(".chat-history") as HTMLElement);
+    await screen.findByText("message 1");
+    expect([...container.querySelectorAll(".chat-text")].map((e) => e.textContent)).toEqual(["message 1", "message 2", "message 3"]);
+  });
+
+  test("a failed older page shows an error with RETRY, and retrying loads it", async () => {
+    let fail = true;
+    const history = vi.fn(async (body: { cursor?: string }) => {
+      if (!body.cursor) return { messages: [msg(3), msg(2)], nextCursor: "c2", fromCache: false };
+      if (fail) throw new Error("offline");
+      return { messages: [msg(1)], fromCache: false };
+    });
+    const client = createTestHost({ history }).client;
+    const { container } = render(<History bridge={client} channelId="C1" />);
+    await screen.findByText("message 3");
+    fireEvent.scroll(container.querySelector(".chat-history") as HTMLElement);
+    await screen.findByText(/could not load older messages/);
+    fail = false;
+    fireEvent.click(screen.getByText("RETRY"));
+    await screen.findByText("message 1");
+    expect(screen.queryByText(/could not load older messages/)).toBeNull();
+  });
+
+  test("a failed initial load shows RETRY, and retrying loads the history", async () => {
+    let fail = true;
+    const client = createTestHost({
+      history: () => {
+        if (fail) throw new Error("offline");
+        return { messages: [msg(1)], fromCache: false };
+      },
+    }).client;
+    render(<History bridge={client} channelId="C1" />);
+    await screen.findByText("could not load history");
+    fail = false;
+    fireEvent.click(screen.getByText("RETRY"));
+    await screen.findByText("message 1");
+  });
+
+  test("keeps paging while the loaded messages do not fill the pane", async () => {
+    const sizes = { clientHeight: 500, scrollHeight: 100 };
+    const saved = ["clientHeight", "scrollHeight"].map((k) => [k, Object.getOwnPropertyDescriptor(HTMLElement.prototype, k)] as const);
+    for (const k of ["clientHeight", "scrollHeight"] as const) {
+      Object.defineProperty(HTMLElement.prototype, k, { configurable: true, get: () => sizes[k] });
+    }
+    try {
+      const { client, history } = fakeClient({
+        first: { messages: [msg(3)], nextCursor: "c2", fromCache: false },
+        c2: { messages: [msg(2)], nextCursor: "c3", fromCache: false },
+        c3: { messages: [msg(1)], fromCache: false },
+      });
+      render(<History bridge={client} channelId="C1" />);
+      await screen.findByText("message 1");
+      expect(history).toHaveBeenCalledTimes(3);
+    } finally {
+      for (const [k, d] of saved) {
+        if (d) Object.defineProperty(HTMLElement.prototype, k, d);
+        else delete (HTMLElement.prototype as unknown as Record<string, unknown>)[k];
+      }
+    }
+  });
+
+  test("a stale older-page request from the previous channel does not release the current channel's request", async () => {
+    let releaseA!: (p: Page) => void;
+    const gateA = new Promise<Page>((r) => (releaseA = r));
+    let releaseB!: (p: Page) => void;
+    const gateB = new Promise<Page>((r) => (releaseB = r));
+    const history = vi.fn(async (body: { channelId: string; cursor?: string }) => {
+      if (body.channelId === "C1") return body.cursor ? gateA : { messages: [msg(2)], nextCursor: "a2", fromCache: false };
+      return body.cursor ? gateB : { messages: [msg(12, { id: "C2:x", channelId: "C2", ts: "1762486000.000100" })], nextCursor: "b2", fromCache: false };
+    });
+    const client = createTestHost({ history }).client;
+    const { container, rerender } = render(<History bridge={client} channelId="C1" />);
+    await screen.findByText("message 2");
+    fireEvent.scroll(container.querySelector(".chat-history") as HTMLElement);
+    await settle();
+    rerender(<History bridge={client} channelId="C2" />);
+    await screen.findByText("message 12");
+    const scroller = container.querySelector(".chat-history") as HTMLElement;
+    fireEvent.scroll(scroller);
+    await settle();
+    releaseA({ messages: [msg(1)], fromCache: false });
+    await settle();
+    fireEvent.scroll(scroller);
+    await settle();
+    const olderCalls = history.mock.calls.filter(([b]) => b.cursor);
+    expect(olderCalls.map(([b]) => `${b.channelId}:${b.cursor}`)).toEqual(["C1:a2", "C2:b2"]);
+    releaseB({ messages: [], fromCache: false });
+    await settle();
   });
 });

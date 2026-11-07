@@ -1,10 +1,11 @@
 import { useState } from "react";
-import type { Channel } from "../../src/contracts";
+import type { Channel, ChatMessage } from "../../src/contracts";
 import { EmptyState } from "../shared";
 import type { BridgeClient } from "../shared";
 import { ChannelList } from "./ChannelList";
 import { History } from "./History";
 import { StatusBar } from "./StatusBar";
+import { ThreadPane } from "./ThreadPane";
 
 export interface AppProps {
   bridge?: BridgeClient;
@@ -17,6 +18,7 @@ function openLink(url: string): void {
 
 export function App({ bridge }: AppProps) {
   const [selectedId, setSelectedId] = useState<string | undefined>();
+  const [thread, setThread] = useState<{ channelId: string; threadTs: string } | undefined>();
   return (
     <div className="chat-app">
       <div className="chat-panes">
@@ -24,13 +26,36 @@ export function App({ bridge }: AppProps) {
           <ChannelList
             bridge={bridge}
             selectedId={selectedId}
-            onSelect={(c: Channel) => setSelectedId(c.id)}
+            onSelect={(c: Channel) => {
+              setSelectedId(c.id);
+              setThread(undefined);
+            }}
             onLoaded={(cs) => setSelectedId((cur) => cur ?? cs[0]?.id)}
           />
         </aside>
         <main className="chat-right">
-          {selectedId ? <History bridge={bridge} channelId={selectedId} onOpenLink={openLink} /> : <EmptyState message="select a channel" />}
+          {selectedId ? (
+            <History
+              bridge={bridge}
+              channelId={selectedId}
+              onOpenLink={openLink}
+              onOpenThread={(m: ChatMessage) => setThread({ channelId: m.channelId, threadTs: m.threadTs ?? m.ts })}
+            />
+          ) : (
+            <EmptyState message="select a channel" />
+          )}
         </main>
+        {thread && thread.channelId === selectedId ? (
+          <aside className="chat-thread">
+            <ThreadPane
+              bridge={bridge}
+              channelId={thread.channelId}
+              threadTs={thread.threadTs}
+              onClose={() => setThread(undefined)}
+              onOpenLink={openLink}
+            />
+          </aside>
+        ) : null}
       </div>
       <StatusBar bridge={bridge} />
     </div>

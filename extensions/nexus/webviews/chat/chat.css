@@ -45,7 +45,23 @@ button.chat-replies:hover { color: var(--nx-accent-hi); }
 .chat-coderef:focus-visible { outline: var(--nx-border-w) solid var(--nx-focus); outline-offset: 1px; }
 .chat-coderef--stale .nx-chip { border-style: dashed; background: transparent; color: var(--nx-muted); }
 .chat-bot { border-left: 2px solid var(--nx-accent); padding-left: var(--nx-gap-1); }
-.chat-bot-label { color: var(--nx-accent-hi); font-size: 10px; text-transform: uppercase; }
+.chat-bot-label { color: var(--nx-accent-hi); font-size: var(--nx-font-ui-sm); text-transform: uppercase; }
 .chat-bot-section { color: var(--nx-muted); }
 .chat-approval { display: flex; align-items: center; gap: var(--nx-gap-1); margin-top: var(--nx-gap-1); }
 .chat-approval-error { color: var(--nx-error); }
+
+.chat-row-open { cursor: pointer; }
+
+.chat-failed { border-left: 2px solid var(--nx-error); }
+.chat-failed-bar { display: flex; align-items: center; gap: var(--nx-gap-2); height: var(--nx-row-h); padding: 0 var(--nx-pad-x); font-size: var(--nx-font-ui-sm); color: var(--nx-error); }
+.chat-retry { border: 0; background: transparent; padding: 0; font: inherit; font-weight: 600; letter-spacing: 0.04em; color: var(--nx-error); text-decoration: underline; cursor: pointer; }
+.chat-retry:focus-visible { outline: var(--nx-border-w) solid var(--nx-focus); outline-offset: 1px; }
+
+.chat-composer { display: flex; align-items: flex-end; gap: var(--nx-gap-1); padding: var(--nx-gap-1) var(--nx-pad-x); border-top: var(--nx-border-w) solid var(--nx-border); }
+.chat-composer-input { flex: 1; min-width: 0; height: var(--nx-control-h); min-height: var(--nx-control-h); max-height: 88px; resize: none; padding-top: 3px; padding-bottom: 3px; line-height: 14px; box-sizing: border-box; overflow-y: auto; }
+
+.chat-thread { width: 300px; flex: none; min-width: 0; display: flex; flex-direction: column; border-left: var(--nx-border-w) solid var(--nx-border); }
+.chat-thread-pane { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.chat-thread-head { display: flex; align-items: center; gap: var(--nx-gap-1); padding: var(--nx-gap-1) var(--nx-pad-x); border-bottom: var(--nx-border-w) solid var(--nx-border); }
+.chat-thread-title { flex: 1; font-size: var(--nx-font-ui-sm); letter-spacing: 0.06em; color: var(--nx-muted); }
+.chat-thread-list { flex: 1; }

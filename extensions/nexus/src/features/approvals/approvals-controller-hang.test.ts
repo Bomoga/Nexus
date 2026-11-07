@@ -203,7 +203,7 @@ describe("approvals: store failures never leave the agent waiting", () => {
     const [dead] = await s.store.listApprovals();
     const err = await bounded(h["approvals.resolve"]({ approvalId: dead.id, decision: "approved" }).catch((e: unknown) => e));
     expect(err).not.toBeInstanceOf(ApprovalConflict);
-    expect((err as Error).message).toBe("This approval is no longer pending.");
+    expect((err as Error).message).toBe("This approval is no longer pending (its request failed or its session ended).");
     const live = await s.approvals.create({ sessionId: s.session.id, action: { kind: "run_command", command: "npm test" }, reason: "r" });
     await s.approvals.resolve(live.id, "approved", { via: "slack", userId: "brandon" });
     expect(await h["approvals.resolve"]({ approvalId: live.id, decision: "rejected" }).catch((e: unknown) => e)).toBeInstanceOf(ApprovalConflict);
@@ -240,14 +240,14 @@ describe("approvals: store failures never leave the agent waiting", () => {
     await expect(s.approvals.resolve(id, "approved", { via: "slack", userId: "brandon" })).rejects.toThrow("session has ended");
   });
 
-  it("sessionEnded(failed): a completely failing store still releases the waiter as rejected, without a decision", async () => {
+  it("sessionEnded(failed): a completely failing store still releases the waiter with an error, without a decision", async () => {
     const s = await setup();
     const result = s.runCommand();
     await vi.waitFor(() => expect(s.shown).toHaveLength(1));
     const id = s.shown[0].approval.id;
     for (const m of ["putSession", "putTask", "appendAgentEvent", "getApproval", "decideApproval", "getSession"] as const) vi.spyOn(s.store, m).mockImplementation(boom);
     await bounded(s.sessions.onProcessError(s.session.id, "agent process crashed"));
-    expect(await bounded(result)).toBe("rejected by a human");
+    expect(await bounded(result)).toBe("the session ended (failed); nothing was approved");
     expect(s.store.approvals.get(id)!.decision).toBeUndefined();
   });
 });
@@ -345,13 +345,13 @@ describe("probe (a): failures that must not stop the agent", () => {
     expect(await bounded(result)).toBe("ran");
   });
 
-  it("sessionEnded(failed): notify.update throwing still releases the gate as rejected", async () => {
+  it("sessionEnded(failed): notify.update throwing still releases the gate with an error", async () => {
     const s = await setup();
     const result = s.runCommand();
     await vi.waitFor(() => expect(s.shown).toHaveLength(1));
     s.flags.updateThrows = true;
     await bounded(s.sessions.onProcessError(s.session.id, "crash"));
-    expect(await bounded(result)).toBe("rejected by a human");
+    expect(await bounded(result)).toBe("the session ended (failed); nothing was approved");
   });
 
   it("sessionEnded(cancelled): decideApproval and notify.update both throwing still release the gate as rejected, nothing written", async () => {
@@ -372,5 +372,44 @@ describe("probe (a): failures that must not stop the agent", () => {
     const other = { id: "apr_foreign", sessionId: "ses_other", action: { kind: "run_command", command: "ls" }, reason: "r", requestedAt: "2026-11-07T00:00:00.000Z" } as ApprovalRequest;
     await bounded(s.approvals.observe(other));
     expect(s.logs.some(l => l.includes("could not announce approval apr_foreign"))).toBe(true);
+  });
+});
+
+describe("approvals: leftovers", () => {
+  const create = (s: Awaited<ReturnType<typeof setup>>) => s.approvals.create({ sessionId: s.session.id, action: { kind: "run_command", command: "npm test" }, reason: "r" });
+
+  it("waitForDecision: a missing row for an approval nobody can wake rejects at once; a live one this machine owns keeps waiting", async () => {
+    const s = await setup();
+    const a = await create(s);
+    vi.spyOn(s.store, "getApproval").mockImplementation(async () => undefined);
+    const live = s.approvals.waitForDecision(a.id);
+    expect(await Promise.race([live.then(() => "woke", () => "rejected"), new Promise(r => setTimeout(() => r("still waiting"), 50))])).toBe("still waiting");
+    await s.sessions.onProcessError(s.session.id, "crash");
+    expect(await bounded(live.then(() => "woke", (e: Error) => e.message))).toContain("nothing was approved");
+    await expect(bounded(s.approvals.waitForDecision(a.id))).rejects.toThrow("nothing to approve");
+  });
+
+  it("a failed or done ending tells the gate nothing was approved; cancel still says a human rejected it", async () => {
+    for (const how of ["failed", "done"] as const) {
+      const s = await setup();
+      const result = s.runCommand();
+      await vi.waitFor(() => expect(s.shown).toHaveLength(1));
+      await s.approvals.sessionEnded(s.session.id, how);
+      expect(await bounded(result)).toBe(`the session ended (${how}); nothing was approved`);
+    }
+  });
+
+  it("markDead and sessionEnded notify subscribers so the waiting lists refresh", async () => {
+    const s = await setup();
+    const seen: string[] = [];
+    s.approvals.subscribe(a => seen.push(a.id));
+    const a = await create(s);
+    seen.length = 0;
+    await (s.approvals as unknown as { markDead(a: unknown): Promise<void> }).markDead(a);
+    expect(seen).toEqual([a.id]);
+    const b = await create(s);
+    seen.length = 0;
+    await s.approvals.sessionEnded(s.session.id, "failed");
+    expect(seen).toContain(b.id);
   });
 });

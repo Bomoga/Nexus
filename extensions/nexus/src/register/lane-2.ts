@@ -5,7 +5,7 @@ import { registerAppPing } from "../bridge/host";
 import { handleAuthUri } from "../features/auth/current";
 import { redact } from "../shared/redact";
 import { checkRelativePath, CodeRefError } from "../services/coderef/create";
-import { plainNotificationText } from "../services/coderef/notify-text";
+import { plainNotificationText } from "../shared/plain-text";
 import { UriRouter } from "../services/coderef/uri-handler";
 import { LocalStore } from "../services/events/local-store";
 import { GitCli } from "../services/git/git-cli";

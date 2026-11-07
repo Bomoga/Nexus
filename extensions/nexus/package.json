@@ -201,7 +201,8 @@
             "type": "string"
           },
           "default": [],
-          "description": "Commands an agent may run in its worktree without asking, matched exactly (for example \"npm test\"). Everything else needs a human approval."
+          "scope": "application",
+          "description": "Commands an agent may run in its worktree without asking, matched exactly (for example \"npm test\"). Everything else needs a human approval. User settings only: a repository's workspace settings cannot add to it."
         },
         "nexus.t0": {
           "type": "string",

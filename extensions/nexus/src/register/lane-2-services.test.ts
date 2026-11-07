@@ -5,7 +5,9 @@ import { FakeBridgeServer } from "../bridge/fake-bridge-server";
 import { FakeEventStore } from "../services/events/fake-store";
 import { FakeGit } from "../services/git/fake-git";
 import type { BotApi } from "../services/slack/bot";
-import { buildLane2, SLACK_SECRET_KEYS, type Lane2Inputs } from "./lane-2-services";
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import { buildLane2, SLACK_SECRET_KEYS, userAllowlist, type Lane2Inputs } from "./lane-2-services";
 
 function bot() {
   const api = {
@@ -165,5 +167,12 @@ describe("buildLane2", () => {
     const { router, built } = setup({ git: new FakeGit() });
     expect(built.codeRefs).toBeUndefined();
     await expect(router.call("coderef.open", { ref: fx.codeRef })).rejects.toMatchObject({ code: "not_found" });
+  });
+
+  it("takes the agent allowlist only from user settings, and only as a list of strings", () => {
+    const contributed = JSON.parse(readFileSync(path.join(__dirname, "../../contributes/lane-2.json"), "utf8"));
+    // application scope: VS Code ignores the setting in a repository's workspace settings
+    expect(contributed.contributes.configuration.properties["nexus.agent.allowedCommands"].scope).toBe("application");
+    expect([userAllowlist(["npm test", "", 3, " "]), userAllowlist("npm test"), userAllowlist(undefined)]).toEqual([["npm test"], [], []]);
   });
 });

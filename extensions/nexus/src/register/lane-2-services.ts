@@ -18,6 +18,11 @@ import { SlackCache } from "../services/slack/cache";
 import type { SlackService } from "../services/slack/types";
 import { GitWatcher } from "../services/git/watcher";
 
+/** nexus.agent.allowedCommands from the user's own settings (never a workspace's): a list of non-empty strings, anything else is ignored. */
+export function userAllowlist(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((c): c is string => typeof c === "string" && c.trim().length > 0) : [];
+}
+
 /** SecretStorage keys for the manual Slack connection (Token Vault, L2-15, replaces the user token later). */
 export const SLACK_SECRET_KEYS = { user: "nexus.slack.userToken", bot: "nexus.slack.botToken", app: "nexus.slack.appToken" } as const;
 

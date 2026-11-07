@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ApprovalRequest, SwarmReview } from "../../src/contracts";
-import { Button, Chip, EmptyState, KeyValueList, KeyValueRow, StatusLine, getBridge } from "../shared";
+import { BridgeError, Button, Chip, EmptyState, KeyValueList, KeyValueRow, StatusLine, getBridge } from "../shared";
 import type { BridgeClient, Tone } from "../shared";
 import { formatEventTime } from "../globe/model/picking";
 
@@ -22,7 +22,11 @@ export function mergeApproval(prev: ApprovalRequest | undefined, next: ApprovalR
 
 /** One review per approval; the newest `at` wins, a tie goes to the later arrival. */
 export function mergeReview(prev: SwarmReview | undefined, next: SwarmReview): SwarmReview {
-  return prev && timeOf(prev.at) > timeOf(next.at) ? prev : next;
+  if (!prev) return next;
+  if (timeOf(prev.at) > timeOf(next.at)) return prev;
+  // Same instant: a finished copy is never replaced by a stale running snapshot.
+  if (prev.id === next.id && timeOf(prev.at) === timeOf(next.at) && prev.status !== "running" && next.status === "running") return prev;
+  return next;
 }
 
 /** Pending first (oldest request on top), then decided newest decision first. */
@@ -85,12 +89,12 @@ function ActionBody({ approval }: { approval: ApprovalRequest }) {
     case "write_outside_scope":
       return <KeyValueList><KeyValueRow label="WRITE OUTSIDE SCOPE"><code className="nx-data ap-block">{a.path}</code></KeyValueRow></KeyValueList>;
     case "other":
-      return <KeyValueList><KeyValueRow label="OTHER"><span className="ap-text">{a.description}</span></KeyValueRow></KeyValueList>;
+      return <KeyValueList><KeyValueRow label="OTHER"><span className="ap-text">{a.description}</span><ModelWritten /></KeyValueRow></KeyValueList>;
     case "commit":
       return (
         <>
           <KeyValueList>
-            <KeyValueRow label="COMMIT"><span className="ap-text">{a.message}</span></KeyValueRow>
+            <KeyValueRow label="COMMIT"><span className="ap-text">{a.message}</span><ModelWritten /></KeyValueRow>
           </KeyValueList>
           {approval.diffPreview ? (
             <>
@@ -131,8 +135,8 @@ function ApprovalRow({ approval, review, busy, rerunBusy, names, onResolve, onRe
         <ModelWritten />
       </div>
       {approval.action.kind === "commit" && review ? <SwarmCard review={review} busy={rerunBusy} onRerun={() => onRerun(approval.id)} /> : null}
-      {approval.decision && by ? (
-        <div className="ap-decided nx-data">{`decided by ${who} via ${VIA_LABEL[by.via]} ${tplus(approval.decidedAt)}`}</div>
+      {approval.decision ? (
+        <div className="ap-decided nx-data">{by ? `decided by ${who} via ${VIA_LABEL[by.via]} ${tplus(approval.decidedAt)}` : `decided ${tplus(approval.decidedAt)}`}</div>
       ) : (
         <div className="ap-line">
           <Button variant="primary" disabled={busy} onClick={() => onResolve(approval.id, "approved")}>APPROVE</Button>
@@ -188,7 +192,13 @@ export function App({ bridge = getBridge() }: { bridge?: BridgeClient }) {
     for (const a of approvals.values()) {
       if (a.action.kind === "commit" && !askedReviews.current.has(a.id)) {
         askedReviews.current.add(a.id);
-        bridge.request("swarms.review.get", { approvalId: a.id }).then((r) => (r ? putReview(r) : undefined), () => undefined);
+        bridge.request("swarms.review.get", { approvalId: a.id }).then(
+          (r) => (r ? putReview(r) : undefined),
+          (e) => {
+            askedReviews.current.delete(a.id);
+            setError(`swarms.review.get failed: ${message(e)}`);
+          },
+        );
       }
       const by = a.decidedBy;
       if (by?.via === "slack" && !askedUsers.current.has(by.userId)) {
@@ -222,7 +232,15 @@ export function App({ bridge = getBridge() }: { bridge?: BridgeClient }) {
 
   const onResolve = useCallback(
     (approvalId: string, decision: Decision) =>
-      void withBusy(approvalId, async () => putApproval(await bridge.request("approvals.resolve", { approvalId, decision }))),
+      void withBusy(approvalId, async () => {
+        try {
+          putApproval(await bridge.request("approvals.resolve", { approvalId, decision }));
+        } catch (e) {
+          if (!(e instanceof BridgeError && e.code === "conflict")) throw e;
+          // Lost the race: someone else decided first. Not an error; fetch the decided copy.
+          (await bridge.request("approvals.list", { pendingOnly: false })).forEach(putApproval);
+        }
+      }),
     [bridge, putApproval, withBusy],
   );
   const onRerun = useCallback(

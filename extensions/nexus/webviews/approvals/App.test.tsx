@@ -31,7 +31,10 @@ function setup(answers: Answers = {}) {
         .then(() => (fn ? fn(env.body as Record<string, unknown>) : Promise.reject(new Error("no answer"))))
         .then(
           (body) => handlers.forEach((h) => h({ t: "res", id: env.id, ok: true, body })),
-          () => handlers.forEach((h) => h({ t: "res", id: env.id, ok: false, error: { code: "not_found", message: env.name } })),
+          (err) => {
+            const code = (err as { code?: string }).code ?? "not_found";
+            handlers.forEach((h) => h({ t: "res", id: env.id, ok: false, error: { code: code as "not_found", message: err instanceof Error ? err.message : env.name } }));
+          },
         );
     },
   };
@@ -112,15 +115,37 @@ describe("approvals view", () => {
     expect(within(row("a1")).queryByRole("button", { name: /approve/i })).toBeNull();
   });
 
-  test("a conflict won by someone else shows the winner, not an error", async () => {
-    await mount([mk("a1")], {
-      "approvals.resolve": () => mk("a1", { decision: "rejected", decidedBy: { via: "slack", userId: "U_BRANDON" }, decidedAt: "2026-11-07T04:00:00Z" }),
+  test("a conflict from the host shows no error and re-lists to show the winner", async () => {
+    let decided = false;
+    const winner = mk("a1", { decision: "rejected", decidedBy: { via: "slack", userId: "U_BRANDON" }, decidedAt: "2026-11-07T04:00:00Z" });
+    const s = await mount([mk("a1")], {
+      "approvals.list": () => (decided ? [winner] : [mk("a1")]),
+      "approvals.resolve": () => {
+        decided = true;
+        throw Object.assign(new Error("Already decided by U_BRANDON via slack."), { code: "conflict" });
+      },
       "slack.users": () => fx.slackUsers,
     });
     fireEvent.click(btn(row("a1"), /approve/i));
     await waitFor(() => expect(row("a1").textContent).toMatch(/decided by Brandon via slack/));
     expect(row("a1").textContent).toMatch(/rejected/i);
-    expect(screen.queryByText(/not_found|error/i)).toBeNull();
+    expect(s.reqs("approvals.list").length).toBe(2);
+    expect(screen.queryByText(/failed|Already decided/i)).toBeNull();
+    expect(within(row("a1")).queryByRole("button", { name: /approve/i })).toBeNull();
+  });
+
+  test("a successful resolve renders the returned approval", async () => {
+    await mount([mk("a1")], { "approvals.resolve": () => mk("a1", { decision: "rejected", decidedBy: { via: "app", userId: "me" }, decidedAt: "2026-11-07T04:00:00Z" }) });
+    fireEvent.click(btn(row("a1"), /reject/i));
+    await waitFor(() => expect(row("a1").textContent).toMatch(/rejected/i));
+    expect(row("a1").textContent).toMatch(/decided by me via app/);
+  });
+
+  test("a decided approval without decidedBy shows 'decided' and no buttons", async () => {
+    await mount([mk("a1", { decision: "approved", decidedAt: "2026-11-07T04:00:00Z" })]);
+    expect(row("a1").textContent).toMatch(/decided T\+/);
+    expect(row("a1").textContent).not.toMatch(/decided by/);
+    expect(within(row("a1")).queryByRole("button", { name: /approve|reject/i })).toBeNull();
   });
 
   test("decider name falls back to the id when slack.users fails", async () => {
@@ -232,7 +257,7 @@ describe("swarm card", () => {
   test("unavailable: one line and RE-RUN calls swarms.review.rerun", async () => {
     const s = await mount([commit("c1")], {
       ...review(rev("c1", { status: "unavailable", ...noBody })),
-      "swarms.review.rerun": () => rev("c1", { status: "running", ...noBody }),
+      "swarms.review.rerun": () => rev("c1", { id: "rev_c1_2", status: "running", ...noBody, at: "2026-11-07T05:00:00Z" }),
     });
     await waitFor(() => expect(within(row("c1")).getByText(/review unavailable/i)).toBeTruthy());
     expect(btn(row("c1"), /approve/i).disabled).toBe(false);
@@ -257,6 +282,41 @@ describe("swarm card", () => {
     fireEvent.click(btn(r, /judges/i));
     expect(r.querySelector("img")).toBeNull();
     expect(r.textContent).toContain("<img src=x onerror=alert(1)>");
+  });
+
+  test("a late running snapshot with the same id and time never replaces a finished review", async () => {
+    const s = await mount([commit("c1")], review(null));
+    await waitFor(() => expect(s.subbed("swarms.review.subscribe").length).toBe(1));
+    s.emit("swarms.review.subscribe", rev("c1", { status: "done", summary: "finished" }));
+    s.emit("swarms.review.subscribe", rev("c1", { status: "running", ...noBody }));
+    expect(within(row("c1")).getByText(/finished/)).toBeTruthy();
+    expect(within(row("c1")).queryByText(/council reviewing/i)).toBeNull();
+  });
+
+  test("commit message and other description are labeled model-written", async () => {
+    await mount([commit("c1"), mk("o1", { action: { kind: "other", description: "do a thing" } })]);
+    expect(row("c1").querySelectorAll(".ap-label").length).toBe(2);
+    expect(row("o1").querySelectorAll(".ap-label").length).toBe(2);
+  });
+
+  test("a failed swarms.review.get shows an error", async () => {
+    await mount([commit("c1")], { "swarms.review.get": () => { throw new Error("down"); } });
+    expect(await screen.findByText(/swarms\.review\.get failed/)).toBeTruthy();
+  });
+
+  test("a failed RE-RUN shows an error and RE-RUN is disabled while it runs", async () => {
+    let fail: (e: Error) => void = () => {};
+    await mount([commit("c1")], {
+      "swarms.review.get": () => rev("c1", { status: "unavailable", ...noBody }),
+      "swarms.review.rerun": () => new Promise((_, rej) => (fail = rej)),
+    });
+    await waitFor(() => expect(within(row("c1")).getByText(/review unavailable/i)).toBeTruthy());
+    fireEvent.click(btn(row("c1"), /re-run/i));
+    await waitFor(() => expect(btn(row("c1"), /re-run/i).disabled).toBe(true));
+    expect(btn(row("c1"), /approve/i).disabled).toBe(false);
+    fail(new Error("nope"));
+    expect(await screen.findByText(/swarms\.review\.rerun failed/)).toBeTruthy();
+    expect(btn(row("c1"), /re-run/i).disabled).toBe(false);
   });
 
   test("non-commit approvals never fetch a review", async () => {

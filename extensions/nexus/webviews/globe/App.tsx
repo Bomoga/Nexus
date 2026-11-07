@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { NexusEvent, TimeWindow } from "../../src/contracts";
 import { Select, StatusLine, isFakeMode, request } from "../shared";
 import { QUERY_LIMIT, TIME_WINDOWS, keepNewest, visibleEvents, windowMs } from "./model";
-import { insertLive } from "./model/arcs";
+import { insertLive, scriptedNow } from "./model/arcs";
 import { markLive, useDriftNow, useLiveEvents } from "./scene/live";
 import { Scene } from "./scene/Scene";
 
@@ -23,12 +23,22 @@ export function App() {
 
   useEffect(() => {
     if (isFakeMode()) {
+      // Fake "now" starts pinned at the end of the scripted span and then advances in real time at the
+      // same cadence as the real clock, so the render filter and the live-event stamp share one clock.
       let live = true;
+      let timer: ReturnType<typeof setInterval> | undefined;
       import("../../src/contracts/fixtures")
-        .then((m) => live && setNow(Date.parse(m.T0) + FAKE_SPAN_MS))
+        .then((m) => {
+          if (!live) return;
+          const start = Date.parse(m.T0) + FAKE_SPAN_MS;
+          const t0 = performance.now();
+          setNow(start);
+          timer = setInterval(() => setNow(scriptedNow(start, performance.now() - t0)), NOW_TICK_MS);
+        })
         .catch((e: unknown) => live && setError(e instanceof Error ? e.message : String(e)));
       return () => {
         live = false;
+        if (timer) clearInterval(timer);
       };
     }
     const id = setInterval(() => setNow(Date.now()), NOW_TICK_MS);
@@ -79,6 +89,7 @@ export function App() {
       eventsRef.current = next;
       markLive(e);
       setEvents(next);
+      setTruncated((t) => t || next.length >= QUERY_LIMIT);
     },
     [ready, driftNow],
   );

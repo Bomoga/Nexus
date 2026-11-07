@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import type { NexusEvent } from "../../../src/contracts";
-import { ACTIVITY_OFFSET, ARC_LIFT, SCALE_IN_MS, activityPoint, arcControl, arcPoint, eventPointInto, insertLive, mergeEndpoints, scaleIn, shapeOf } from "./arcs";
-import { NOW_ANGLE, eventPoint, orbitPoint, windowMs } from "./index";
+import { QUERY_LIMIT } from "./index";
+import { ACTIVITY_OFFSET, activityKey, mergeKey, scriptedNow, ARC_LIFT, SCALE_IN_MS, activityPoint, arcControl, arcPoint, eventPointInto, insertLive, mergeEndpoints, scaleIn, shapeOf } from "./arcs";
+import { NOW_ANGLE, eventPoint, orbitPoint, visibleEvents, windowMs } from "./index";
 
 const H = 3_600_000;
 const NOW = Date.parse("2026-11-07T12:00:00Z");
@@ -26,9 +27,10 @@ describe("arcControl", () => {
     const dot = (c[0] * mid[0] + c[1] * mid[1] + c[2] * mid[2]) / (len(c) * len(mid));
     expect(dot).toBeCloseTo(1);
   });
-  it("is the raw lifted point of a degenerate (zero) midpoint without NaN", () => {
+  it("lifts a degenerate (antipodal, zero) midpoint along +Y to radius + lift without NaN", () => {
     const c = arcControl([1, 0, 0], [-1, 0, 0]);
     expect(c.every(Number.isFinite)).toBe(true);
+    expect(c).toEqual([0, 1 + ARC_LIFT, 0]);
   });
 });
 
@@ -51,13 +53,24 @@ describe("arcPoint", () => {
 });
 
 describe("mergeEndpoints", () => {
-  it("puts both ends at the merge angle, on fromOrbit and orbit rings", () => {
-    const e = ev("m", 5, { kind: "merge", fromOrbit: "lane-1" });
-    const w = windowMs("36h");
-    const { from, to } = mergeEndpoints(lane, main, Date.parse(e.at), NOW, "36h");
-    expect(from).toEqual(eventPoint(lane, Date.parse(e.at), NOW, "36h"));
-    expect(to).toEqual(eventPoint(main, Date.parse(e.at), NOW, "36h"));
-    expect(w).toBeGreaterThan(0);
+  const close = (p: readonly number[], q: readonly number[]) => q.forEach((v, i) => expect(p[i]).toBeCloseTo(v, 9));
+  it("at the now line both ends are on +Z at their own ring radius", () => {
+    const { from, to } = mergeEndpoints(lane, main, NOW, NOW, "36h");
+    close(from, [0, 0, 2.4]);
+    close(to, [0, 0, 2]);
+  });
+  it("a quarter window back both ends sit at the same angle, tilted around Z", () => {
+    const { from, to } = mergeEndpoints(lane, main, NOW - 9 * H, NOW, "36h");
+    close(from, [-2.4 * Math.cos(0.5), -2.4 * Math.sin(0.5), 0]);
+    close(to, [-2, 0, 0]);
+  });
+  it("endpoints of a tilted orbit lie in that orbit's plane at its radius", () => {
+    for (const hours of [0.5, 3, 9, 17, 30]) {
+      const { from } = mergeEndpoints(lane, main, NOW - hours * H, NOW, "36h");
+      // The ring plane contains Z and the tilted X axis, so y*cos(tilt) - x*sin(tilt) = 0.
+      expect(from[1] * Math.cos(lane.tilt) - from[0] * Math.sin(lane.tilt)).toBeCloseTo(0, 9);
+      expect(len(from)).toBeCloseTo(lane.radius, 9);
+    }
   });
 });
 
@@ -133,5 +146,40 @@ describe("eventPointInto", () => {
     eventPointInto(a, main, NOW, NOW, windowMs("36h"));
     eventPointInto(b, main, NOW, NOW + H, windowMs("36h"));
     expect(a).not.toEqual(b);
+  });
+});
+
+describe("fake clock", () => {
+  const pinned = Date.parse("2026-11-07T15:15:00Z");
+  it("a live event stamped 90 s after the pinned start is visible only if the filter's now advanced too", () => {
+    const stamped = ev("live", 0, { at: new Date(scriptedNow(pinned, 90_000)).toISOString() });
+    // Old behavior: stamp ran ahead, filter stayed pinned -> beyond the 60 s skew, dropped.
+    expect(visibleEvents([stamped], pinned, "36h")).toHaveLength(0);
+    expect(visibleEvents([stamped], scriptedNow(pinned, 90_000), "36h")).toHaveLength(1);
+  });
+});
+
+describe("insertLive cap", () => {
+  it("keeps only the newest events up to the limit", () => {
+    const loaded = [ev("a", 1), ev("b", 2), ev("c", 3)];
+    const next = insertLive(loaded, ev("n", 0), NOW, "36h", 3);
+    expect(next.map((e) => e.id)).toEqual(["n", "a", "b"]);
+  });
+  it("defaults to QUERY_LIMIT", () => {
+    const loaded = Array.from({ length: QUERY_LIMIT }, (_, i) => ev(`e${i}`, 1 + i / 1000));
+    expect(insertLive(loaded, ev("n", 0), NOW, "36h")).toHaveLength(QUERY_LIMIT);
+  });
+});
+
+describe("geometry keys", () => {
+  const m = ev("m", 5, { kind: "merge", fromOrbit: "lane-1" });
+  it("ignore unrelated events and re-filtering, change with the arcs", () => {
+    expect(mergeKey([m, ev("c", 1)])).toBe(mergeKey([ev("c2", 2), m]));
+    expect(mergeKey([m, ev("m2", 6, { kind: "merge", fromOrbit: "lane-2" })])).not.toBe(mergeKey([m]));
+  });
+  it("activityKey tracks only cubes and diamonds", () => {
+    const g = ev("g", 2, { kind: "agent_session" });
+    expect(activityKey([g, m, ev("c", 1)])).toBe(activityKey([g]));
+    expect(activityKey([g, ev("s", 3, { kind: "slack_task" })])).not.toBe(activityKey([g]));
   });
 });

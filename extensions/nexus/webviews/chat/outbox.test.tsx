@@ -4,11 +4,11 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import type { ChatMessage } from "../../src/contracts";
-import { createBridgeClient } from "../shared";
+import { BridgeError, createBridgeClient } from "../shared";
 import { createFakeTransport } from "../shared/fakeBridge";
 import { App } from "./App";
 import { History } from "./History";
-import { confirms } from "./outbox";
+import { confirms, createOutbox } from "./outbox";
 import type { OutboxEntry } from "./outbox";
 import { ThreadPane } from "./ThreadPane";
 import { createTestHost } from "./testHost";
@@ -252,6 +252,22 @@ describe("confirms", () => {
       confirms({ ...entry, confirmedTs: m.ts }, { ...m, channelId: "C_BUILD" }),
     ]).toEqual([false, false, true, true, false]);
   });
+
+  test("a reply that fails validation leaves the send unconfirmed (it may have posted), a host refusal marks it failed", async () => {
+    const stateAfter = async (err: Error) => {
+      const client = {
+        request: vi.fn(async () => {
+          throw err;
+        }),
+        subscribe: vi.fn(() => () => undefined),
+      } as unknown as Parameters<typeof createOutbox>[0];
+      const outbox = createOutbox(client);
+      const entry = outbox.send({ channelId: "C_DEMO" }, "hi");
+      await new Promise((r) => setTimeout(r, 0));
+      return outbox.entriesFor({ channelId: "C_DEMO" }).find((e) => e.clientId === entry.clientId)?.state;
+    };
+    expect([await stateAfter(new BridgeError("invalid_response", "bad body")), await stateAfter(new BridgeError("provider_error", "no"))]).toEqual(["unconfirmed", "failed"]);
+  });
 });
 
 describe("against the kit's fake host", () => {
@@ -314,12 +330,12 @@ describe("confirmation rules", () => {
     host.holdPosts();
     const { container } = await ready(host);
     send("slow");
-    await screen.findByText("not confirmed");
+    await screen.findByText(/^not confirmed/);
     expect(screen.getByText("RETRY")).toBeTruthy();
     expect(container.querySelector(".chat-row--pending")).not.toBeNull();
     expect(container.querySelector(".chat-failed")).toBeNull();
     deliver(host, host.copyOf(host.posts[0]));
-    await waitFor(() => expect(screen.queryByText("not confirmed")).toBeNull());
+    await waitFor(() => expect(screen.queryByText(/^not confirmed/)).toBeNull());
     expect(screen.queryByText("RETRY")).toBeNull();
     expect(screen.getAllByText("slow")).toHaveLength(1);
     expect(container.querySelector(".chat-row--pending")).toBeNull();
@@ -331,11 +347,11 @@ describe("confirmation rules", () => {
     host.holdPosts();
     const { container } = await ready(host);
     send("again");
-    await screen.findByText("not confirmed");
+    await screen.findByText(/^not confirmed/);
     fireEvent.click(screen.getByText("RETRY"));
     await waitFor(() => expect(host.posts).toHaveLength(2));
     expect(host.posts[1].clientId).toBe(host.posts[0].clientId);
-    expect(screen.queryByText("not confirmed")).toBeNull();
+    expect(screen.queryByText(/^not confirmed/)).toBeNull();
     expect(container.querySelector(".chat-row--pending")).not.toBeNull();
     host.held()[1].ok();
     await waitFor(() => expect(container.querySelector(".chat-row--pending")).toBeNull());

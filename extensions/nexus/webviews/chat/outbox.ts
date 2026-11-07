@@ -66,8 +66,11 @@ export function newClientId(): string {
   return `nx-${++clientSeq}-${rand}`;
 }
 
-/** Only a definite answer from the host is a failure; a timeout or an offline host may still have posted. */
-const definite = (err: unknown) => err instanceof BridgeError && err.code !== "offline";
+/**
+ * Only a definite answer from the host is a failure. A timeout or an offline host may still have posted, and so may a
+ * host whose reply failed validation (invalid_response): those stay "unconfirmed".
+ */
+const definite = (err: unknown) => err instanceof BridgeError && err.code !== "offline" && err.code !== "invalid_response";
 
 export function createOutbox(client: BridgeClient, opts: OutboxOptions = {}): OutboxStore {
   const entries = new Map<string, OutboxEntry>();

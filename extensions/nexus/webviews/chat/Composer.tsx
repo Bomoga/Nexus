@@ -75,7 +75,7 @@ export function EchoBar({ state, onRetry }: { state: "failed" | "unconfirmed"; o
   const unconfirmed = state === "unconfirmed";
   return (
     <div className={unconfirmed ? "chat-failed-bar chat-failed-bar--unconfirmed" : "chat-failed-bar"}>
-      <span>{unconfirmed ? "not confirmed" : "not sent"}</span>
+      <span>{unconfirmed ? "not confirmed: may have posted, check before retrying" : "not sent"}</span>
       <button type="button" className="chat-retry" onClick={onRetry}>
         RETRY
       </button>

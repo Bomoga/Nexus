@@ -61,10 +61,11 @@ export function webClientOptions(kind: ApiKind): WebClientOptions_ {
 type WebClientOptions_ = ConstructorParameters<typeof WebClient>[1];
 
 const MAX_LINK = 2048;
+// Both link spellings: nexus://coderef/... and nexus://nexus.nexus/coderef/... (the extension-id authority).
 // Slack-wrapped links, <link|label> or <link>: exactly up to "|" or ">", never trimmed. "<" is excluded so scanning stays linear.
-const WRAPPED_LINK = /<(nexus:\/\/coderef\/[^|<>\s]+)[|>]/g;
+const WRAPPED_LINK = /<(nexus:\/\/(?:nexus\.nexus\/)?coderef\/[^|<>\s]+)[|>]/g;
 // Bare links: only encodeURIComponent's output alphabet plus "/" and "%", so quotes, brackets, "&gt;" and "…" end the link.
-const BARE_LINK = /(?<!<)nexus:\/\/coderef\/[A-Za-z0-9\-_.!~*'()%/]+/g;
+const BARE_LINK = /(?<!<)nexus:\/\/(?:nexus\.nexus\/)?coderef\/[A-Za-z0-9\-_.!~*'()%/]+/g;
 
 /** Trims sentence punctuation and an unbalanced closing ")" off a bare link in one linear pass. */
 function trimBare(link: string): string {
@@ -90,7 +91,7 @@ export function extractCodeRefs(text: string): CodeRef[] {
   for (const { link } of candidates) {
     if (link.length > MAX_LINK) continue;
     try {
-      const ref = decodeCodeRef(link);
+      const ref = decodeCodeRef(link.replace(/^nexus:\/\/nexus\.nexus\//, "nexus://"));   // one form for either contract version
       if (ref) refs.push(ref);
     } catch { /* malformed percent escape */ }
   }

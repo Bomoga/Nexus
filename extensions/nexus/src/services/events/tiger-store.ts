@@ -57,13 +57,19 @@ ON CONFLICT (id) DO UPDATE SET task_id = EXCLUDED.task_id, model_provider = EXCL
   branch = EXCLUDED.branch, worktree_path = EXCLUDED.worktree_path, base_commit = EXCLUDED.base_commit, status = EXCLUDED.status,
   started_at = EXCLUDED.started_at, ended_at = EXCLUDED.ended_at, machine_id = EXCLUDED.machine_id,
   optimizer = EXCLUDED.optimizer, slack_progress = EXCLUDED.slack_progress`,
-  // Non-decision fields only; decision, decided_by and decided_at are never touched here.
+  // Non-decision fields only; decision, decided_by and decided_at are never touched here. Once decided, what the human
+  // saw and decided on (session, action, reason, request time, diff preview) is frozen; the Slack message and CIBA id may
+  // still be filled in afterwards (the Slack message is often posted around the decision).
   upsertApproval: `INSERT INTO approvals (id, session_id, action, reason, requested_at, slack_message, ciba_auth_req_id, diff_preview)
 VALUES ($1, $2, $3::jsonb, $4, $5::timestamptz, $6::jsonb, $7, $8)
-ON CONFLICT (id) DO UPDATE SET session_id = EXCLUDED.session_id, action = EXCLUDED.action, reason = EXCLUDED.reason,
-  requested_at = EXCLUDED.requested_at, slack_message = COALESCE(EXCLUDED.slack_message, approvals.slack_message),
-  ciba_auth_req_id = COALESCE(EXCLUDED.ciba_auth_req_id, approvals.ciba_auth_req_id),
-  diff_preview = COALESCE(EXCLUDED.diff_preview, approvals.diff_preview)`,
+ON CONFLICT (id) DO UPDATE SET
+  session_id = CASE WHEN approvals.decision IS NULL THEN EXCLUDED.session_id ELSE approvals.session_id END,
+  action = CASE WHEN approvals.decision IS NULL THEN EXCLUDED.action ELSE approvals.action END,
+  reason = CASE WHEN approvals.decision IS NULL THEN EXCLUDED.reason ELSE approvals.reason END,
+  requested_at = CASE WHEN approvals.decision IS NULL THEN EXCLUDED.requested_at ELSE approvals.requested_at END,
+  diff_preview = CASE WHEN approvals.decision IS NULL THEN COALESCE(EXCLUDED.diff_preview, approvals.diff_preview) ELSE approvals.diff_preview END,
+  slack_message = COALESCE(EXCLUDED.slack_message, approvals.slack_message),
+  ciba_auth_req_id = COALESCE(EXCLUDED.ciba_auth_req_id, approvals.ciba_auth_req_id)`,
   decideApproval: `UPDATE approvals SET decision = $2, decided_by = $3::jsonb, decided_at = $4::timestamptz
 WHERE id = $1 AND decision IS NULL
 RETURNING *`,
@@ -80,7 +86,8 @@ ON CONFLICT (id) DO UPDATE SET source_task_id = EXCLUDED.source_task_id, swarm_t
   listTasks: `SELECT * FROM tasks ORDER BY created_at, id`,
   selectSession: `SELECT * FROM sessions WHERE id = $1`,
   listSessions: `SELECT * FROM sessions ORDER BY started_at, id`,
-  agentEvents: `SELECT * FROM agent_events WHERE session_id = $1 AND seq >= $2 ORDER BY seq`,
+  // One row per seq (two machines may have written the same event with different timestamps); the earliest wins.
+  agentEvents: `SELECT DISTINCT ON (seq) * FROM agent_events WHERE session_id = $1 AND seq >= $2 ORDER BY seq, at`,
   selectApproval: `SELECT * FROM approvals WHERE id = $1`,
   listApprovals: `SELECT * FROM approvals ORDER BY requested_at, id`,
   reviewForApproval: `SELECT * FROM swarm_reviews WHERE approval_id = $1 ORDER BY at DESC LIMIT 1`,
@@ -104,6 +111,25 @@ export function queryEventsSql(withOrbits: boolean, withKinds: boolean): string 
 
 // ---- helpers ----
 const clone = <T>(value: T): T => structuredClone(value);
+const clampLimit = (limit: number | undefined, fallback: number) => Math.min(5000, Math.max(0, Math.floor(Number.isFinite(limit) ? (limit as number) : fallback)));
+
+/**
+ * True when an error means "the remote could not be reached or did not answer" (so the write stays queued and the store goes
+ * offline), false when the remote answered and refused this particular record: data errors (22xxx), constraint violations
+ * (23xxx), a row that does not parse, an unknown approval. Anything unrecognised counts as transient, so an odd failure
+ * stalls the queue instead of silently dropping a write.
+ */
+export function isTransientError(err: unknown): boolean {
+  const e = (err ?? {}) as { code?: unknown; message?: unknown };
+  const code = typeof e.code === "string" ? e.code : "";
+  if (/^(22|23)/.test(code)) return false;
+  if (err instanceof PermanentStoreError) return false;
+  const message = typeof e.message === "string" ? e.message : "";
+  return !/^unknown approval /.test(message);
+}
+
+/** A failure that retrying cannot fix (a row that does not parse, an approval that does not exist). */
+export class PermanentStoreError extends Error {}
 const json = (value: unknown): string | null => (value === undefined || value === null ? null : JSON.stringify(value));
 const orNull = <T>(value: T | undefined): T | null => (value === undefined ? null : value);
 
@@ -187,12 +213,12 @@ export class TigerStore implements EventStore {
     const res = await this.run(SQL.decideApproval, [id, decision, json(decidedBy), at]);
     if (res.rowCount === 1) {
       const approval = this.approvalOf(res.rows[0]);
-      if (!approval) throw new Error(`approval ${id} was decided but its row does not parse`);
+      if (!approval) throw new PermanentStoreError(`approval ${id} was decided but its row does not parse`);
       this.emitApproval(approval);
       return { approval, won: true };
     }
     const winner = await this.getApproval(id);
-    if (!winner) throw new Error(`unknown approval ${id}`);
+    if (!winner) throw new PermanentStoreError(`unknown approval ${id}`);
     return { approval: winner, won: false };
   }
 
@@ -233,15 +259,15 @@ export class TigerStore implements EventStore {
     const params: unknown[] = [query.from, query.to];
     if (query.orbits) params.push(query.orbits);
     if (query.kinds) params.push(query.kinds);
-    params.push(query.limit ?? 2000);
+    params.push(clampLimit(query.limit, 2000));
     return this.rowsOf(queryEventsSql(!!query.orbits, !!query.kinds), params, r => this.eventOf(r));
   }
 
   async searchEvents(text: string, limit: number): Promise<EventSearchHit[]> {
     const q = text.trim().toLowerCase();
-    if (!q || limit <= 0) return [];
+    if (!q || !(limit > 0)) return [];
     const pattern = `%${q.replace(/[!%_]/g, "!$&")}%`;
-    const res = await this.run(SQL.searchEvents, [pattern, limit]);
+    const res = await this.run(SQL.searchEvents, [pattern, clampLimit(limit, 20)]);
     const hits: EventSearchHit[] = [];
     for (const row of res.rows) {
       const event = this.eventOf(row);
@@ -272,7 +298,7 @@ export class TigerStore implements EventStore {
       this.setOnline(true);
       return res;
     } catch (err) {
-      this.setOnline(false);
+      if (isTransientError(err)) this.setOnline(false);   // a SQL error means the database answered
       throw err;
     }
   }
@@ -401,7 +427,7 @@ function safely(fn: () => void) {
 // ---- production client ----
 /** The pg.Pool constructor shape createTigerPool needs (injectable for tests). */
 export type PoolConstructor = new (config: {
-  connectionString: string; ssl: { rejectUnauthorized: boolean }; max: number; connectionTimeoutMillis: number; idleTimeoutMillis: number;
+  connectionString: string; ssl: { rejectUnauthorized: boolean }; max: number; connectionTimeoutMillis: number; idleTimeoutMillis: number; query_timeout: number; keepAlive: boolean;
 }) => TigerClient & { on(event: "error", listener: (err: Error) => void): unknown };
 
 /**
@@ -418,7 +444,7 @@ export function createTigerPool(connectionString: string, PoolCtor: PoolConstruc
   if (ssl !== null && ["false", "0", "off", "no"].includes(ssl.toLowerCase())) throw new Error("the Tiger Cloud connection string must use TLS");
   // pg lets URL parameters override the ssl option, so TLS settings are removed here and set explicitly below.
   for (const key of ["sslmode", "ssl", "uselibpqcompat", "sslcert", "sslkey", "sslrootcert"]) url.searchParams.delete(key);
-  const pool = new PoolCtor({ connectionString: url.toString(), ssl: { rejectUnauthorized: true }, max: 4, connectionTimeoutMillis: 5000, idleTimeoutMillis: 30_000 });
+  const pool = new PoolCtor({ connectionString: url.toString(), ssl: { rejectUnauthorized: true }, max: 4, connectionTimeoutMillis: 5000, idleTimeoutMillis: 30_000, query_timeout: 10_000, keepAlive: true });
   pool.on("error", () => { /* an idle connection dropped: the next query reconnects; unhandled, this would crash the extension host */ });
   return pool;
 }

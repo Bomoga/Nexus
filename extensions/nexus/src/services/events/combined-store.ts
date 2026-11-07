@@ -14,6 +14,7 @@ import type {
 } from "../../contracts";
 import type { LocalStore, OutboxEntry } from "./local-store";
 import type { DecideResult, EventStore, StatusEvent, StoreStatus, Unsubscribe } from "./store";
+import { isTransientError } from "./tiger-store";
 
 export interface CombinedStoreOptions {
   local: LocalStore;
@@ -22,10 +23,15 @@ export interface CombinedStoreOptions {
   readBudgetMs?: number;
   /** How long a remote write may take before it counts as failed (and stays queued). Default 10000. */
   writeBudgetMs?: number;
+  /** How long the remote conditional UPDATE for an approval decision may take before the decision falls back to local. Default 5000. */
+  decideBudgetMs?: number;
   now?: () => string;
 }
 
 export interface FlushResult { flushed: number; remaining: number }
+
+/** A queued write the remote refused for good (a constraint or data error, an unparseable row). Never includes the record itself. */
+export interface DeadLetter { table: string; op: string; key: string; reason: string; at: string }
 
 const clone = <T>(value: T): T => structuredClone(value);
 const safely = (fn: () => void) => { try { fn(); } catch { /* one throwing subscriber cannot break the store */ } };
@@ -61,6 +67,8 @@ export class CombinedStore implements EventStore {
   private readonly remote: EventStore;
   private readonly readBudget: number;
   private readonly writeBudget: number;
+  private readonly decideBudget: number;
+  private deadLetterList: DeadLetter[] = [];
   private readonly now: () => string;
 
   private online = true;
@@ -74,6 +82,7 @@ export class CombinedStore implements EventStore {
     this.remote = opts.remote;
     this.readBudget = opts.readBudgetMs ?? 1500;
     this.writeBudget = opts.writeBudgetMs ?? 10_000;
+    this.decideBudget = opts.decideBudgetMs ?? 5000;
     this.now = opts.now ?? (() => new Date().toISOString());
   }
 
@@ -120,25 +129,35 @@ export class CombinedStore implements EventStore {
     return merged.map(a => this.corrected(a)!);
   }
 
+  /**
+   * Always tries the remote conditional UPDATE first, whatever the cached online flag says: a slow read must never turn decisions
+   * local-only, because only the remote UPDATE makes the first answer win across machines. Only when that attempt itself fails
+   * does it fall back to decideWhenRemoteUnreachable.
+   */
   async decideApproval(id: string, decision: "approved" | "rejected", decidedBy: DecidedBy, at: string): Promise<DecideResult> {
-    if (this.online) {
-      let result: DecideResult | undefined;
-      try {
-        await this.flushOutbox();   // the approval itself must exist remotely before it can be decided there
-        if (this.online) {
-          result = await withBudget(this.remote.decideApproval(id, decision, decidedBy, at), this.writeBudget);
-          this.setOnline(true);
-        }
-      } catch {
-        this.setOnline(false);
-      }
-      if (result) {
-        await this.mirrorApproval(result.approval);
-        return { approval: clone(result.approval), won: result.won };
-      }
+    let result: DecideResult | undefined;
+    try {
+      await this.sendPendingApprovalPuts(id);   // the approval must exist remotely; unrelated backlog is not waited for
+      result = await withBudget(this.remote.decideApproval(id, decision, decidedBy, at), this.decideBudget);
+      this.setOnline(true);
+    } catch (err) {
+      if (isTransientError(err)) this.setOnline(false);
     }
-    // Offline (or the remote failed): decided locally and queued. If it loses remotely later, the flush corrects it.
-    return this.local.decideApproval(id, decision, decidedBy, at);
+    if (result) {
+      await this.mirrorApproval(result.approval);
+      return { approval: clone(result.approval), won: result.won };
+    }
+    return this.decideWhenRemoteUnreachable(id, decision, decidedBy, at);
+  }
+
+  /**
+   * POLICY POINT. The remote could not decide (unreachable, timed out, or it does not know the approval). Today the decision is
+   * made locally and queued; if it loses remotely later, the flush corrects the local copy. Swap this function to change the policy.
+   */
+  private async decideWhenRemoteUnreachable(id: string, decision: "approved" | "rejected", decidedBy: DecidedBy, at: string): Promise<DecideResult> {
+    const r = await this.local.decideApproval(id, decision, decidedBy, at);
+    const corrected = this.corrected(r.approval);
+    return { approval: corrected, won: r.won && corrected === r.approval };
   }
 
   // ---- events ----
@@ -223,18 +242,45 @@ export class CombinedStore implements EventStore {
         return { flushed, remaining: 0 };
       }
       for (const entry of entries) {
-        let decided: DecideResult | undefined;
         try {
-          decided = await withBudget(this.send(entry), this.writeBudget);
+          if (await this.deliver(entry)) flushed++;
         } catch {
           this.setOnline(false);
           this.flushing = undefined;
           return { flushed, remaining: this.local.pendingOutbox().length };
         }
-        this.local.ackOutbox([entry.id], this.now());
-        flushed++;
-        if (decided && !decided.won) await this.mirrorApproval(decided.approval);   // a decision made offline lost: take the winner's
       }
+    }
+  }
+
+  /**
+   * Sends one queued write and removes it from the outbox. Throws only for a transient failure (the entry stays queued). A write the
+   * remote refuses for good is recorded as a dead letter and removed, so it cannot stall everything behind it. Returns whether it was sent.
+   */
+  private async deliver(entry: OutboxEntry): Promise<boolean> {
+    let decided: DecideResult | undefined;
+    try {
+      decided = await withBudget(this.send(entry), this.writeBudget);
+    } catch (err) {
+      if (isTransientError(err)) throw err;
+      const code = (err as { code?: unknown } | null)?.code;
+      this.deadLetterList.push({ table: entry.table, op: entry.op, key: recordKey(entry.table, entry.record), reason: typeof code === "string" ? code : "rejected", at: this.now() });
+      if (this.deadLetterList.length > 100) this.deadLetterList.shift();
+      this.local.ackOutbox([entry.id], this.now());
+      return false;
+    }
+    this.local.ackOutbox([entry.id], this.now());
+    if (decided && !decided.won) await this.mirrorApproval(decided.approval);   // a decision made offline lost: take the winner's
+    return true;
+  }
+
+  /** Writes the remote refused for good and dropped from the queue (this run of the extension). Keys only, never record contents. */
+  deadLetters(): DeadLetter[] { return this.deadLetterList.map(d => ({ ...d })); }
+
+  /** Sends just this approval's own queued puts, out of order (the remote has no foreign keys and the writes are idempotent). */
+  private async sendPendingApprovalPuts(id: string): Promise<void> {
+    for (const entry of this.local.pendingOutbox()) {
+      if (entry.table === "approvals" && entry.op === "put" && recordKey(entry.table, entry.record) === id) await this.deliver(entry);
     }
   }
 
@@ -266,17 +312,20 @@ export class CombinedStore implements EventStore {
   private async mirrorApproval(winner: ApprovalRequest): Promise<void> {
     const decidedBy = winner.decidedBy, decidedAt = winner.decidedAt, decision = winner.decision;
     const local = await this.local.getApproval(winner.id);
-    const quiet = async (change: () => Promise<unknown>) => {
+    // Acks only the outbox entries this change created (this approval's own put or decide). Other callers' writes made while
+    // it awaits stay queued and still reach the remote.
+    const quiet = async (op: "put" | "decide", change: () => Promise<unknown>) => {
       const before = new Set(this.local.pendingOutbox().map(e => e.id));
       await change();
-      const fresh = this.local.pendingOutbox().filter(e => !before.has(e.id)).map(e => e.id);
+      const fresh = this.local.pendingOutbox()
+        .filter(e => !before.has(e.id) && e.table === "approvals" && e.op === op && recordKey(e.table, e.record) === winner.id).map(e => e.id);
       if (fresh.length) this.local.ackOutbox(fresh, this.now());
     };
-    if (!local) await quiet(() => this.local.putApproval(winner));
+    if (!local) await quiet("put", () => this.local.putApproval(winner));
     if (!decision || !decidedBy || !decidedAt) return;
     const current = local ?? await this.local.getApproval(winner.id);
     if (current && !current.decision) {
-      await quiet(() => this.local.decideApproval(winner.id, decision, decidedBy, decidedAt));
+      await quiet("decide", () => this.local.decideApproval(winner.id, decision, decidedBy, decidedAt));
     } else if (current && (current.decision !== decision || current.decidedBy?.userId !== decidedBy.userId || current.decidedBy?.via !== decidedBy.via)) {
       this.corrections.set(winner.id, clone(winner));
       for (const l of [...this.approvalListeners]) safely(() => l(clone(winner)));

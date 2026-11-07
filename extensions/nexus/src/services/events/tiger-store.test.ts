@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { fx } from "../../contracts/fixtures";
 import { demoScenario } from "../../contracts/fixtures/scenario";
 import type { AgentEvent, NexusEvent } from "../../contracts";
-import { SQL, TigerStore, createTigerPool, queryEventsSql } from "./tiger-store";
+import { SQL, TigerStore, createTigerPool, isTransientError, queryEventsSql } from "./tiger-store";
 import type { PoolConstructor, TigerClient } from "./tiger-store";
 
 const SECRET = "SECRETVAL";
@@ -21,6 +21,7 @@ class FakePg implements TigerClient {
   tables: Record<string, Map<string, Record<string, unknown>>> = {};
   calls: { text: string; params: unknown[] }[] = [];
   down = false;
+  failWith: (Error & { code?: string }) | undefined;
 
   table(name: string) { return (this.tables[name] ??= new Map()); }
   sqlOf() { return this.calls.map(c => c.text); }
@@ -29,12 +30,15 @@ class FakePg implements TigerClient {
   async query(text: string, params: unknown[] = []) {
     this.calls.push({ text, params });
     if (this.down) throw new Error("connection refused");
+    if (this.failWith) throw this.failWith;
     const rows = (rs: Record<string, unknown>[]) => ({ rows: rs.map(r => ({ ...r })), rowCount: rs.length });
     const insert = /^INSERT INTO (\w+) \(([^)]+)\)\s*VALUES \((.+?)\)\s*ON CONFLICT/s.exec(text);
-    if (insert) return this.insert(insert[1], insert[2].split(",").map(s => s.trim()), insert[3], params, text.includes("DO NOTHING"));
+    if (insert) return this.insert(insert[1], insert[2].split(",").map(s => s.trim()), insert[3], params, text.includes("DO NOTHING"), text);
     if (text === SQL.decideApproval) {
       const row = this.table("approvals").get(String(params[0]));
-      if (!row || row.decision != null) return rows([]);
+      // the fake evaluates the statement's own guard, so dropping `AND decision IS NULL` from the SQL fails behavioral tests
+      const guarded = text.includes("AND decision IS NULL");
+      if (!row || (guarded && row.decision != null)) return rows([]);
       Object.assign(row, { decision: params[1], decided_by: JSON.parse(String(params[2])), decided_at: new Date(String(params[3])) });
       return rows([row]);
     }
@@ -49,7 +53,10 @@ class FakePg implements TigerClient {
       case SQL.selectApproval: return rows(byId("approvals"));
       case SQL.listApprovals: return rows(sortBy(all("approvals"), "requested_at"));
       case SQL.selectPlan: return rows(byId("task_plans"));
-      case SQL.agentEvents: return rows(all("agent_events").filter(r => r.session_id === params[0] && (r.seq as number) >= (params[1] as number)).sort((a, b) => (a.seq as number) - (b.seq as number)));
+      case SQL.agentEvents: {
+        const mine = all("agent_events").filter(r => r.session_id === params[0] && (r.seq as number) >= (params[1] as number)).sort((a, b) => (a.seq as number) - (b.seq as number) || +(a.at as Date) - +(b.at as Date));
+        return rows(text.includes("DISTINCT ON (seq)") ? mine.filter((r, i) => i === 0 || r.seq !== mine[i - 1].seq) : mine);
+      }
       case SQL.reviewForApproval: return rows(sortBy(all("swarm_reviews").filter(r => r.approval_id === params[0]), "at").reverse().slice(0, 1));
       case SQL.listReceipts: return rows(sortBy(all("model_call_receipts").filter(r => params[0] === null || r.session_id === params[0]), "at"));
       case SQL.searchEvents: return rows(this.search(String(params[0]), Number(params[1])));
@@ -58,7 +65,7 @@ class FakePg implements TigerClient {
     throw new Error(`FakePg: unhandled statement ${text.slice(0, 60)}`);
   }
 
-  private insert(table: string, cols: string[], values: string, params: unknown[], doNothing: boolean) {
+  private insert(table: string, cols: string[], values: string, params: unknown[], doNothing: boolean, text: string) {
     const row: Record<string, unknown> = {};
     values.split(",").forEach((v, i) => {
       const raw = params[Number(/\$(\d+)/.exec(v)![1]) - 1];
@@ -67,8 +74,9 @@ class FakePg implements TigerClient {
     const pk = (PKS[table] ?? ["id"]).map(c => (row[c] instanceof Date ? (row[c] as Date).toISOString() : String(row[c]))).join("|");
     const existing = this.table(table).get(pk);
     if (existing && doNothing) return { rows: [], rowCount: 0 };
-    if (existing) {   // DO UPDATE: every listed column is replaced, except approvals' optional fields, which COALESCE
-      for (const c of cols) if (!(table === "approvals" && row[c] === null && ["slack_message", "ciba_auth_req_id", "diff_preview"].includes(c))) existing[c] = row[c];
+    if (existing) {   // DO UPDATE: every listed column is replaced, except approvals' optional fields (COALESCE) and, once decided, its frozen ones
+      const frozen = table === "approvals" && existing.decision != null && text.includes("approvals.decision IS NULL") ? ["session_id", "action", "reason", "requested_at", "diff_preview"] : [];
+      for (const c of cols) if (!frozen.includes(c) && !(table === "approvals" && row[c] === null && ["slack_message", "ciba_auth_req_id", "diff_preview"].includes(c))) existing[c] = row[c];
     } else {
       this.table(table).set(pk, row);
     }
@@ -147,10 +155,14 @@ describe("TigerStore SQL", () => {
       [
         "INSERT INTO approvals (id, session_id, action, reason, requested_at, slack_message, ciba_auth_req_id, diff_preview)
       VALUES ($1, $2, $3::jsonb, $4, $5::timestamptz, $6::jsonb, $7, $8)
-      ON CONFLICT (id) DO UPDATE SET session_id = EXCLUDED.session_id, action = EXCLUDED.action, reason = EXCLUDED.reason,
-        requested_at = EXCLUDED.requested_at, slack_message = COALESCE(EXCLUDED.slack_message, approvals.slack_message),
-        ciba_auth_req_id = COALESCE(EXCLUDED.ciba_auth_req_id, approvals.ciba_auth_req_id),
-        diff_preview = COALESCE(EXCLUDED.diff_preview, approvals.diff_preview)",
+      ON CONFLICT (id) DO UPDATE SET
+        session_id = CASE WHEN approvals.decision IS NULL THEN EXCLUDED.session_id ELSE approvals.session_id END,
+        action = CASE WHEN approvals.decision IS NULL THEN EXCLUDED.action ELSE approvals.action END,
+        reason = CASE WHEN approvals.decision IS NULL THEN EXCLUDED.reason ELSE approvals.reason END,
+        requested_at = CASE WHEN approvals.decision IS NULL THEN EXCLUDED.requested_at ELSE approvals.requested_at END,
+        diff_preview = CASE WHEN approvals.decision IS NULL THEN COALESCE(EXCLUDED.diff_preview, approvals.diff_preview) ELSE approvals.diff_preview END,
+        slack_message = COALESCE(EXCLUDED.slack_message, approvals.slack_message),
+        ciba_auth_req_id = COALESCE(EXCLUDED.ciba_auth_req_id, approvals.ciba_auth_req_id)",
       ]
     `);
     expect(await sqlFor(() => store.decideApproval("apr_01", "approved", by("U_A"), "2026-11-07T04:00:00Z"))).toMatchInlineSnapshot(`
@@ -204,7 +216,7 @@ describe("TigerStore SQL", () => {
     `);
     expect(await sqlFor(() => store.agentEvents("s", 3))).toMatchInlineSnapshot(`
       [
-        "SELECT * FROM agent_events WHERE session_id = $1 AND seq >= $2 ORDER BY seq",
+        "SELECT DISTINCT ON (seq) * FROM agent_events WHERE session_id = $1 AND seq >= $2 ORDER BY seq, at",
       ]
     `);
     expect(await sqlFor(() => store.getApproval("a"))).toMatchInlineSnapshot(`
@@ -387,8 +399,8 @@ describe("TigerStore approvals", () => {
     const first = await store.decideApproval("apr_01", "approved", by("U_A"), "2026-11-07T04:00:00Z");
     expect(first.won).toBe(true);
     expect(first.approval).toMatchObject({ decision: "approved", decidedBy: by("U_A"), decidedAt: "2026-11-07T04:00:00.000Z" });
-    await store.putApproval({ ...fx.approval, reason: "reworded", slackMessage: { channelId: "C", ts: "1.2" } });   // later put: fields update, decision stays
-    expect(await store.getApproval("apr_01")).toMatchObject({ reason: "reworded", slackMessage: { channelId: "C", ts: "1.2" }, decision: "approved" });
+    await store.putApproval({ ...fx.approval, slackMessage: { channelId: "C", ts: "1.2" } });   // later put: the Slack message fills in, decision stays
+    expect(await store.getApproval("apr_01")).toMatchObject({ slackMessage: { channelId: "C", ts: "1.2" }, decision: "approved" });
     await store.putApproval(fx.approval);   // the optional fields are not erased by a put that lacks them
     expect((await store.getApproval("apr_01"))?.slackMessage).toEqual({ channelId: "C", ts: "1.2" });
     expect(fake.table("approvals").size).toBe(1);
@@ -410,6 +422,60 @@ describe("TigerStore approvals", () => {
   it("refuses to decide an approval that does not exist", async () => {
     const { store } = make();
     await expect(store.decideApproval("nope", "approved", by("U_A"), "2026-11-07T04:00:00Z")).rejects.toThrow(/unknown approval/);
+  });
+});
+
+describe("TigerStore review fixes", () => {
+  it("an approval's action and reason are frozen once decided; the Slack message may still arrive", async () => {
+    const { store } = make();
+    await store.putApproval(fx.approval);
+    await store.putApproval({ ...fx.approval, reason: "before", diffPreview: "d1" });
+    await store.decideApproval("apr_01", "approved", by("U_A"), "2026-11-07T04:00:00Z");
+    await store.putApproval({ ...fx.approval, reason: "after", action: { kind: "commit", message: "changed" }, diffPreview: "d2", slackMessage: { channelId: "C", ts: "1.2" } });
+    expect(await store.getApproval("apr_01")).toMatchObject({ reason: "before", action: fx.approval.action, diffPreview: "d1", slackMessage: { channelId: "C", ts: "1.2" }, decision: "approved" });
+  });
+
+  it("the decision guard is behavioral: an already-decided approval is never overwritten", async () => {
+    const { fake, store } = make();
+    await store.putApproval(fx.approval);
+    await store.decideApproval("apr_01", "approved", by("U_A"), "2026-11-07T04:00:00Z");
+    const lose = await store.decideApproval("apr_01", "rejected", by("U_B"), "2026-11-07T04:00:01Z");
+    expect(lose.won).toBe(false);
+    expect(fake.table("approvals").get("apr_01")).toMatchObject({ decision: "approved", decided_by: by("U_A") });
+  });
+
+  it("returns one agent event per seq, ordered, even when two machines wrote different timestamps", async () => {
+    const { fake, store } = make();
+    const e0 = { sessionId: "s", seq: 0, at: "2026-11-07T03:00:00.000Z", type: "message" as const, text: "first" };
+    await store.appendAgentEvent(e0);
+    await store.appendAgentEvent({ ...e0, seq: 1, text: "one" });
+    await store.appendAgentEvent({ ...e0, at: "2026-11-07T03:00:05.000Z", text: "dup from another machine" });
+    expect(fake.table("agent_events").size).toBe(3);
+    expect((await store.agentEvents("s", 0)).map(e => [e.seq, (e as { text: string }).text])).toEqual([[0, "first"], [1, "one"]]);
+  });
+
+  it("clamps limits to 0..5000", async () => {
+    const { fake, store } = make();
+    await store.queryEvents({ ...ALL, limit: -1 });
+    await store.queryEvents({ ...ALL, limit: 99999 });
+    await store.searchEvents("x", 99999);
+    expect(fake.calls.map(c => c.params.at(-1))).toEqual([0, 5000, 5000]);
+  });
+
+  it("a SQL error is not 'unreachable'; a connection error is", async () => {
+    const { fake, store } = make();
+    fake.failWith = Object.assign(new Error("value too long"), { code: "22001" });
+    await expect(store.putTask(fx.task)).rejects.toThrow("value too long");
+    expect((await store.status()).online).toBe(true);
+    fake.failWith = Object.assign(new Error("terminating connection"), { code: "57P01" });
+    await expect(store.putTask(fx.task)).rejects.toThrow();
+    expect((await store.status()).online).toBe(false);
+  });
+
+  it("classifies errors", () => {
+    const code = (c: string) => Object.assign(new Error("x"), { code: c });
+    expect([code("23505"), code("22P02"), new Error("unknown approval a")].map(isTransientError)).toEqual([false, false, false]);
+    expect([code("08006"), code("57P01"), code("ECONNRESET"), code("ETIMEDOUT"), new Error("Query read timeout"), new Error("weird")].map(isTransientError)).toEqual([true, true, true, true, true, true]);
   });
 });
 
@@ -462,6 +528,7 @@ describe("createTigerPool", () => {
     make("postgres://tsdbadmin:pa55word@abc.tsdb.cloud.timescale.com:5432/tsdb?sslmode=require&application_name=nexus");
     const c = config.at(-1) as { connectionString: string; ssl: unknown };
     expect(c.ssl).toEqual({ rejectUnauthorized: true });
+    expect(c).toMatchObject({ query_timeout: 10_000, connectionTimeoutMillis: 5000, keepAlive: true });
     expect(c.connectionString).not.toContain("sslmode");
     expect(c.connectionString).toContain("application_name=nexus");
     expect(handlers).toContain("error");

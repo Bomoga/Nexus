@@ -6,6 +6,7 @@ import { fx } from "../../contracts/fixtures";
 import type { ApprovalRequest, NexusEvent } from "../../contracts";
 import { CombinedStore } from "./combined-store";
 import { LocalStore } from "./local-store";
+import type { DecidedBy } from "../../contracts";
 import type { EventStore } from "./store";
 
 const redact = (t: string) => t.replaceAll("SECRETVAL", "[R]");
@@ -15,8 +16,8 @@ const T1 = "2026-11-07T04:00:00Z", T2 = "2026-11-07T04:00:05Z";
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 
 /** How one machine reaches the shared remote: it can be down, slow, or fail after N more calls. */
-interface Link { down: boolean; hangMs: number; allow: number; log: string[] }
-const newLink = (): Link => ({ down: false, hangMs: 0, allow: Infinity, log: [] });
+interface Link { down: boolean; hangMs: number; allow: number; log: string[]; delays: Record<string, number>; reject: (name: string, args: unknown[]) => Error | undefined }
+const newLink = (): Link => ({ down: false, hangMs: 0, allow: Infinity, log: [], delays: {}, reject: () => undefined });
 
 /** Wraps the shared remote store so each machine's calls can fail, hang, or be counted. */
 function through(inner: EventStore, link: Link): EventStore {
@@ -27,6 +28,9 @@ function through(inner: EventStore, link: Link): EventStore {
       return async (...args: unknown[]) => {
         link.log.push(String(prop));
         if (link.hangMs) await sleep(link.hangMs);
+        if (link.delays[String(prop)]) await sleep(link.delays[String(prop)]);
+        const refused = link.reject(String(prop), args);
+        if (refused) throw refused;
         if (link.down || link.allow <= 0) throw new Error("remote down");
         link.allow--;
         return (value as (...a: unknown[]) => unknown).apply(target, args);
@@ -222,6 +226,29 @@ describe("CombinedStore.flushOutbox", () => {
     expect((await remote.queryEvents(ALL)).length).toBe(1);
   });
 
+  it("a write the remote refuses for good is dead-lettered and the queue moves on; a transient failure still stops it", async () => {
+    const remote = sharedRemote();
+    const m = machine(remote);
+    m.link.down = true;
+    await m.store.putTask(fx.task);
+    await m.store.putNexusEvent(evt("bad", "2026-11-07T03:00:00Z"));
+    await m.store.putSession(fx.session);
+    await m.store.idle();
+    m.link.down = false;
+    m.link.reject = (name, args) => name === "putNexusEvent" && (args[0] as NexusEvent).id === "bad" ? Object.assign(new Error("duplicate key SECRETROW"), { code: "23505" }) : undefined;
+    expect(await m.store.flushOutbox()).toEqual({ flushed: 2, remaining: 0 });
+    expect(m.store.deadLetters()).toMatchObject([{ table: "events", op: "put", key: "bad", reason: "23505" }]);
+    expect(JSON.stringify(m.store.deadLetters())).not.toContain("SECRETROW");
+    expect(await m.store.status()).toMatchObject({ online: true, outboxDepth: 0 });
+    expect(await remote.getSession(fx.session.id)).toBeDefined();
+
+    m.link.reject = () => Object.assign(new Error("reset"), { code: "ECONNRESET" });
+    await m.store.putTask({ ...fx.task, id: "later" });
+    expect(await m.store.flushOutbox()).toEqual({ flushed: 0, remaining: 1 });
+    expect(m.store.deadLetters()).toHaveLength(1);
+    expect((await m.store.status()).online).toBe(false);
+  });
+
   it("concurrent calls share one run", async () => {
     const remote = sharedRemote();
     const m = machine(remote);
@@ -323,6 +350,76 @@ describe("CombinedStore approvals", () => {
     expect(await a.store.flushOutbox()).toEqual({ flushed: 1, remaining: 0 });
     expect(seen).toEqual([]);
     expect(await remote.getApproval(approval.id)).toMatchObject({ decision: "approved", decidedBy: by("U_A") });
+  });
+
+  it("a slow read never turns the next decision local-only (the probe)", async () => {
+    const remote = sharedRemote();
+    const a = machine(remote, { readBudgetMs: 50 }), b = machine(remote);
+    await a.store.putApproval(approval);
+    await a.store.idle();
+    await b.store.putApproval(approval);
+    await b.store.idle();
+    expect((await b.store.decideApproval(approval.id, "rejected", by("U_B"), T1)).won).toBe(true);
+    a.link.delays.getApproval = 60;   // A's read misses its 50 ms budget
+    await a.store.getApproval(approval.id);
+    expect((await a.store.status()).online).toBe(false);
+    a.link.delays.getApproval = 0;
+    const r = await a.store.decideApproval(approval.id, "approved", by("U_A"), T2);
+    expect(r).toMatchObject({ won: false, approval: { decision: "rejected", decidedBy: by("U_B") } });
+    expect(await remote.getApproval(approval.id)).toMatchObject({ decision: "rejected" });
+  });
+
+  it("a decision does not wait for an unrelated outbox backlog", async () => {
+    const remote = sharedRemote();
+    const m = machine(remote);
+    m.link.down = true;
+    for (let i = 0; i < 40; i++) await m.store.putNexusEvent(evt(`bk${i}`, "2026-11-07T03:00:00Z"));
+    await m.store.putApproval(approval);
+    m.link.down = false;
+    m.link.delays.putNexusEvent = 30;   // draining the backlog would take over a second
+    const started = Date.now();
+    const r = await m.store.decideApproval(approval.id, "approved", by("U_A"), T1);
+    expect(r.won).toBe(true);
+    expect(Date.now() - started).toBeLessThan(500);
+    expect(await remote.getApproval(approval.id)).toMatchObject({ decision: "approved" });
+  });
+
+  it("mirroring a decision acks only its own outbox entry: concurrent writes still reach the remote", async () => {
+    const remote = sharedRemote();
+    class SlowLocal extends LocalStore {
+      override async decideApproval(id: string, d: "approved" | "rejected", by2: DecidedBy, at: string) {
+        const r = await super.decideApproval(id, d, by2, at);
+        await sleep(40);   // the window in which other callers write
+        return r;
+      }
+    }
+    const local = new SlowLocal({ dir: tmp(), redact });
+    const link = newLink();
+    const store = new CombinedStore({ local, remote: through(remote, link), readBudgetMs: 50, writeBudgetMs: 500 });
+    await store.putApproval(approval);
+    await store.idle();
+    const deciding = store.decideApproval(approval.id, "approved", by("U_A"), T1);
+    await sleep(15);
+    for (let i = 0; i < 50; i++) await store.putNexusEvent(evt(`c${i}`, "2026-11-07T03:00:00Z"));
+    await deciding;
+    await store.flushOutbox();
+    await store.idle();
+    expect((await remote.queryEvents(ALL)).length).toBe(50);
+    expect(local.pendingOutbox()).toEqual([]);
+  });
+
+  it("a second offline click after a correction reports the corrected winner", async () => {
+    const remote = sharedRemote();
+    const a = machine(remote), b = machine(remote);
+    for (const m of [a, b]) { await m.store.putApproval(approval); await m.store.idle(); }
+    a.link.down = true;
+    await a.store.decideApproval(approval.id, "approved", by("U_A"), T2);
+    await b.store.decideApproval(approval.id, "rejected", by("U_B"), T1);
+    a.link.down = false;
+    await a.store.flushOutbox();
+    a.link.down = true;
+    const again = await a.store.decideApproval(approval.id, "approved", by("U_A"), T2);
+    expect(again).toMatchObject({ won: false, approval: { decision: "rejected", decidedBy: by("U_B") } });
   });
 
   it("with the remote down at decision time it decides locally and queues", async () => {

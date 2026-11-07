@@ -6,6 +6,7 @@
 - Interface drops merged to lane-2: gate types, L2-02 slack interface + fake, L2-08 store interface + fake, L2-01 bridge interface + fake
 
 ## In flight
+- Wave 2 (T+16): L2-13 gate, L2-03 Socket Mode + bot + buttons, L2-05 git read side
 
 ## Blocked
 
@@ -34,4 +35,4 @@ T+0 = 22:00 ET, 2026-11-06
 - 2026-11-07 Git interface widened for L2-07/L2-13/L2-14: refs, branchesContaining, contains, fileAt, isDirty, and a path-scoped diff against a base commit.
 
 ## Next
-- PR lane-2 to main with wave 1, then wave 2: L2-13 gate, L2-03 socket, L2-05 git
+- Merge wave 2, then wiring in register/lane-2.ts, then wave 3

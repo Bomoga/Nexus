@@ -9,7 +9,7 @@ import type { SecretStore } from "../accounts/accounts-service";
 // (RFC 7636); the Auth0 specifics (token endpoint path, offline_access for a refresh token, native-app client) are the
 // ones the plan names and are confirmed live by smoke L1-S6.
 
-export const AUTH_REDIRECT_URI = "nexus://auth/callback";
+export const AUTH_REDIRECT_URI = "nexus://nexus.nexus/auth/callback";   // VS Code routes a URI to the extension named by its authority (extensionUrlHandler.ts:155), so it is nexus.nexus, not "auth"
 export const REFRESH_SECRET_KEY = "nexus.auth0.refresh";
 export const DEFAULT_CALLBACK_TIMEOUT_MS = 5 * 60_000;
 const SCOPE = "openid profile offline_access";
@@ -111,14 +111,14 @@ export class Auth0Session {
     return this.status();
   }
 
-  /** Called with the URI the system browser sent back: nexus://auth/callback?code=…&state=… */
+  /** Called with the URI the system browser sent back: nexus://nexus.nexus/auth/callback?code=…&state=… */
   async handleCallback(uri: string): Promise<void> {
     const p = this.pending;
     if (!p) { this.deps.log?.("auth callback with no sign-in waiting; ignored"); return; }
     let params: URLSearchParams;
     try {
       const u = new URL(uri);
-      if (u.protocol !== "nexus:" || u.host !== "auth" || u.pathname !== "/callback") throw new Error("not the auth callback");
+      if (u.protocol !== "nexus:" || u.host !== "nexus.nexus" || u.pathname !== "/auth/callback") throw new Error("not the auth callback");
       params = u.searchParams;
     } catch {
       this.deps.log?.("auth callback with an unexpected address; ignored");

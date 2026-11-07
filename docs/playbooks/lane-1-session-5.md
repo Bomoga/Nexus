@@ -68,12 +68,24 @@ Monitor script (re-arm every 30 minutes; it expires):
 cd "C:/Users/atmor/OneDrive/Desktop/Repositories/Nexus"; prev=""; while true; do git fetch -q --all 2>/dev/null || true; cur=$( { for b in main lane-1 lane-2 lane-3; do echo "branch $b $(git rev-parse --short origin/$b 2>/dev/null)"; done; gh pr list --repo Bomoga/Nexus --state open --json number,title -q '.[]|"openPR \(.number) \(.title)"' 2>/dev/null; } | sort); if [ -n "$cur" ] && [ "$cur" != "$prev" ]; then if [ -z "$prev" ]; then echo "$cur"; else comm -13 <(echo "$prev") <(echo "$cur"); fi; prev="$cur"; fi; sleep 60; done
 ```
 
+## How to run it: parallel subagents (mandatory)
+
+You are the lead: you plan, brief, merge, push and talk to the human. Workers implement; reviewers check. Follow CLAUDE.md section 11 (sparse worktrees on `lane-1-wt/<id>`, disjoint OWNS, workers never push, fresh reviewer per task, two attempts then record in Blocked).
+
+- **Fan out.** T3 (CIBA hook registration), T4 (hang-path tests), T5 (`npm run ci` plus provider listing tests) and T6 (progress notes, drafted by you) own disjoint paths. Launch T3, T4 and T5 as worker subagents in one message so they run at the same time; start T2's prep yourself while they run. Do T1 and the merge steps yourself.
+- **Limits.** At most 2 workers at once on this 8 GB machine (3 if `Get-CimInstance Win32_ComputerSystem` shows 16 GB or more), one Nexus window, never a second `npm run watch`. Workers do not spawn subagents and never push.
+- **Briefs.** Use the brief template in CLAUDE.md section 11, filled in per task: GOAL, OWNS (exact paths), READ FIRST, CONTRACTS, ACCEPTANCE (a command that exits 0), CONSTRAINTS, STOP WHEN, REPORT headings. A worker starts with no memory of this session, so name the files and the spec; put no secrets in a brief.
+- **Review.** Send a fresh reviewer (Opus-class for approvals, the gate, auth or contracts-adjacent code) only the brief, the diff and the test output. `confirmed` -> merge with `git merge --no-ff`, re-run the suite, push, remove the worktree. `disputed` -> back to a worker once; after the second dispute, record it under Blocked and move on.
+- **T7 loop.** For each incoming change or improvement, brief a worker and a reviewer instead of editing in your own checkout, unless it is a one-line fix. Dispatch the next worker before you wait on the previous reviewer.
+- **Model classes.** Workers: Sonnet-class. Reviewers: Sonnet-class, Opus-class for security rails. Explorers (read-only lookups): Haiku or Sonnet.
+- Record each task's worker, reviewer verdict and merge commit in `progress/lane-1.md` In flight / Done.
+
 ## Standing rules (from CLAUDE.md and Adrian)
 
 - Never rebase or force push; never push `main`; push only `lane-1`. Never edit another lane's paths. Never print, log or commit anything from `extensions/nexus/.env`.
 - Commit as `lane-1: <change>` (lowercase, imperative, no period) with the trailer `Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>`. PR titles only, no body except the line `🤖 Generated with [Claude Code](https://claude.com/claude-code)`. Always pass `--repo Bomoga/Nexus` to `gh`.
 - Merge your own PR into `main` once the `extension` check passes (no launch check, no wait for the other checks). Never enable auto-merge. Contracts PRs need written approval from both Brandon and Elkin.
-- Workers and reviewers follow CLAUDE.md section 11 (sparse worktrees, disjoint OWNS, two attempts). Small tasks here are fine to do directly; use a worker only for something above one hour.
+- Subagents are required, not optional (see "How to run it: parallel subagents" below). Do not do implementation yourself that a worker could do.
 - Tag every factual claim `[proof: ...]` or `{unverified}`; report red tests and skipped steps plainly.
 - 8 GB machine rules: at most 2 workers, one Nexus window.
 - Ask the user only for: the Auth0 values, a dashboard change, more than a few cents of live API spend, or relaying a teammate's approval. Everything else: decide, record in `progress/lane-1.md`, continue.

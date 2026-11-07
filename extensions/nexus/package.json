@@ -81,6 +81,14 @@
     ],
     "commands": [
       {
+        "command": "nexus.connectProvider",
+        "title": "Nexus: Connect provider"
+      },
+      {
+        "command": "nexus.pickModel",
+        "title": "Nexus: Pick model"
+      },
+      {
         "command": "nexus.dev.reseedDemoRepo",
         "title": "Nexus (dev): Re-seed demo repo"
       }

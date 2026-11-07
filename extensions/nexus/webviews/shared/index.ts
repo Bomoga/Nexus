@@ -21,3 +21,6 @@ export { EmptyState } from "./EmptyState";
 export type { EmptyStateProps } from "./EmptyState";
 export { request, subscribe, createBridgeClient, getBridge, isFakeMode, BridgeError } from "./bridgeClient";
 export type { BridgeClient, Transport, ReqIn, SubIn, RequestOptions } from "./bridgeClient";
+export { StoreStatusLine } from "./StoreStatusLine";
+export { friendlyError } from "./friendlyError";
+export { ErrorBoundary } from "./ErrorBoundary";

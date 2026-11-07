@@ -40,7 +40,14 @@ function setup(answers: Answers = {}) {
       if (env.t !== "req") return;
       const fn = answers[env.name] ?? defaults[env.name];
       queueMicrotask(() => {
-        const res: Envelope = fn ? { t: "res", id: env.id, ok: true, body: fn(env.body as Record<string, unknown>) } : { t: "res", id: env.id, ok: false, error: { code: "not_found", message: env.name } };
+        let res: Envelope;
+        try {
+          res = fn ? { t: "res", id: env.id, ok: true, body: fn(env.body as Record<string, unknown>) } : { t: "res", id: env.id, ok: false, error: { code: "not_found", message: env.name } };
+        } catch (e) {
+          // An answer that throws { code, message } becomes a wire-level error, like the real host's BridgeError.
+          const { code, message } = e as { code: string; message: string };
+          res = { t: "res", id: env.id, ok: false, error: { code, message } };
+        }
         handlers.forEach((h) => h(res));
       });
     },
@@ -214,6 +221,38 @@ describe("session view", () => {
     fireEvent.click(await within(row).findByRole("button", { name: /reject/i }));
     await waitFor(() => expect(reqs("approvals.resolve")[0].body).toEqual({ approvalId: "apr_01", decision: "rejected" }));
     expect(await within(rows()[0]).findByText(/decided by slack U_BRANDON/)).toBeTruthy();
+  });
+
+  test("a lost race (host answers conflict) shows the winner from approvals.list, not an error", async () => {
+    let decided = false;
+    const winner = { ...fx.approval, decision: "approved", decidedBy: { via: "slack", userId: "U_BRANDON" }, decidedAt: fx.approval.requestedAt };
+    const { bridge, emit, subbed, reqs } = setup({
+      "approvals.resolve": () => {
+        decided = true;
+        throw { code: "conflict", message: "Already decided by U_BRANDON via slack." };
+      },
+      "approvals.list": () => [decided ? winner : fx.approval],
+    });
+    render(<App bridge={bridge} sessionId="ses_01" />);
+    await waitFor(() => expect(subbed("agent.subscribe").length).toBe(1));
+    emit("agent.subscribe", scriptedAgentEvents[8]);
+    fireEvent.click(await within(rows()[0]).findByRole("button", { name: /reject/i }));
+    expect(await within(rows()[0]).findByText(/decided by slack U_BRANDON/)).toBeTruthy();
+    expect(within(rows()[0]).queryByRole("button", { name: /approve/i })).toBeNull();
+    expect(screen.queryByText(/Already decided/)).toBeNull();
+    expect(reqs("approvals.list").length).toBe(2);
+  });
+
+  test("a late undecided copy never reopens a decided approval", async () => {
+    const { bridge, emit, subbed } = setup();
+    render(<App bridge={bridge} sessionId="ses_01" />);
+    await waitFor(() => expect(subbed("approvals.subscribe").length).toBe(1));
+    emit("agent.subscribe", scriptedAgentEvents[8]);
+    emit("approvals.subscribe", { ...fx.approval, decision: "approved", decidedBy: { via: "slack", userId: "U1" }, decidedAt: fx.approval.requestedAt });
+    await within(rows()[0]).findByText(/decided by slack U1/);
+    emit("approvals.subscribe", fx.approval);
+    expect(within(rows()[0]).queryByRole("button", { name: /approve/i })).toBeNull();
+    expect(within(rows()[0]).getByText(/decided by slack U1/)).toBeTruthy();
   });
 
   test("approvals.subscribe updates an approval live", async () => {

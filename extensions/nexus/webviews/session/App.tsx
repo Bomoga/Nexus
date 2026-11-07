@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { AgentEvent, AgentSession, ApprovalRequest, ModelCallReceipt, SpendSummary } from "../../src/contracts";
-import { Button, EmptyState, StatusLine, Tabs, getBridge } from "../shared";
+import { BridgeError, Button, EmptyState, StatusLine, Tabs, getBridge } from "../shared";
 import type { BridgeClient, Tone } from "../shared";
 
 type Status = AgentSession["status"];
@@ -14,6 +14,12 @@ const OPEN_RECEIPT_HINT = "opening receipts needs a bridge command (pending Lane
 
 const STATUS_TONE: Record<Status, Tone> = { running: "muted", awaiting_approval: "pending", done: "ok", failed: "error", cancelled: "muted" };
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
+
+/** A decided approval is final: a late undecided copy (stale list, delayed event) never reopens it. */
+function putApproval(cur: ReadonlyMap<string, ApprovalRequest>, a: ApprovalRequest): ReadonlyMap<string, ApprovalRequest> {
+  if (cur.get(a.id)?.decision && !a.decision) return cur;
+  return new Map(cur).set(a.id, a);
+}
 const usd = (n: number) => n.toFixed(4);
 
 /** Missing seqs between 0 and the highest seen, as "4" or "6-8" ranges. */
@@ -153,7 +159,7 @@ export function App({ bridge, sessionId }: AppProps) {
       })
       .catch(() => undefined);
     b.request("approvals.list", { sessionId })
-      .then((list) => live && setApprovals((cur) => new Map([...list.map((a) => [a.id, a] as const), ...cur])))
+      .then((list) => live && setApprovals((cur) => list.reduce(putApproval, cur)))
       .catch(() => undefined);
 
     const unsubs = [
@@ -168,7 +174,7 @@ export function App({ bridge, sessionId }: AppProps) {
       }),
       b.subscribe("receipts.subscribe", { sessionId }, (r) => addReceipt(r)),
       b.subscribe("approvals.subscribe", {}, (a) => {
-        if (a.sessionId === sessionId) setApprovals((cur) => new Map(cur).set(a.id, a));
+        if (a.sessionId === sessionId) setApprovals((cur) => putApproval(cur, a));
       }),
     ];
     return () => {
@@ -207,8 +213,18 @@ export function App({ bridge, sessionId }: AppProps) {
   };
   const resolve = (approvalId: string, decision: "approved" | "rejected") => {
     setBusyApproval(approvalId);
-    b.request("approvals.resolve", { approvalId, decision })
-      .then((a) => setApprovals((cur) => new Map(cur).set(a.id, a))) // the winner, possibly someone else
+    const settle = async () => {
+      try {
+        const a = await b.request("approvals.resolve", { approvalId, decision });
+        setApprovals((cur) => putApproval(cur, a));
+      } catch (e) {
+        // Someone else decided first: the host answers "conflict" without the winner, so fetch it.
+        if (!(e instanceof BridgeError && e.code === "conflict")) throw e;
+        const list = await b.request("approvals.list", { sessionId });
+        setApprovals((cur) => list.reduce(putApproval, cur));
+      }
+    };
+    settle()
       .catch((e) => setError(message(e)))
       .finally(() => setBusyApproval(""));
   };

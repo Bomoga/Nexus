@@ -175,9 +175,13 @@ describe("cmd.run", () => {
   it("gives an integer exit code for a timeout kill and a missing binary", async () => {
     const killed = await gate({ allow: [sleep5] }).request(session, "cmd.run", { command: sleep5, timeoutMs: 100 });
     expect(killed.exitCode).toBe(KILLED);
-    const missing = await gate({ allow: ["no-such-binary-xyz"] }).request(session, "cmd.run", { command: "no-such-binary-xyz", timeoutMs: 1000 });
-    expect(Number.isInteger(missing.exitCode)).toBe(true);
-    expect(missing.exitCode).not.toBe(0);
+    const run = gate({ allow: ["no-such-binary-xyz"] }).request(session, "cmd.run", { command: "no-such-binary-xyz", timeoutMs: 1000 });
+    if (win32) {
+      // Windows refuses a bare name it cannot find on PATH before spawning (it would otherwise search the worktree too).
+      await expect(run).rejects.toThrow(/was not found on PATH/);
+    } else {
+      expect((await run).exitCode).toBe(127);
+    }
   });
 
   it("returns the child's own exit code", async () => {

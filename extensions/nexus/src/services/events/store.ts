@@ -13,6 +13,9 @@ export interface DecideResult { approval: ApprovalRequest; won: boolean }
 /** Mirrors the `store.status` response in the protocol. */
 export interface StoreStatus { online: boolean; outboxDepth: number; lastSyncAt?: string }
 
+/** Mirrors the `store.subscribe` event in the protocol. */
+export interface StatusEvent { online: boolean; outboxDepth: number }
+
 export interface EventStore {
   putTask(task: Task): Promise<void>;
   getTask(id: string): Promise<Task | undefined>;
@@ -50,5 +53,6 @@ export interface EventStore {
   subscribeEvents(listener: (event: NexusEvent) => void): Unsubscribe;
   /** Fires on every approval create and decision. */
   subscribeApprovals(listener: (approval: ApprovalRequest) => void): Unsubscribe;
+  subscribeStatus(listener: (status: StatusEvent) => void): Unsubscribe;
   status(): Promise<StoreStatus>;
 }

@@ -5,7 +5,7 @@ import { spawn as nodeSpawn, type ChildProcess, type SpawnOptions } from "node:c
 import { constants as osc } from "node:os";
 import type { AgentSession } from "../../contracts";
 import type { GitService } from "../git/types";
-import { absolutePath, isAllowlisted, isGitBinary, splitCommand, tail, windowsPlan } from "./commands";
+import { absolutePath, isAllowlisted, isGitBinary, splitCommand, tail, trimCutStart, trimCutEnd, windowsPlan } from "./commands";
 import { listTree, readCapped, resolveIn, writeFileAt } from "./fs";
 import type { ApprovalsHook, Gate, GateRequest, GateRequestName, GateResponse } from "./types";
 
@@ -43,6 +43,8 @@ export function createGate(deps: GateDeps): Gate {
   }
 
   /** Kills the child and everything it started: the process group on POSIX, taskkill /T on Windows. */
+  // Kills the child's whole process group (taskkill /T on Windows). Known limit: a descendant that calls setsid() leaves the
+  // group and survives; that needs an allowlisted or approved command, and the OS gives the gate no portable way to track it.
   function killTree(child: ChildProcess): void {
     if (child.pid === undefined) return;
     if (win) {
@@ -80,9 +82,7 @@ export function createGate(deps: GateDeps): Gate {
       const keep = (cur: string, chunk: Buffer | string) => {
         const next = cur + chunk.toString();
         if (next.length <= MAX_CAPTURE_CHARS) return next;
-        const cut = next.slice(next.length - MAX_CAPTURE_CHARS);
-        const nl = cut.search(/\s/);
-        return nl < 0 ? "" : cut.slice(nl + 1);
+        return trimCutStart(next.slice(next.length - MAX_CAPTURE_CHARS));
       };
       c.stdout?.on("data", d => { out = keep(out, d); });
       c.stderr?.on("data", d => { err = keep(err, d); });
@@ -103,7 +103,7 @@ export function createGate(deps: GateDeps): Gate {
       const r = await resolveIn(session.worktreePath, body.path);
       if (!r.inside) throw new Error("path is outside the session worktree");
       const { content, truncated } = await readCapped(r.target);
-      return { content: deps.redact(content), truncated };
+      return { content: deps.redact(truncated ? trimCutEnd(content) : content), truncated };
     },
     "fs.list": async (session: AgentSession, body: GateRequest<"fs.list">): Promise<GateResponse<"fs.list">> => {
       const r = await resolveIn(session.worktreePath, body.path);

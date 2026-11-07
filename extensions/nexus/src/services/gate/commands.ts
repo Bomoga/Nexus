@@ -58,10 +58,39 @@ export function tail(text: string, max: number): string {
   return text.length <= max ? text : `[... ${text.length - max} chars dropped]\n${text.slice(text.length - max)}`;
 }
 
-/** True when argv[0] names git (any directory, git or git.exe, any case). The agent never runs git itself; commits go through git.commit. */
+/**
+ * True when argv[0] names git or one of its own commands (git, git-push, git-status.exe, any directory, any case). Windows
+ * ignores trailing dots and spaces and accepts an NTFS stream suffix, so those are stripped first. The agent never runs git
+ * itself; commits go through git.commit.
+ */
 export function isGitBinary(argv0: string): boolean {
-  const base = argv0.split(/[\\/]/).pop()!.toLowerCase();
-  return base === "git" || base === "git.exe";
+  const base = argv0.split(/[\\/]/).pop()!.replace(/:.*$/, "").replace(/[. ]+$/, "").toLowerCase();
+  return /^git(?:-.*)?(?:\.exe)?$/.test(base);
+}
+
+const PEM_BEGIN = /-----BEGIN [^-\n]*-----/;
+const PEM_END = /-----END [^-\n]*-----[^\n]*\n?/;
+
+/**
+ * After text was cut at its START: drop the partial first word, and anything up to an END marker whose BEGIN was cut off,
+ * so the redactor (which needs whole tokens and whole PEM blocks) never sees half a secret.
+ */
+export function trimCutStart(text: string): string {
+  const ws = text.search(/\s/);
+  let out = ws < 0 ? "" : text.slice(ws + 1);
+  const end = PEM_END.exec(out);
+  if (end && !PEM_BEGIN.test(out.slice(0, end.index))) out = out.slice(end.index + end[0].length);
+  return out;
+}
+
+/** After text was cut at its END: drop the partial last word, and a PEM block whose END was cut off. Tokens never contain whitespace. */
+export function trimCutEnd(text: string): string {
+  const m = /\s(?=\S*$)/.exec(text);
+  let out = m ? text.slice(0, m.index + 1) : "";
+  const begins = [...out.matchAll(new RegExp(PEM_BEGIN.source, "g"))];
+  const last = begins.at(-1);
+  if (last && !PEM_END.test(out.slice(last.index))) out = out.slice(0, last.index);
+  return out;
 }
 
 /** Keeps only absolute PATH entries, so an empty entry or "." cannot let a binary in the worktree shadow an allowlisted one. */
@@ -73,10 +102,22 @@ export function absolutePath(value: string | undefined, platform: NodeJS.Platfor
 
 export interface SpawnPlan { file: string; args: string[]; verbatim: boolean }
 
-/** Escapes one argument for cmd.exe inside a /s /c line; refuses characters that cmd would interpret. */
-function cmdQuote(arg: string): string {
-  if (/[\^&|<>\r\n\0]/.test(arg)) throw new CommandRefused("argument contains a character cmd.exe would interpret");
-  return `"${arg.replace(/%/g, "%%").replace(/"/g, '""')}"`;
+/**
+ * Quotes one argument for a .cmd or .bat shim run by `cmd.exe /d /s /c`. cmd.exe has no escape for `%` or `!` on a /c line,
+ * so they are refused along with every character cmd would interpret. Quotes and backslashes follow the
+ * CommandLineToArgvW rules the shim's program (node, through %*) splits with, so the program sees the same arguments.
+ */
+export function cmdQuote(arg: string): string {
+  if (/[\^&|<>%!\r\n\0]/.test(arg)) throw new CommandRefused("argument contains a character cmd.exe would interpret");
+  let out = '"';
+  let slashes = 0;
+  for (const ch of arg) {
+    if (ch === "\\") { slashes++; continue; }
+    if (ch === '"') { out += "\\".repeat(slashes * 2 + 1) + '"'; slashes = 0; continue; }
+    out += "\\".repeat(slashes) + ch;
+    slashes = 0;
+  }
+  return `${out}${"\\".repeat(slashes * 2)}"`;
 }
 
 /**
@@ -95,9 +136,13 @@ export function windowsPlan(argv: string[], env: Record<string, string | undefin
     if (hasExt) candidates.push(base);
     for (const e of exts) candidates.push(base + e);
   }
+  // A bare name not found on PATH is refused: Windows would otherwise also search the working directory, the worktree.
   const found = candidates.find(exists);
-  if (!found) return { file: name, args: argv.slice(1), verbatim: false };
+  if (!found) throw new CommandRefused(`${name} was not found on PATH`);
+  if (!/^(?:[A-Za-z]:[\\/]|\\\\)/.test(found)) throw new CommandRefused(`${name} did not resolve to an absolute path`);
   if (!/\.(cmd|bat)$/i.test(found)) return { file: found, args: argv.slice(1), verbatim: false };
   const line = [found, ...argv.slice(1)].map(cmdQuote).join(" ");
-  return { file: env.ComSpec ?? "cmd.exe", args: ["/d", "/s", "/c", `"${line}"`], verbatim: true };
+  const comspec = env.ComSpec ?? (env.SystemRoot ? `${env.SystemRoot}\\System32\\cmd.exe` : undefined);
+  if (!comspec) throw new CommandRefused("cannot run a .cmd or .bat shim: ComSpec and SystemRoot are unset");
+  return { file: comspec, args: ["/d", "/s", "/c", `"${line}"`], verbatim: true };
 }

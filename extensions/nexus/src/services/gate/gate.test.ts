@@ -7,7 +7,7 @@ import { fx } from "../../contracts/fixtures";
 import type { AgentSession } from "../../contracts";
 import { redact } from "../../shared/redact";
 import { FakeGit } from "../git/fake-git";
-import { absolutePath, splitCommand, windowsPlan } from "./commands";
+import { absolutePath, cmdQuote, isGitBinary, splitCommand, trimCutEnd, trimCutStart, windowsPlan } from "./commands";
 import { writeFileAt } from "./fs";
 import { createGate, type GateDeps, type SpawnFn } from "./gate";
 import type { ApprovalsHook } from "./types";
@@ -54,10 +54,14 @@ describe("fs", () => {
   });
 
   it("caps read size", async () => {
-    await writeFile(path.join(dir, "big"), "a".repeat(300_000));
+    await writeFile(path.join(dir, "big"), "word1 word2\n".repeat(30_000));   // 360,000 chars
     const r = await gate().request(session, "fs.read", { path: "big" });
     expect(r.truncated).toBe(true);
-    expect(r.content.length).toBe(200_000);
+    expect(r.content.length).toBeGreaterThan(199_000);
+    expect(r.content.length).toBeLessThanOrEqual(200_000);
+    expect(/\s$/.test(r.content)).toBe(true);   // cut on a word boundary, never mid-token
+    await writeFile(path.join(dir, "blob"), "a".repeat(300_000));   // one 300K "word": nothing safe to return
+    expect((await gate().request(session, "fs.read", { path: "blob" })).content).toBe("");
   });
 
   it("sends a ../ write to approval and writes only once approved", async () => {
@@ -259,10 +263,40 @@ describe("hardening", () => {
   });
 
   it("refuses to run git, however it is spelled, even when allowlisted", async () => {
-    for (const command of ["git push origin main", "/usr/bin/git status", "GIT.EXE log", "C:\\\\bin\\\\git status"]) {
+    for (const command of ["git push origin main", "/usr/bin/git status", "GIT.EXE log", "C:\\\\bin\\\\git status",
+      "/usr/libexec/git-core/git-push origin HEAD:main", "git-status", "Git-Commit.exe -m x"]) {
       await expect(gate({ allow: [command] }).request(session, "cmd.run", { command, timeoutMs: 1000 })).rejects.toThrow(/git\.commit/);
     }
     expect(pending).toHaveLength(0);
+  });
+
+  it("recognises git under Windows spellings and its own command names", () => {
+    for (const name of ["git", "git.exe", "git.exe ", "git.exe.", "git.exe::$DATA", "git:stream", "git-push", "C:\\bin\\GIT-STATUS.EXE"]) expect(isGitBinary(name)).toBe(true);
+    for (const name of ["gitk2", "legit", "digit", "github-cli", "node"]) expect(isGitBinary(name)).toBe(false);
+  });
+
+  it("never leaves half a secret at a cut", () => {
+    const pem = "-----BEGIN PRIVATE KEY-----\nAAAA\nBBBB\n-----END PRIVATE KEY-----\n";
+    expect(trimCutStart("ATE KEY-----\nAAAA\nBBBB\n-----END PRIVATE KEY-----\nafter\n")).toBe("after\n");
+    expect(trimCutStart(`k-ant-tail\n${pem}ok\n`)).toBe(`${pem}ok\n`);
+    expect(trimCutEnd(`ok\n${pem.slice(0, 40)}`)).toBe("ok\n");
+    expect(trimCutEnd("ok\nsk-ant-ABCDEFGHIJKL")).toBe("ok\n");
+    expect(trimCutEnd(`ok\n${pem}more`)).toBe(`ok\n${pem}`);
+  });
+
+  it("does not return the body of a key whose BEGIN line fell outside the capture window", async () => {
+    const script = path.join(dir, "emit.js");
+    await writeFile(script, `process.stdout.write("x".repeat(70000) + "\\n-----BEGIN PRIVATE KEY-----\\n" + "QUJDRA==\\n".repeat(10) + "-----END PRIVATE KEY-----\\ndone\\n");`);
+    // Overflow the window so that it starts inside the key body.
+    const r = await gate({ allow: [`node ${script}`] }).request(session, "cmd.run", { command: `node ${script}`, timeoutMs: 10000 });
+    expect(r.stdoutTail).not.toContain("QUJDRA");
+  });
+
+  it("refuses a symlink into a .git outside the worktree", async () => {
+    await mkdir(path.join(outside, ".git", "hooks"), { recursive: true });
+    await symlink(path.join(outside, ".git", "hooks"), path.join(dir, "oh"));
+    await expect(gate().request(session, "fs.write", { path: "oh/pre-commit", content: "x" })).rejects.toThrow(/git metadata|outside/);
+    expect(pending.every(p => !(p as { action?: { path?: string } }).action?.path?.includes(".git"))).toBe(true);
   });
 
   it("refuses an unknown or inherited request name", async () => {
@@ -334,12 +368,27 @@ describe("windows", () => {
   });
 
   it("runs a .cmd shim through cmd.exe /d /s /c with escaped arguments", () => {
-    const plan = windowsPlan(["npm", "test", 'a "b" 100%'], env, has("C:\\npm\\npm.CMD"));
-    expect(plan).toEqual({ file: env.ComSpec, args: ["/d", "/s", "/c", '"' + '"C:\\npm\\npm.CMD" "test" "a ""b"" 100%%"' + '"'], verbatim: true });
+    const plan = windowsPlan(["npm", "test", 'a "b"'], env, has("C:\\npm\\npm.CMD"));
+    expect(plan).toEqual({ file: env.ComSpec, args: ["/d", "/s", "/c", '"' + '"C:\\npm\\npm.CMD" "test" "a \\"b\\""' + '"'], verbatim: true });
+  });
+
+  it("quotes backslashes the way CommandLineToArgvW splits them", () => {
+    expect(cmdQuote('x\\" --evil "y')).toBe('"x\\\\\\" --evil \\"y"');
+    expect(cmdQuote("a\\")).toBe('"a\\\\"');
+    expect(cmdQuote("C:\\dir\\file")).toBe('"C:\\dir\\file"');
+    expect(cmdQuote("")).toBe('""');
+  });
+
+  it("refuses a bare name not found on PATH, and a shim with no ComSpec or SystemRoot", () => {
+    expect(() => windowsPlan(["pytest"], env, has())).toThrow(/not found on PATH/);
+    const { ComSpec: _unused, ...bare } = env as typeof env & { SystemRoot?: string };
+    void _unused;
+    expect(() => windowsPlan(["npm", "test"], bare, has("C:\\npm\\npm.CMD"))).toThrow(/ComSpec/);
+    expect(windowsPlan(["npm", "test"], { ...bare, SystemRoot: "C:\\Windows" }, has("C:\\npm\\npm.CMD")).file).toBe("C:\\Windows\\System32\\cmd.exe");
   });
 
   it("refuses cmd metacharacters in a shim's arguments", () => {
-    for (const bad of ["a&b", "a|b", "a<b", "a>b", "a^b"]) {
+    for (const bad of ["a&b", "a|b", "a<b", "a>b", "a^b", "100%", "%PATH%", "a!b"]) {
       expect(() => windowsPlan(["npm", bad], env, has("C:\\npm\\npm.CMD"))).toThrow();
     }
   });

@@ -24,7 +24,7 @@ export const NexusEvent = z.object({
 
 export function orbitOf(branch: string): string {       // frozen rule from §5 semantics
   if (branch === "main") return "main";
-  const m = /^(lane-\d+)(\/.*)?$/.exec(branch); if (m) return m[1];
+  const m = /^(lane-\d+)(\/.*|-wt\/.*)?$/.exec(branch); if (m) return m[1];   // lane-N/... and worker branches lane-N-wt/<id>
   if (branch.startsWith("nexus/agent-")) return "main";  // caller overrides with the session's base branch family
   return branch.split("/").slice(0, 2).join("/");         // "feature/x/y" -> "feature/x"
 }

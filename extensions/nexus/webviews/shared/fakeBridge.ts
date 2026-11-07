@@ -111,6 +111,7 @@ function buildHandlers(): Handlers {
     "coderef.open": () => ({ opened: "at_commit", stale: false }),
     "ui.openTarget": () => ({}),
     "ui.setTimeWindow": () => ({}),
+    "ui.openExternal": () => ({}),
   };
 }
 

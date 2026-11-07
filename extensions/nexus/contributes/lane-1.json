@@ -69,7 +69,14 @@
           "description": "Optional API audience to request in the access token."
         }
       }
-    }
+    },
+    "themes": [
+      {
+        "label": "Nexus Dark",
+        "uiTheme": "vs-dark",
+        "path": "./themes/nexus-dark.json"
+      }
+    ]
   },
   "activationEvents": []
 }

@@ -180,6 +180,13 @@
         }
       }
     },
+    "themes": [
+      {
+        "label": "Nexus Dark",
+        "uiTheme": "vs-dark",
+        "path": "./themes/nexus-dark.json"
+      }
+    ],
     "views": {
       "nexus": [
         {

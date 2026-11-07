@@ -16,7 +16,7 @@ describe("buildBrief", () => {
     expect(b.title).toBe("cart total ignores the discount when qty 1 see");
     expect(b.brief).toBe([
       "> [slack thread, quoted, untrusted]",
-      "> [adrian] cart total ignores the discount when qty > 1 — see nexus://coderef/ws_demo/3f2a9c1e4b7d8a6f5e0c9b2a1d4f6e8c7b5a3d21/42-48/src%2Fcart.ts",
+      "> [adrian] cart total ignores the discount when qty > 1 — see nexus://nexus.nexus/coderef/ws_demo/3f2a9c1e4b7d8a6f5e0c9b2a1d4f6e8c7b5a3d21/42-48/src%2Fcart.ts",
       "> [brandon] can an agent take this?",
       "> [code refs] src/cart.ts:42-48 @3f2a9c1e",
       "",
@@ -101,7 +101,7 @@ describe("titleFrom", () => {
     const t = titleFrom(msg({ text: long }));
     expect(t.length).toBeLessThanOrEqual(TITLE_MAX);
     expect(t.endsWith("…")).toBe(true);
-    expect(titleFrom(msg({ text: "fix\nthe <b>bug</b> `now` nexus://coderef/ws/aaaa/1-2/a.ts" }))).toBe("fix the b bug /b now");
+    expect(titleFrom(msg({ text: "fix\nthe <b>bug</b> `now` nexus://nexus.nexus/coderef/ws/aaaa/1-2/a.ts" }))).toBe("fix the b bug /b now");
   });
 
   it("falls back to a generic title for an empty or symbol-only parent", () => {

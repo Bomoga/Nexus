@@ -1,5 +1,6 @@
 // Merges contributes/base.json + contributes/lane-{1,2,3}.json into package.json#contributes and
 // package.json#activationEvents (PLAN §3.1). Lead-only: workers edit their lane fragment, never package.json.
+import { Buffer } from "node:buffer";
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -148,7 +149,8 @@ export async function computeMerged() {
   // Rule 5: write into package.json with the x-generated field first.
   const pkgPath = join(ROOT, "package.json");
   const pkg = JSON.parse(readFileSync(pkgPath, "utf8"));
-  const { "x-generated": _drop, ...rest } = pkg;
+  const rest = { ...pkg };
+  delete rest["x-generated"];
   const out = { "x-generated": GENERATED_NOTE, ...rest, activationEvents, contributes: merged };
   return { pkgPath, text: JSON.stringify(out, null, 2) + "\n" };
 }

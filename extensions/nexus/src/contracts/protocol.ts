@@ -59,7 +59,8 @@ export const Requests = {
   "coderef.create":      { req: z.object({ path: z.string(), startLine: z.number().int(), endLine: z.number().int() }), res: z.object({ ref: CodeRef, link: z.string(), snippet: z.string() }) },
   "coderef.open":        { req: z.object({ ref: CodeRef }), res: z.object({ opened: z.enum(["at_commit", "current"]), stale: z.boolean() }) },
   "ui.openTarget":       { req: E.EventTarget, res: Empty },
-  "ui.setTimeWindow":    { req: z.object({ window: E.TimeWindow }), res: Empty },
+  "ui.openExternal":     { req: z.object({ url: z.string().url().refine(u => u.startsWith("https://"), "https only") }), res: Empty },   // host validates again, then opens in the system browser
+  "ui.setTimeWindow":   { req: z.object({ window: E.TimeWindow }), res: Empty },
 } as const;
 
 export const Subscriptions = {

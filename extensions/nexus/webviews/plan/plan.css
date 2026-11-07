@@ -1,0 +1,8 @@
+/* Plan review: tokens and geometry come from the kit's theme.css. */
+.plan-review { display: flex; flex-direction: column; gap: var(--nx-gap-2, 8px); }
+.plan-head { display: flex; align-items: center; gap: var(--nx-gap-2, 8px); flex-wrap: wrap; min-height: var(--nx-control-h); }
+.plan-data { font-family: var(--nx-font-data); font-size: var(--nx-font-ui-sm); font-variant-numeric: tabular-nums; }
+.plan-actions { display: flex; align-items: center; gap: var(--nx-gap-1); }
+.plan-brief { display: flex; align-items: flex-start; gap: var(--nx-gap-1); min-width: 0; }
+.plan-brief-line { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.plan-brief-full { margin: 0; white-space: pre-wrap; word-break: break-word; font-family: var(--nx-font-data); font-size: var(--nx-font-ui-sm); user-select: text; }

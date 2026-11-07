@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import type { EventTarget, NexusEvent } from "../../src/contracts";
-import { Button, StatusLine, request } from "../shared";
+import { Button, StatusLine, friendlyError, request } from "../shared";
 import { DEFAULT_T0_MS, formatEventTime, shortId } from "./model/picking";
 
 export interface DetailStripProps {
@@ -22,7 +22,7 @@ export function DetailStrip({ event, t0Ms = DEFAULT_T0_MS, open = defaultOpen }:
   const openTarget = useCallback(() => {
     if (!event) return;
     setFailure(undefined);
-    open(event.target).catch((e: unknown) => setFailure({ event, message: e instanceof Error ? e.message : String(e) }));
+    open(event.target).catch((e: unknown) => setFailure({ event, message: friendlyError(e, "open") }));
   }, [event, open]);
 
   // After a click-pick focus is on the canvas/body, so Enter is handled at the document while an event is selected.
@@ -58,7 +58,7 @@ export function DetailStrip({ event, t0Ms = DEFAULT_T0_MS, open = defaultOpen }:
       <span className="globe-strip-cell nx-data">{shortId(event.target)}</span>
       <span className="globe-strip-cell">{event.actor.name}</span>
       {error ? <span className="globe-strip-error"><StatusLine tone="error">{error}</StatusLine></span> : null}
-      <Button variant="primary" kbd="ENTER" onClick={openTarget}>
+      <Button variant="primary" kbd="↵" onClick={openTarget}>
         OPEN
       </Button>
     </div>

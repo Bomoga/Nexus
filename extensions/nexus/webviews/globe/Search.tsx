@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { KeyboardEvent } from "react";
 import type { EventSearchHit, NexusEvent } from "../../src/contracts";
-import { Input, StatusLine, request } from "../shared";
+import { Button, Input, StatusLine, friendlyError, request } from "../shared";
 import { DEFAULT_T0_MS, formatEventTime, shortId } from "./model/picking";
 import { newestFirst } from "./model/tracking";
 
@@ -25,6 +25,7 @@ export function Search({ onPick, search = defaultSearch, t0Ms = DEFAULT_T0_MS }:
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(0);
   const [error, setError] = useState<string | undefined>();
+  const [attempt, setAttempt] = useState(0);
   const wrap = useRef<HTMLDivElement>(null);
   const searchRef = useRef(search);
   useEffect(() => {
@@ -55,14 +56,14 @@ export function Search({ onPick, search = defaultSearch, t0Ms = DEFAULT_T0_MS }:
           if (!live) return;
           setHits([]);
           setOpen(false);
-          setError(e instanceof Error ? e.message : String(e));
+          setError(friendlyError(e, "search"));
         });
     }, SEARCH_DEBOUNCE_MS);
     return () => {
       live = false;
       clearTimeout(timer);
     };
-  }, [q]);
+  }, [q, attempt]);
 
   // "/" (outside inputs) and Ctrl+F focus the box; the host cannot push a focus message (contracts are frozen).
   useEffect(() => {
@@ -139,7 +140,11 @@ export function Search({ onPick, search = defaultSearch, t0Ms = DEFAULT_T0_MS }:
           ))}
         </ul>
       ) : null}
-      {error ? <StatusLine tone="error">{error}</StatusLine> : null}
+      {error ? (
+        <StatusLine tone="error">
+          {error} <Button onClick={() => setAttempt((n) => n + 1)}>RETRY</Button>
+        </StatusLine>
+      ) : null}
     </div>
   );
 }

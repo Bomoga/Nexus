@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { NexusEvent, TimeWindow } from "../../src/contracts";
-import { Button, Select, StatusLine, isFakeMode, request } from "../shared";
+import { Button, EmptyState, Select, StatusLine, StoreStatusLine, friendlyError, getBridge, isFakeMode } from "../shared";
+import type { BridgeClient } from "../shared";
 import { QUERY_LIMIT, TIME_WINDOWS, keepNewest, visibleEvents, windowMs } from "./model";
 import { insertLive, scriptedNow } from "./model/arcs";
 import { markLive, useDriftNow, useLiveEvents } from "./scene/live";
@@ -14,11 +15,19 @@ const FAKE_SPAN_MS = 36 * 3_600_000;
 
 const OPTIONS = TIME_WINDOWS.map((w) => ({ value: w, label: w }));
 
-export function App() {
+export interface AppProps {
+  /** Defaults to the real bridge. */
+  bridge?: BridgeClient;
+}
+
+export function App({ bridge: injected }: AppProps = {}) {
+  const bridge = useMemo(() => injected ?? getBridge(), [injected]);
   const [window_, setWindow] = useState<TimeWindow>("36h");
   const [events, setEvents] = useState<NexusEvent[]>([]);
   const [truncated, setTruncated] = useState(false);
   const [error, setError] = useState<string | undefined>();
+  const [loaded, setLoaded] = useState(false);
+  const [attempt, setAttempt] = useState(0);
   // In fake mode "now" is pinned to the end of the scripted 36 h; the fixtures are loaded lazily
   // so normal builds don't ship demo data. Until it's known, nothing is queried or drawn.
   const [now, setNow] = useState<number | null>(() => (isFakeMode() ? null : Date.now()));
@@ -43,7 +52,7 @@ export function App() {
           setNow(start);
           timer = setInterval(() => setNow(scriptedNow(start, performance.now() - t0)), NOW_TICK_MS);
         })
-        .catch((e: unknown) => live && setError(e instanceof Error ? e.message : String(e)));
+        .catch((e: unknown) => live && setError(friendlyError(e, "events")));
       return () => {
         live = false;
         if (timer) clearInterval(timer);
@@ -58,26 +67,28 @@ export function App() {
     let live = true;
     const from = new Date(now - windowMs(window_)).toISOString();
     const to = new Date(now + 60_000).toISOString();
-    request("events.query", { from, to, limit: QUERY_LIMIT })
+    bridge
+      .request("events.query", { from, to, limit: QUERY_LIMIT })
       .then((res) => {
         if (!live) return;
         const kept = keepNewest(res, QUERY_LIMIT);
         setEvents(kept.events);
         setTruncated(kept.truncated);
+        setLoaded(true);
         setError(undefined);
       })
-      .catch((e: unknown) => live && setError(e instanceof Error ? e.message : String(e)));
+      .catch((e: unknown) => live && setError(friendlyError(e, "events")));
     return () => {
       live = false;
     };
-    // Re-query only when the window changes (or "now" first becomes known); drift moves markers but does not refetch.
-  }, [window_, ready]);
+    // Re-query only when the window changes (or "now" first becomes known) or on RETRY; drift moves markers but does not refetch.
+  }, [window_, ready, bridge, attempt]);
 
   const onWindow = useCallback((value: string) => {
     const w = value as TimeWindow;
     setWindow(w);
-    request("ui.setTimeWindow", { window: w }).catch(() => undefined);
-  }, []);
+    bridge.request("ui.setTimeWindow", { window: w }).catch(() => undefined);
+  }, [bridge]);
 
   // Live events: "now" and the window are read from refs so the subscription is never re-created.
   const driftNow = useDriftNow(now ?? 0);
@@ -104,6 +115,20 @@ export function App() {
   useLiveEvents(onLive, ready);
 
   const release = useCallback(() => setTracked(undefined), []);
+  // Escape stops tracking (outside inputs, where Escape already closes the search dropdown).
+  useEffect(() => {
+    if (!tracked) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape" || e.defaultPrevented) return;
+      const t = e.target;
+      if (t instanceof Element && t.closest("input, textarea, select, [contenteditable]:not([contenteditable=false])")) return;
+      setTracked(undefined);
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [tracked]);
+  const search = useCallback((q: string) => bridge.request("events.search", { q, limit: 20 }), [bridge]);
+  const open = useCallback((target: NexusEvent["target"]) => bridge.request("ui.openTarget", target), [bridge]);
   useEffect(() => {
     if (tracked && now !== null && shouldRelease(tracked, now, window_)) setTracked(undefined);
   }, [tracked, now, window_]);
@@ -131,19 +156,25 @@ export function App() {
 
   return (
     <div className="globe-app">
+      <StoreStatusLine bridge={bridge} />
       <div className="globe-bar">
         <Select aria-label="Time window" value={window_} options={OPTIONS} onChange={(e) => onWindow(e.target.value)} />
-        <Search onPick={onSearchPick} />
-        {tracked ? <Button onClick={release}>STOP TRACKING</Button> : null}
+        <Search onPick={onSearchPick} search={search} />
+        {tracked ? <Button kbd="ESC" onClick={release}>STOP TRACKING</Button> : null}
         <span className="nx-data">{visible.length} events</span>
       </div>
       {truncated ? <StatusLine tone="pending">{`truncated: showing newest ${events.length}`}</StatusLine> : null}
-      {error ? <StatusLine tone="error">{error}</StatusLine> : null}
+      {error ? (
+        <StatusLine tone="error">
+          {error} <Button onClick={() => setAttempt((n) => n + 1)}>RETRY</Button>
+        </StatusLine>
+      ) : null}
+      {loaded && !error && visible.length === 0 ? <EmptyState message="no events in this window" /> : null}
       {notice ? <StatusLine tone="pending">{notice}</StatusLine> : null}
       <div className="globe-stage">
         {now === null ? null : <Scene events={visible} now={now} window={window_} onPick={setSelected} tracked={tracked} onRelease={release} />}
       </div>
-      <DetailStrip event={selected} />
+      <DetailStrip event={selected} open={open} />
     </div>
   );
 }

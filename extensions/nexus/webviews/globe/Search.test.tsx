@@ -134,7 +134,7 @@ describe("Search", () => {
     render(<Search search={() => Promise.reject(new Error("store offline"))} onPick={vi.fn()} />);
     type("cart");
     await settle(200);
-    expect(screen.getByText("store offline").className).toContain("nx-tone-error");
+    expect(screen.getByText("search failed: store offline").className).toContain("nx-tone-error");
   });
 
   test("slash focuses the input unless typing in an input; Ctrl+F always does", () => {

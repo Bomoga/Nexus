@@ -73,9 +73,10 @@ export class FakeGit implements GitService {
     return paths.map(p => this.diffs.get(`${worktreePath}|${p}`) ?? "").join("");
   }
 
-  async commitIn(worktreePath: string, message: string, sessionId: string) {
+  async commitIn(worktreePath: string, message: string, sessionId: string, approvedDiff: string) {
     const w = [...this.worktrees.values()].find(x => x.worktreePath === worktreePath);
     if (!w) throw new Error(`unknown worktree ${worktreePath}`);
+    if (approvedDiff !== (this.diffs.get(`${worktreePath}|`) ?? "")) throw new Error("refused: the staged changes differ from the diff the human approved");
     const sha = this.newSha();
     this.commits.set(sha, { sha, parents: [this.heads.get(w.branch)!], authorName: "Adrian", committedAt: this.nextTime(), subject: message.split("\n")[0], agentSessionId: sessionId });
     this.heads.set(w.branch, sha);

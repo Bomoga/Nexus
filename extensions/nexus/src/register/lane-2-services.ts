@@ -11,6 +11,9 @@ import type { ApprovalsHook } from "../services/gate/types";
 import type { GitService } from "../services/git/types";
 import { registerOpenExternal } from "../services/coderef/open-external";
 import { createSlackService, type ComposedSlackService, type CreateSlackServiceOptions } from "../services/slack/slack-service";
+import { SlackCache } from "../services/slack/cache";
+import type { SlackService } from "../services/slack/types";
+import { GitWatcher } from "../services/git/watcher";
 
 /** SecretStorage keys for the manual Slack connection (Token Vault, L2-15, replaces the user token later). */
 export const SLACK_SECRET_KEYS = { user: "nexus.slack.userToken", bot: "nexus.slack.botToken", app: "nexus.slack.appToken" } as const;
@@ -33,12 +36,21 @@ export interface Lane2Inputs {
   /** vscode.env.openExternal, which applies VS Code's own link protection. */
   openExternal: (url: string) => Promise<boolean>;
   log: (message: string) => void;
+  /** Where the Slack message cache keeps its per-channel files; no cache when omitted. */
+  slackCacheDir?: string;
+  /** The git watcher's change source (a FileSystemWatcher on .git refs) and this machine's id; no watcher when omitted. */
+  watcher?: { watch: (onChange: () => void) => () => void; machineId: string };
   /** Test seams for the Slack service. */
   slackSeams?: Pick<CreateSlackServiceOptions, "webOptions" | "makeBotApi" | "socketOptions">;
 }
 
-export interface Lane2Built extends Pick<Lane2Services, "slack" | "approvalHooks"> {
+export interface Lane2Built extends Pick<Lane2Services, "approvalHooks"> {
+  /** The composed service: start, stop, status and the approval cards. */
   slack: ComposedSlackService;
+  /** What Lane 1 and the bridge use: the composed service behind the local message cache. */
+  served: SlackService;
+  /** Resolves once the git watcher has started (or immediately when there is none). */
+  watcherReady: Promise<void>;
   git?: GitService;
   makeGate?: Lane2Services["makeGate"];
   /** Lane 1 calls this with its approvals controller's resolve once it exists. Until then a Slack click is refused. */
@@ -70,17 +82,20 @@ export function buildLane2(i: Lane2Inputs): Lane2Built {
     ...i.slackSeams,
   });
 
+  // History is served from the local cache first; live events and the user's own posts keep it current.
+  const served: SlackService = i.slackCacheDir ? new SlackCache({ dir: i.slackCacheDir, fetcher: slack }).wrap(slack) : slack;
+
   const r = i.router;
   parts.push(
-    r.handle("slack.status", () => slack.status()),
-    r.handle("slack.channels", () => slack.channels()),
-    r.handle("slack.history", (q: Req<"slack.history">) => slack.history(q.channelId, q.cursor, q.limit)),
-    r.handle("slack.thread", (q: Req<"slack.thread">) => slack.getThread(q.channelId, q.threadTs)),
-    r.handle("slack.users", (q: Req<"slack.users">) => slack.users(q.ids)),
-    r.handle("slack.post", (q: Req<"slack.post">) => slack.postAsUser({ channelId: q.channelId, text: q.text, threadTs: q.threadTs, clientId: q.clientId })),
+    r.handle("slack.status", () => served.status()),
+    r.handle("slack.channels", () => served.channels()),
+    r.handle("slack.history", (q: Req<"slack.history">) => served.history(q.channelId, q.cursor, q.limit)),
+    r.handle("slack.thread", (q: Req<"slack.thread">) => served.getThread(q.channelId, q.threadTs)),
+    r.handle("slack.users", (q: Req<"slack.users">) => served.users(q.ids)),
+    r.handle("slack.post", (q: Req<"slack.post">) => served.postAsUser({ channelId: q.channelId, text: q.text, threadTs: q.threadTs, clientId: q.clientId })),
     // Live feed: every message and status change is published; the router delivers each to the subscriptions whose channelIds match.
     r.onSubscribe("slack.subscribe", () => undefined),
-    slack.onMessage(evt => r.publish("slack.subscribe", evt)),
+    served.onMessage(evt => r.publish("slack.subscribe", evt)),
 
     r.handle("store.status", () => i.store.status()),
     r.onSubscribe("store.subscribe", () => undefined),
@@ -98,7 +113,26 @@ export function buildLane2(i: Lane2Inputs): Lane2Built {
     parts.push(
       r.handle("git.commit.show", (q: Req<"git.commit.show">) => git.show(q.sha)),
       r.handle("git.branches", () => git.branches()),
+      r.handle("git.mergeAgentBranch", (q: Req<"git.mergeAgentBranch">) => git.mergeAgentBranch(q.sessionId)),
     );
+  }
+
+  // The git watcher turns commits, merges, branches and tags into globe events. Agent attribution needs a session the store knows.
+  let watcher: GitWatcher | undefined;
+  let watcherReady: Promise<void> = Promise.resolve();
+  if (i.git && i.watcher) {
+    const git = i.git;
+    const w = i.watcher;
+    watcherReady = (async () => {
+      try {
+        watcher = new GitWatcher({
+          git, putNexusEvent: e => i.store.putNexusEvent(e), watch: w.watch, workspaceId: await git.workspaceId(), machineId: w.machineId,
+          isKnownSession: async id => (await i.store.getSession(id)) !== undefined, logger: { warn: m => i.log(`git watcher: ${m}`) },
+        });
+        await watcher.start();
+      } catch { i.log("git watcher did not start (no commits yet, or not a git repository)"); }
+    })();
+    parts.push({ dispose: () => watcher?.dispose() });
   }
 
   // The Slack approval card: posted in the task's own thread, its ts stored on the approval (a click is accepted only on
@@ -127,6 +161,8 @@ export function buildLane2(i: Lane2Inputs): Lane2Built {
 
   return {
     slack,
+    served,
+    watcherReady,
     approvalHooks: [slackApprovalHook],
     ...(i.git ? {
       git: i.git,

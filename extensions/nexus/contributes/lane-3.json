@@ -7,7 +7,9 @@
       { "command": "nexus.openTimeline", "title": "Nexus: Open timeline (globe fallback)" },
       { "command": "nexus.openSlack", "title": "Nexus: Open Slack" },
       { "command": "nexus.openApprovals", "title": "Nexus: Open approvals" },
-      { "command": "nexus.openSession", "title": "Nexus: Open session" }
+      { "command": "nexus.openSession", "title": "Nexus: Open session" },
+      { "command": "nexus.openCommit", "title": "Nexus: Open commit" },
+      { "command": "nexus.mergeAgentBranch", "title": "Nexus: Merge agent branch" }
     ],
     "menus": {
       "editor/context": [

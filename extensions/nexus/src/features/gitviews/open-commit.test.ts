@@ -18,7 +18,7 @@ function commit(over: Partial<Res<"git.commit.show">> = {}): Res<"git.commit.sho
   };
 }
 
-function setup(show: Res<"git.commit.show"> | Error, pickIndex: number | undefined = 0) {
+function setup(show: Res<"git.commit.show"> | Error, pickIndex = 0) {
   const calls: Array<[string, unknown]> = [];
   const picks: { items: CommitPickItem[]; title: string }[] = [];
   const diffs: Array<{ left: DiffSide; right: DiffSide; path: string; title: string }> = [];
@@ -29,7 +29,7 @@ function setup(show: Res<"git.commit.show"> | Error, pickIndex: number | undefin
       if (show instanceof Error) throw show;
       return show as Res<N>;
     }) as OpenCommitDeps["request"],
-    showQuickPick: async (items, o) => { picks.push({ items, title: o.title }); return pickIndex === undefined ? undefined : items[pickIndex]; },
+    showQuickPick: async (items, o) => { picks.push({ items, title: o.title }); return items[pickIndex]; },
     showInputBox: vi.fn(async () => undefined),
     showError: m => { errors.push(m); },
     openDiff: async (left, right, path, title) => { diffs.push({ left, right, path, title }); },
@@ -39,7 +39,7 @@ function setup(show: Res<"git.commit.show"> | Error, pickIndex: number | undefin
 
 describe("openCommit", () => {
   it("lists one item per file with status and +/- and a header title", async () => {
-    const s = setup(commit(), undefined);
+    const s = setup(commit(), -1);
     await openCommit(s.deps, SHA);
     expect(s.calls).toEqual([["git.commit.show", { sha: SHA }]]);
     expect(s.picks[0]!.title).toBe("fix the parser · Ada · 2026-11-07 01:02 · parents bbbbbbb");
@@ -104,7 +104,7 @@ describe("openCommit", () => {
   });
 
   it("accepts a short sha typed into the input box", async () => {
-    const s = setup(commit(), undefined);
+    const s = setup(commit(), -1);
     s.deps.showInputBox = async () => " ABCDEF1 ";
     await openCommit(s.deps);
     expect(s.calls).toEqual([["git.commit.show", { sha: "abcdef1" }]]);
@@ -118,7 +118,7 @@ describe("openCommit", () => {
   });
 
   it("does not open a diff when the pick is cancelled", async () => {
-    const s = setup(commit(), undefined);
+    const s = setup(commit(), -1);
     await openCommit(s.deps, SHA);
     expect(s.diffs).toEqual([]);
   });

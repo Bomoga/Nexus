@@ -1,6 +1,6 @@
 import type { AgentHandlers } from "../agent/process-host";
 import type { SessionFinished } from "../agent-process/session-events";
-import type { ModelInfo } from "../contracts";
+import type { AgentEvent, ApprovalRequest, ModelCallReceipt, ModelInfo, SwarmReview, Task } from "../contracts";
 import type { AccountsService } from "./accounts/accounts-service";
 import { accountsBridgeHandlers } from "./accounts/accounts-service";
 import { ApprovalsController, approvalsBridgeHandlers, type ApprovalHook, type NotifyPort } from "./approvals/approvals-controller";
@@ -131,7 +131,22 @@ export function composeLane1(d: Lane1Deps) {
     "tasks.subscribe": (_req: Record<string, never>, emit: Parameters<TasksController["subscribe"]>[0]) => tasks.subscribe(emit),
   };
 
-  return { tasks, sessions, approvals, review, decompose, scheduler, optimizer: d.optimizer, host, gate, handlers, subscriptions };
+  /**
+   * The same subscriptions in the shape BridgeRouter wants (bridge/types.ts): the router owns ordering, so the handler only
+   * replays what is already stored and `live` feeds publish each new event once, whatever the number of subscribers.
+   */
+  const replays = {
+    "agent.subscribe": async (r: { sessionId: string; fromSeq: number }, emit: (e: AgentEvent) => void) => { for (const e of await d.store.agentEvents(r.sessionId, r.fromSeq)) emit(e); },
+  };
+  const live = {
+    "agent.subscribe": (publish: (e: AgentEvent) => void) => sessions.subscribeAll(publish),
+    "approvals.subscribe": (publish: (a: ApprovalRequest) => void) => approvals.subscribe(publish),
+    "tasks.subscribe": (publish: (t: Task) => void) => tasks.subscribe(publish),
+    "swarms.review.subscribe": (publish: (r: SwarmReview) => void) => review.subscribe(publish),
+    "receipts.subscribe": (publish: (r: ModelCallReceipt) => void) => d.optimizer.subscribe(publish),
+  };
+
+  return { tasks, sessions, approvals, review, decompose, scheduler, optimizer: d.optimizer, host, gate, handlers, subscriptions, replays, live };
 }
 
 export type Lane1 = ReturnType<typeof composeLane1>;

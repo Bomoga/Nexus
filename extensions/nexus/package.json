@@ -99,6 +99,34 @@
       {
         "command": "nexus.dev.reseedDemoRepo",
         "title": "Nexus (dev): Re-seed demo repo"
+      },
+      {
+        "command": "nexus.approve",
+        "title": "Nexus: Approve"
+      },
+      {
+        "command": "nexus.reject",
+        "title": "Nexus: Reject"
+      },
+      {
+        "command": "nexus.makeTaskFromThread",
+        "title": "Nexus: Make task from thread"
+      },
+      {
+        "command": "nexus.decomposeTask",
+        "title": "Nexus: Break into subtasks"
+      },
+      {
+        "command": "nexus.rerunSwarmReview",
+        "title": "Nexus: Re-run swarm review"
+      },
+      {
+        "command": "nexus.toggleOptimizer",
+        "title": "Nexus: Toggle Optimize with Prune"
+      },
+      {
+        "command": "nexus.cancelSession",
+        "title": "Nexus: Cancel agent session"
       }
     ],
     "configuration": {

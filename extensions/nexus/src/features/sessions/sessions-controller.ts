@@ -81,6 +81,7 @@ export class SessionsController implements SessionEvents {
   private readonly ending = new Map<string, Promise<AgentSession>>();
   private readonly counters = new Map<string, Counter>();
   private readonly subscribers = new Map<string, Set<(e: AgentEvent) => void>>();
+  private readonly allSubscribers = new Set<(e: AgentEvent) => void>();
 
   constructor(private readonly deps: SessionsDeps) {}
 
@@ -235,13 +236,19 @@ export class SessionsController implements SessionEvents {
       await this.deps.store.appendAgentEvent(full);
       c.next = full.seq + 1;                                    // advanced only after a successful write: no gaps
       // The event is already stored: a broken subscriber must neither fail the emit nor starve the others.
-      for (const cb of this.subscribers.get(sessionId) ?? []) {
+      for (const cb of [...(this.subscribers.get(sessionId) ?? []), ...this.allSubscribers]) {
         try { cb(full); } catch (e) { this.deps.log?.(`an event subscriber failed: ${e instanceof Error ? e.message : "unknown error"}`); }
       }
       return full;
     });
     c.chain = run.catch(() => undefined);
     return run;
+  }
+
+  /** Every stored event of every session, live only (the bridge router does its own replay and ordering). */
+  subscribeAll(cb: (e: AgentEvent) => void): Unsubscribe {
+    this.allSubscribers.add(cb);
+    return () => { this.allSubscribers.delete(cb); };
   }
 
   /** Replays from `fromSeq`, then streams live, in order and without duplicates. */

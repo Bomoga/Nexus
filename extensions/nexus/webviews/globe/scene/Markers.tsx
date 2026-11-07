@@ -1,10 +1,15 @@
 import { useLayoutEffect, useMemo, useRef } from "react";
 import { MeshBasicMaterial, Object3D, SphereGeometry } from "three";
-import type { InstancedMesh } from "three";
+import type { Group, InstancedMesh } from "three";
+import { useFrame } from "@react-three/fiber";
 import type { NexusEvent, TimeWindow } from "../../../src/contracts";
-import { eventPoint, useInstancing } from "../model";
+import { eventPoint, shouldInstance, windowMs } from "../model";
+import { eventPointInto } from "../model/arcs";
+import type { Vec3 } from "../model/arcs";
 import type { OrbitSpec } from "../model";
 import { PURPLE_HI } from "./colors";
+import { applyDrift, liveScale, useDriftNow } from "./live";
+import type { DriftData } from "./live";
 
 export interface MarkersProps {
   events: readonly NexusEvent[];
@@ -16,6 +21,8 @@ export interface MarkersProps {
 interface Placed {
   event: NexusEvent;
   position: [number, number, number];
+  data: DriftData;
+  scale: number;
 }
 
 const COMMIT_RADIUS = 0.05;
@@ -29,44 +36,76 @@ export function Markers({ events, layout, now, window }: MarkersProps) {
   const placed = useMemo<Placed[]>(() => {
     const byId = new Map(layout.map((o) => [o.id, o]));
     const out: Placed[] = [];
+    const perf = performance.now();
     for (const event of events) {
       if (event.kind !== "commit") continue;
       const orbit = byId.get(event.orbit);
       if (!orbit) continue;
-      out.push({ event, position: eventPoint(orbit, Date.parse(event.at), now, window) });
+      const atMs = Date.parse(event.at);
+      out.push({
+        event,
+        position: eventPoint(orbit, atMs, now, window),
+        data: { eventId: event.id, atMs, radius: orbit.radius, tilt: orbit.tilt },
+        scale: liveScale(event.id, perf),
+      });
     }
     return out;
-  }, [events, layout, now, window]);
+    // Initial positions only; useFrame owns them afterwards, so `now` is deliberately not a dependency.
+  }, [events, layout, window]);
 
-  return useInstancing(placed.length) ? <Instanced placed={placed} /> : <Individual placed={placed} />;
+  const driftNow = useDriftNow(now);
+  return shouldInstance(placed.length) ? (
+    <Instanced placed={placed} window={window} driftNow={driftNow} />
+  ) : (
+    <Individual placed={placed} window={window} driftNow={driftNow} />
+  );
 }
 
-function Individual({ placed }: { placed: readonly Placed[] }) {
+interface DriftProps {
+  placed: readonly Placed[];
+  window: TimeWindow;
+  driftNow: () => number;
+}
+
+function Individual({ placed, window, driftNow }: DriftProps) {
+  const group = useRef<Group>(null);
+  useFrame(() => {
+    if (group.current) applyDrift(group.current, driftNow(), window, 0, performance.now());
+  });
   return (
-    <group>
+    <group ref={group}>
       {placed.map((p) => (
-        <mesh key={p.event.id} position={p.position} geometry={sphereHi} material={markerMaterial} userData={{ eventId: p.event.id }} />
+        <mesh key={p.event.id} position={p.position} scale={p.scale} geometry={sphereHi} material={markerMaterial} userData={p.data} />
       ))}
     </group>
   );
 }
 
-function Instanced({ placed }: { placed: readonly Placed[] }) {
+const tmp: Vec3 = [0, 0, 0];
+
+function Instanced({ placed, window, driftNow }: DriftProps) {
   const mesh = useRef<InstancedMesh>(null);
   const dummy = useMemo(() => new Object3D(), []);
-  useLayoutEffect(() => {
-    const m = mesh.current;
-    if (!m) return;
-    placed.forEach((p, i) => {
-      dummy.position.set(...p.position);
+  const write = (m: InstancedMesh, now: number) => {
+    const wms = windowMs(window);
+    const perf = performance.now();
+    for (let i = 0; i < placed.length; i++) {
+      const d = placed[i].data;
+      eventPointInto(tmp, d, d.atMs, now, wms);
+      dummy.position.set(tmp[0], tmp[1], tmp[2]);
+      dummy.scale.setScalar(liveScale(d.eventId, perf));
       dummy.updateMatrix();
       m.setMatrixAt(i, dummy.matrix);
-    });
+    }
     m.count = placed.length;
     m.instanceMatrix.needsUpdate = true;
-  }, [placed, dummy]);
+  };
+  useLayoutEffect(() => {
+    if (mesh.current) write(mesh.current, driftNow());
+  }, [placed]);
+  useFrame(() => {
+    if (mesh.current) write(mesh.current, driftNow());
+  });
   // Keyed by capacity so a larger set reallocates the instance buffer.
-  return (
-    <instancedMesh key={placed.length} ref={mesh} args={[sphereLo, markerMaterial, placed.length]} frustumCulled={false} />
-  );
+  return <instancedMesh key={placed.length} ref={mesh} args={[sphereLo, markerMaterial, placed.length]} frustumCulled={false} />;
 }

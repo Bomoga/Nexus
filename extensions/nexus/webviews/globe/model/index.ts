@@ -92,7 +92,7 @@ export function eventPoint(o: Pick<OrbitSpec, "radius" | "tilt">, atMs: number, 
 export const INSTANCE_THRESHOLD = 2000;
 
 /** True when the scene should draw one InstancedMesh instead of a mesh per event (strictly more than 2,000). */
-export function useInstancing(count: number): boolean {
+export function shouldInstance(count: number): boolean {
   return count > INSTANCE_THRESHOLD;
 }
 

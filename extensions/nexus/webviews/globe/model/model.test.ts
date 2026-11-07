@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { NexusEvent } from "../../../src/contracts";
-import { NOW_ANGLE, angleFor, familiesKey, familiesOf, keepNewest, useInstancing, orbitLayout, orbitPoint, visibleEvents, windowMs } from "./index";
+import { NOW_ANGLE, angleFor, familiesKey, familiesOf, keepNewest, shouldInstance, orbitLayout, orbitPoint, visibleEvents, windowMs } from "./index";
 
 const H = 3_600_000;
 const NOW = Date.parse("2026-11-07T12:00:00Z");
@@ -96,11 +96,11 @@ describe("visibleEvents", () => {
   });
 });
 
-describe("useInstancing", () => {
+describe("shouldInstance", () => {
   it("switches strictly above 2,000", () => {
-    expect(useInstancing(0)).toBe(false);
-    expect(useInstancing(2000)).toBe(false);
-    expect(useInstancing(2001)).toBe(true);
+    expect(shouldInstance(0)).toBe(false);
+    expect(shouldInstance(2000)).toBe(false);
+    expect(shouldInstance(2001)).toBe(true);
   });
 });
 

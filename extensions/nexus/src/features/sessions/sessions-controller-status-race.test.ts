@@ -54,8 +54,9 @@ describe("sessions: setStatus racing the end of the session", () => {
         const pending = s.c.setStatus(s.session.id, "awaiting_approval");
         await Promise.resolve();
         const ending = end(s.c, s.session.id);
-        // Let the ending finish its own writes first (a held event blocks it until released, hence the race).
-        await Promise.race([ending, new Promise(r => setTimeout(r, 30))]);
+        // Release once the ending has written its terminal status (a held event blocks it, so the final event is
+        // not waited on); deterministic, no timers.
+        await vi.waitFor(() => expect(s.store.sessions.get(s.session.id)?.status).toBe(name === "cancel" ? "cancelled" : "failed"));
         d.release();
         const terminal = await ending;
         await pending;

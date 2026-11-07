@@ -73,14 +73,15 @@ interface Counter {
   chain: Promise<unknown>;
 }
 
+/** The running session; `settled` is its terminal state, set when it ends so a late write can be corrected. */
+interface ActiveRecord { session: AgentSession; task: Task; settled?: { session: AgentSession; task: Task } }
+
 export class SessionsController implements SessionEvents {
-  private active?: { session: AgentSession; task: Task };
+  private active?: ActiveRecord;
   /** Held from the first line of start() until the session is active, so two concurrent starts cannot both pass the guard. */
   private reserved = false;
   /** Endings in flight, so a second caller waits for the first instead of seeing a half-written session. */
   private readonly ending = new Map<string, Promise<AgentSession>>();
-  /** The terminal session and task of each ended session, so a late write can be corrected. */
-  private readonly settled = new Map<string, { session: AgentSession; task: Task }>();
   private readonly counters = new Map<string, Counter>();
   private readonly subscribers = new Map<string, Set<(e: AgentEvent) => void>>();
   private readonly allSubscribers = new Set<(e: AgentEvent) => void>();
@@ -180,14 +181,14 @@ export class SessionsController implements SessionEvents {
     // The session can end while a write below is in flight; its late non-terminal write would then land after the
     // terminal one. After every await, if it ended, put the terminal state back and drop the stale status event.
     await this.deps.store.putSession(a.session);
-    if (!live()) return this.reassertTerminal(sessionId);
+    if (!live()) return this.reassertTerminal(a);
     await this.putTask(a.task);
-    if (!live()) return this.reassertTerminal(sessionId);
+    if (!live()) return this.reassertTerminal(a);
     await this.emit(sessionId, { type: "status", status });
   }
 
-  private async reassertTerminal(sessionId: string): Promise<void> {
-    const t = this.settled.get(sessionId);
+  private async reassertTerminal(a: ActiveRecord): Promise<void> {
+    const t = a.settled;
     if (!t) return;
     await this.attempt("restore the session", () => this.deps.store.putSession(t.session));
     await this.attempt("restore the task", () => this.putTask(t.task));
@@ -209,14 +210,14 @@ export class SessionsController implements SessionEvents {
     return run;
   }
 
-  private async runFinalize(a: NonNullable<SessionsController["active"]>, sessionId: string, status: "done" | "failed" | "cancelled"): Promise<AgentSession> {
+  private async runFinalize(a: ActiveRecord, sessionId: string, status: "done" | "failed" | "cancelled"): Promise<AgentSession> {
     // Claim the ending before the first await, so a second finalize (cancel racing the child's own "finished") returns
     // above instead of running twice, and nothing can flip the session back to running while it ends.
     this.active = undefined;
     // Release anything still waiting on a human; a cancelled session's APPROVE must run nothing afterwards.
     await this.attempt("release approvals", () => this.deps.approvals?.sessionEnded?.(sessionId, status) ?? Promise.resolve());
     const ended: AgentSession = { ...a.session, status, endedAt: this.deps.clock.now() };
-    this.settled.set(sessionId, { session: ended, task: { ...a.task, status } });
+    a.settled = { session: ended, task: { ...a.task, status } };
     // Each write is best effort: a store hiccup must never leave the controller wedged or the agent host un-ended.
     await this.attempt("save the session", () => this.deps.store.putSession(ended));
     await this.attempt("save the task", () => this.putTask({ ...a.task, status }));

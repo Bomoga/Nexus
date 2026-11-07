@@ -116,8 +116,14 @@
 - NEEDS ADRIAN (one line in extension.ts): pass his OptimizerService to Lane 3: `registerLane3(context, lane2.router, { receipts: <optimizer> })`. Until then the command says "Prune receipts aren't connected yet". The session view's receipt OPEN button is still disabled (webviews can't run commands); with a bridge command it could call nexus.openReceipt.
 - PR #40 also carried L3-14 and the short-sha fix. Launch check on the demo repo passed first.
 
+## L3-06 activity strip: MERGED into lane-3 (~T+20; Sonnet worker, Sonnet review confirmed) — not on main yet. ALL 17 PLANNED LANE 3 TASKS ARE NOW BUILT.
+- webviews/globe/ActivityStrip.tsx + model/activity.ts: one stacked purple column per 15-minute bucket per orbit across the window, tooltip "T+hh:mm · N events"; clicking a column pins the globe to that time (BACK TO LIVE returns; the scene's drift freezes while pinned via a DriftFrozen context inside the Canvas). Fake mode buckets the demo events.
+- Lane 2's events.activity isn't on main yet: in the real fork the strip shows one muted line "activity isn't connected yet" and the globe works normally. It fills in with no Lane 3 change once Brandon lands L2-12 (asked him).
+- Lead follow-ups from the review: picking a search result newer than the pinned time returns to live (test fails on the old code); the strip rebuilds once per bucket, not every 5 s tick; its query has one bucket of slack on the left.
+- Note: Lane 2's Windows-only test failures vary run to run (11–18), all in src/services/{gate,git,coderef}.
+
 ## In flight
-- (none). Everything Lane 3 has is on main. Next: cp-2 (T+22–24) — Elkin's laptop starts an agent session that should orbit on Adrian's globe. Waiting on: PR #9 (Brandon's approval), the shared router in extension.ts (Adrian), panel body-data and the bot-only/escaping fixes (Brandon), Lane 2's git service (for L3-15). Next per the playbook: wave 6 (L3-06 activity strip, L3-14 task-plan review, L3-16 empty/error states). L3-06 and L3-14 have only a header line in PLAN and depend on Lane 2/Lane 1 work in the same wave.
+- (none). lane-3 is ahead of main by L3-06 + fixes: PR when Elkin agrees. Next: cp-2 (T+22–24) — Elkin's laptop starts an agent session that should orbit on Adrian's globe. Waiting on: PR #9 (Brandon's approval), the shared router in extension.ts (Adrian), panel body-data and the bot-only/escaping fixes (Brandon), Lane 2's git service (for L3-15). Next per the playbook: wave 6 (L3-06 activity strip, L3-14 task-plan review, L3-16 empty/error states). L3-06 and L3-14 have only a header line in PLAN and depend on Lane 2/Lane 1 work in the same wave.
 
 ## Webview host: RESOLVED by Lane 2 (main 0fb28e17, merged into lane-3 at ~T+14)
 - Brandon's host now reads media/<entry>/index.html (our Vite output) and loads its module scripts (with the nonce) and stylesheets; script-src includes cspSource, so our lazy chunks (fakeBridge/fixtures) load too. No Lane 3 build change needed.

@@ -45,7 +45,7 @@ import { IWorkingCopyEditorService } from '../../../services/workingCopy/common/
 import { IWorkingCopyService } from '../../../services/workingCopy/common/workingCopyService.js';
 import { DIFF_FOCUS_OTHER_SIDE, DIFF_FOCUS_PRIMARY_SIDE, DIFF_FOCUS_SECONDARY_SIDE, registerDiffEditorCommands } from './diffEditorCommands.js';
 import { IResolvedEditorCommandsContext, resolveCommandsContext } from './editorCommandsContext.js';
-import { fillActiveEditorSelection, prepareMoveCopyEditors } from './editor.js';
+import { fillActiveEditorSelection, isNexusHomeEditor, prepareMoveCopyEditors } from './editor.js';
 import { IRange } from '../../../../editor/common/core/range.js';
 
 export const CLOSE_SAVED_EDITORS_COMMAND_ID = 'workbench.action.closeUnmodifiedEditors';
@@ -755,6 +755,12 @@ export function splitEditor(editorGroupsService: IEditorGroupsService, direction
 	// Only support splitting from one source group
 	const { group, editors } = resolvedContext.groupedEditors[0];
 	const preserveFocus = resolvedContext.preserveFocus;
+
+	// The Nexus home cannot be split
+	if (editors.some(editor => isNexusHomeEditor(editor))) {
+		return;
+	}
+
 	const newGroup = editorGroupsService.addGroup(group, direction);
 
 	for (const editorToCopy of editors) {

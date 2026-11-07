@@ -28,7 +28,7 @@ import { DisposableStore, MutableDisposable, toDisposable } from '../../../../ba
 import { ITelemetryData, ITelemetryService } from '../../../../platform/telemetry/common/telemetry.js';
 import { DeferredPromise, Promises, RunOnceWorker } from '../../../../base/common/async.js';
 import { EventType as TouchEventType, GestureEvent } from '../../../../base/browser/touch.js';
-import { IEditorGroupsView, IEditorGroupView, fillActiveEditorViewState, EditorServiceImpl, IEditorGroupTitleHeight, IInternalEditorOpenOptions, IInternalMoveCopyOptions, IInternalEditorCloseOptions, IInternalEditorTitleControlOptions, IEditorPartsView, IEditorGroupViewOptions } from './editor.js';
+import { IEditorGroupsView, IEditorGroupView, fillActiveEditorViewState, EditorServiceImpl, IEditorGroupTitleHeight, IInternalEditorOpenOptions, IInternalMoveCopyOptions, IInternalEditorCloseOptions, IInternalEditorTitleControlOptions, IEditorPartsView, IEditorGroupViewOptions, isNexusHomeEditor } from './editor.js';
 import { ActionBar } from '../../../../base/browser/ui/actionbar/actionbar.js';
 import { IKeybindingService } from '../../../../platform/keybinding/common/keybinding.js';
 import { Separator, SubmenuAction } from '../../../../base/common/actions.js';
@@ -127,6 +127,7 @@ export class EditorGroupView extends Themable implements IEditorGroupView {
 	private readonly resourceContext: ResourceContextKey;
 
 	private readonly titleContainer: HTMLElement;
+	private nexusHomeActive = false; // true while the active editor is the Nexus home: no tabs, no title area
 	private readonly titleControl: EditorTitleControl;
 
 	private readonly progressBar: ProgressBar;
@@ -304,7 +305,7 @@ export class EditorGroupView extends Themable implements IEditorGroupView {
 
 				if (activeEditor) {
 					groupActiveEditorCanSplitInGroupContext.set(activeEditor.hasCapability(EditorInputCapabilities.CanSplitInGroup));
-					groupActiveEditorCannotCloseContext.set(activeEditor.hasCapability(EditorInputCapabilities.CannotClose));
+					groupActiveEditorCannotCloseContext.set(activeEditor.hasCapability(EditorInputCapabilities.CannotClose) || isNexusHomeEditor(activeEditor));
 					groupActiveEditorIsSideBySideEditorContext.set(activeEditor.typeId === SideBySideEditorInput.ID);
 
 					groupActiveEditorDirtyContext.set(activeEditor.isDirty() && !activeEditor.isSaving());
@@ -612,6 +613,7 @@ export class EditorGroupView extends Themable implements IEditorGroupView {
 
 		// Restore editors in title control
 		this.titleControl.openEditors(this.editors);
+		this.updateNexusHomeState();
 
 		return result;
 	}
@@ -637,6 +639,11 @@ export class EditorGroupView extends Themable implements IEditorGroupView {
 
 		// Re-emit to outside
 		this._onDidModelChange.fire(e);
+
+		// Nexus: hide the title area while the Nexus home is the active editor
+		if (e.kind === GroupModelChangeKind.EDITOR_ACTIVE || e.kind === GroupModelChangeKind.EDITOR_OPEN || e.kind === GroupModelChangeKind.EDITOR_CLOSE) {
+			this.updateNexusHomeState();
+		}
 
 		// Handle within
 
@@ -680,6 +687,26 @@ export class EditorGroupView extends Themable implements IEditorGroupView {
 				this.onDidChangeEditorCapabilities(e.editor);
 				break;
 		}
+	}
+
+	private updateNexusHomeState(): void {
+		const active = isNexusHomeEditor(this.model.activeEditor);
+		if (active === this.nexusHomeActive) {
+			return;
+		}
+
+		this.nexusHomeActive = active;
+		this.element.classList.toggle('nexus-home', active);
+		this.titleContainer.style.display = active ? 'none' : '';
+		this.relayout();
+	}
+
+	/**
+	 * The Nexus home can never be closed, moved to another group or copied (split, drag and drop),
+	 * unless a close is forced (e.g. when the window or group is torn down).
+	 */
+	private isCloseBlocked(editor: EditorInput, force?: boolean): boolean {
+		return !force && (editor.hasCapability(EditorInputCapabilities.CannotClose) || isNexusHomeEditor(editor));
 	}
 
 	private onDidOpenEditor(editor: EditorInput, editorIndex: number): void {
@@ -961,6 +988,10 @@ export class EditorGroupView extends Themable implements IEditorGroupView {
 	}
 
 	get titleHeight(): IEditorGroupTitleHeight {
+		if (this.nexusHomeActive) {
+			return { total: 0, offset: 0 };
+		}
+
 		return this.titleControl.getHeight();
 	}
 
@@ -1486,6 +1517,11 @@ export class EditorGroupView extends Themable implements IEditorGroupView {
 	private doMoveOrCopyEditorAcrossGroups(editor: EditorInput, target: EditorGroupView, openOptions?: IEditorOpenOptions, internalOptions?: IInternalMoveCopyOptions): boolean {
 		const keepCopy = internalOptions?.keepCopy;
 
+		// The Nexus home never leaves its group (no move, split, or drag and drop)
+		if (isNexusHomeEditor(editor)) {
+			return false;
+		}
+
 		// Validate that we can move
 		if (!keepCopy || editor.hasCapability(EditorInputCapabilities.Singleton) /* singleton editors will always move */) {
 			const canMoveVeto = editor.canMove(this.id, target.id);
@@ -1579,7 +1615,7 @@ export class EditorGroupView extends Themable implements IEditorGroupView {
 			return false;
 		}
 
-		if (!options?.force && !internalOptions?.force && editor.hasCapability(EditorInputCapabilities.CannotClose)) {
+		if (this.isCloseBlocked(editor, options?.force || internalOptions?.force)) {
 			return false;
 		}
 
@@ -1918,7 +1954,7 @@ export class EditorGroupView extends Themable implements IEditorGroupView {
 			return true;
 		}
 
-		const editors = this.doGetEditorsToClose(args).filter(editor => options?.force || !editor.hasCapability(EditorInputCapabilities.CannotClose));
+		const editors = this.doGetEditorsToClose(args).filter(editor => !this.isCloseBlocked(editor, options?.force));
 		if (!editors.length) {
 			return true;
 		}
@@ -2014,7 +2050,7 @@ export class EditorGroupView extends Themable implements IEditorGroupView {
 		}
 
 		// Otherwise go through potential confirmation "async"
-		const editors = this.model.getEditors(EditorsOrder.MOST_RECENTLY_ACTIVE, options).filter(editor => options?.force || !editor.hasCapability(EditorInputCapabilities.CannotClose));
+		const editors = this.model.getEditors(EditorsOrder.MOST_RECENTLY_ACTIVE, options).filter(editor => !this.isCloseBlocked(editor, options?.force));
 		if (!editors.length) {
 			return true;
 		}
@@ -2030,7 +2066,7 @@ export class EditorGroupView extends Themable implements IEditorGroupView {
 	}
 
 	private doCloseAllEditors(options?: ICloseAllEditorsOptions): void {
-		let editors = this.model.getEditors(EditorsOrder.SEQUENTIAL, options).filter(editor => options?.force || !editor.hasCapability(EditorInputCapabilities.CannotClose));
+		let editors = this.model.getEditors(EditorsOrder.SEQUENTIAL, options).filter(editor => !this.isCloseBlocked(editor, options?.force));
 		if (options?.excludeConfirming) {
 			editors = editors.filter(editor => !this.shouldConfirmClose(editor));
 		}
@@ -2255,7 +2291,7 @@ export class EditorGroupView extends Themable implements IEditorGroupView {
 		this.titleContainer.style.setProperty('--title-border-bottom-width', `${contentWidth}px`);
 
 		// Keep tabs full-width while the header and editor pane follow the content inset.
-		const titleControlSize = this.titleControl.layout({
+		const titleControlSize = this.nexusHomeActive ? new Dimension(width, 0) : this.titleControl.layout({
 			container: new Dimension(width, height),
 			available: new Dimension(width, height - this.editorPane.minimumHeight)
 		}, contentWidth);

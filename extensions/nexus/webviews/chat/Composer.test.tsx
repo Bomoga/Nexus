@@ -75,9 +75,8 @@ describe("posting from the channel view", () => {
     expect(host.posts[0].threadTs).toBeUndefined();
     expect(host.posts[0].clientId.length).toBeGreaterThan(0);
 
-    // Slack's copy arrives on the subscription before the post reply, with the same ts the reply will carry.
-    const ts = "1762490000.000001";
-    act(() => host.emit({ type: "message", message: { id: `C_DEMO:${ts}`, channelId: "C_DEMO", ts, author: { id: "U_ADRIAN", name: "adrian", isBot: false }, text: "shipping it", codeRefs: [], sentVia: "user" } }));
+    // Slack's copy arrives on the subscription before the post reply, with the clientId and the ts the reply will carry.
+    act(() => host.emit({ type: "message", message: host.copyOf(host.posts[0]) }));
     await waitFor(() => expect(container.querySelectorAll(".chat-text").length).toBe(2));
     expect(container.querySelector(".chat-row--pending")).toBeNull();
     expect(screen.getAllByText("shipping it")).toHaveLength(1);
@@ -241,16 +240,27 @@ describe("echo matching and drafts", () => {
     expect(screen.getAllByText("ok")).toHaveLength(2);
   });
 
-  test("a subscription copy of a send the bridge already marked failed clears the failed row", async () => {
+  test("a subscription copy carrying the clientId of a send already marked failed clears the failed row", async () => {
+    const host = createTestHost();
+    host.failNextPost();
+    await ready(host);
+    send("late");
+    await screen.findByText("RETRY");
+    act(() => host.emit({ type: "message", message: host.copyOf(host.posts[0]) }));
+    await waitFor(() => expect(screen.queryByText("RETRY")).toBeNull());
+    expect(screen.getAllByText("late")).toHaveLength(1);
+    expect(host.posts).toHaveLength(1);
+  });
+
+  test("our own identical text without the clientId does not clear a failed row", async () => {
     const host = createTestHost();
     host.failNextPost();
     await ready(host);
     send("late");
     await screen.findByText("RETRY");
     say(host, 12, adrian, "late");
-    await waitFor(() => expect(screen.queryByText("RETRY")).toBeNull());
-    expect(screen.getAllByText("late")).toHaveLength(1);
-    expect(host.posts).toHaveLength(1);
+    await waitFor(() => expect(screen.getAllByText("late")).toHaveLength(2));
+    expect(screen.getByText("RETRY")).toBeTruthy();
   });
 
   test("the pending echo shows our real posting name", async () => {

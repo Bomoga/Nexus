@@ -55,6 +55,8 @@ button.chat-replies:hover { color: var(--nx-accent-hi); }
 .chat-failed { border-left: 2px solid var(--nx-error); }
 .chat-failed-bar { display: flex; align-items: center; gap: var(--nx-gap-2); height: var(--nx-row-h); padding: 0 var(--nx-pad-x); font-size: var(--nx-font-ui-sm); color: var(--nx-error); }
 .chat-retry { border: 0; background: transparent; padding: 0; font: inherit; font-weight: 600; letter-spacing: 0.04em; color: var(--nx-error); text-decoration: underline; cursor: pointer; }
+.chat-unconfirmed { border-left: 2px solid var(--nx-pending); }
+.chat-failed-bar--unconfirmed, .chat-failed-bar--unconfirmed .chat-retry { color: var(--nx-pending); }
 .chat-retry:focus-visible { outline: var(--nx-border-w) solid var(--nx-focus); outline-offset: 1px; }
 
 .chat-composer { display: flex; align-items: flex-end; gap: var(--nx-gap-1); padding: var(--nx-gap-1) var(--nx-pad-x); border-top: var(--nx-border-w) solid var(--nx-border); }

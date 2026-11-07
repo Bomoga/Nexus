@@ -78,4 +78,24 @@ describe("globe App states", () => {
     fireEvent.keyDown(document.body, { key: "Escape" });
     await waitFor(() => expect(screen.queryByRole("button", { name: /STOP TRACKING/ })).toBeNull());
   });
+
+  test("after a search pick with focus still in the search box, Escape stops tracking; an open dropdown only closes", async () => {
+    const e: NexusEvent = { ...fx.event, id: "tracked", title: "tracked event", at: new Date().toISOString() };
+    const h = setup(() => [e], e);
+    render(<App bridge={h.bridge} />);
+    const box = screen.getByRole("combobox", { name: "Search events" });
+    box.focus();
+    fireEvent.change(box, { target: { value: "tracked" } });
+    await screen.findByRole("listbox", { name: "Search results" }, { timeout: 2000 });
+    // Escape with the dropdown open closes it and leaves tracking alone.
+    fireEvent.keyDown(box, { key: "Escape" });
+    expect(screen.queryByRole("listbox", { name: "Search results" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /STOP TRACKING/ })).toBeNull();
+    fireEvent.keyDown(box, { key: "ArrowDown" });
+    fireEvent.keyDown(box, { key: "Enter" });
+    await screen.findByRole("button", { name: /STOP TRACKING/ });
+    expect(document.activeElement).toBe(box);
+    fireEvent.keyDown(box, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("button", { name: /STOP TRACKING/ })).toBeNull());
+  });
 });

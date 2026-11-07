@@ -135,6 +135,8 @@ export function App({ bridge, sessionId }: AppProps) {
   const [error, setError] = useState("");
   // A failed load: the only errors with a RETRY (an action error is retried by clicking the action again).
   const [loadError, setLoadError] = useState("");
+  // approvals.list has its own slot: its failure never replaces the view or hides a sessions.get error.
+  const [approvalsError, setApprovalsError] = useState("");
   const [receiptsError, setReceiptsError] = useState("");
   const [attempt, setAttempt] = useState(0);
   // One clock for every pending approval in the view.
@@ -151,6 +153,7 @@ export function App({ bridge, sessionId }: AppProps) {
     if (!sessionId) return;
     let live = true;
     setLoadError("");
+    setApprovalsError("");
     setReceiptsError("");
     const b = bridge ?? getBridge();
     b.request("sessions.get", { sessionId })
@@ -171,7 +174,7 @@ export function App({ bridge, sessionId }: AppProps) {
       .catch((e) => live && setReceiptsError(friendlyError(e, "receipts")));
     b.request("approvals.list", { sessionId })
       .then((list) => live && setApprovals((cur) => list.reduce(putApproval, cur)))
-      .catch((e) => live && setLoadError((cur) => cur || friendlyError(e, "approvals")));
+      .catch((e) => live && setApprovalsError(friendlyError(e, "approvals")));
 
     const unsubs = [
       b.subscribe("agent.subscribe", { sessionId, fromSeq: 0 }, (e) => {
@@ -271,6 +274,7 @@ export function App({ bridge, sessionId }: AppProps) {
         <Button disabled={!canCancel} onClick={cancel}>CANCEL</Button>
       </div>
       {loadError ? <StatusLine tone="error">{loadError} {retry}</StatusLine> : null}
+      {approvalsError ? <StatusLine tone="error">{approvalsError} {retry}</StatusLine> : null}
       {error ? <StatusLine tone="error">{error}</StatusLine> : null}
       {gaps.length ? <StatusLine tone="pending">missing events {gaps.join(", ")}</StatusLine> : null}
       <Tabs tabs={TABS} active={tab} onChange={setTab} />

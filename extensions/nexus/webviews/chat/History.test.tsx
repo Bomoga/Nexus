@@ -190,7 +190,7 @@ describe("History", () => {
       },
     }).client;
     render(<History bridge={client} channelId="C1" />);
-    await screen.findByText(/^slack/);
+    await screen.findByText("slack: offline");
     fail = false;
     fireEvent.click(screen.getByText("RETRY"));
     await screen.findByText("message 1");

@@ -100,7 +100,11 @@ export function Search({ onPick, search = defaultSearch, t0Ms = DEFAULT_T0_MS }:
       e.preventDefault();
       pick(hits[active]);
     } else if (e.key === "Escape") {
-      setOpen(false);
+      // Only an open dropdown consumes Escape; otherwise it reaches the page (stop tracking).
+      if (open) {
+        e.preventDefault();
+        setOpen(false);
+      }
     }
   };
 

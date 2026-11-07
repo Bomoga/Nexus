@@ -294,6 +294,18 @@ describe("states", () => {
     expect(reqs("sessions.get")).toHaveLength(2);
   });
 
+  test("a failing approvals.list does not replace the view or hide a sessions.get error", async () => {
+    const down = { code: "offline", message: "down" };
+    const a = setup({ "approvals.list": () => { throw down; } });
+    render(<App bridge={a.bridge} sessionId="ses_01" />);
+    expect(await screen.findByText("Fix cart discount for qty > 1")).toBeTruthy();
+    expect(await screen.findByText("approvals: offline")).toBeTruthy();
+    cleanup();
+    const b = setup({ "sessions.get": () => { throw down; }, "approvals.list": () => { throw down; } });
+    render(<App bridge={b.bridge} sessionId="ses_01" />);
+    expect(await screen.findByText("session: offline")).toBeTruthy();
+  });
+
   test("empty tabs say one line each", async () => {
     const { bridge } = setup({ "receipts.list": () => ({ receipts: [], summary: { sessionId: "ses_01", calls: 0, costUsd: 0, savedUsd: 0 } }) });
     render(<App bridge={bridge} sessionId="ses_01" />);

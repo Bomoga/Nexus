@@ -335,7 +335,7 @@ describe("echo matching and drafts", () => {
       },
     });
     render(<History bridge={host.client} channelId="C_DEMO" />);
-    await screen.findByText(/^slack/);
+    await screen.findByText("slack: offline");
     expect(screen.queryByRole("textbox")).toBeNull();
   });
 

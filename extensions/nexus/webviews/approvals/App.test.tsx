@@ -96,11 +96,11 @@ describe("approvals states", () => {
         return null;
       },
     });
-    expect(await screen.findByText(/^review (failed|isn.t connected)/)).toBeTruthy();
+    expect(await screen.findByText("review: not found")).toBeTruthy();
     down = false;
     fireEvent.click(screen.getByRole("button", { name: "RETRY" }));
     await waitFor(() => expect(s.reqs("swarms.review.get")).toHaveLength(2));
-    expect(screen.queryByText(/^review (failed|isn.t connected)/)).toBeNull();
+    expect(screen.queryByText("review: not found")).toBeNull();
   });
 
   test("a pending approval shows amber waiting time and the no-timeout line; time never decides it", async () => {
@@ -263,12 +263,12 @@ describe("approvals view", () => {
       },
     });
     fireEvent.click(btn(row("a1"), /approve/i));
-    expect(await screen.findByText(/^approvals (failed|isn.t connected)/)).toBeTruthy();
+    expect(await screen.findByText("approvals: not found")).toBeTruthy();
     expect(btn(row("a1"), /approve/i).disabled).toBe(false);
     fail = false;
     fireEvent.click(btn(row("a2"), /approve/i));
     await waitFor(() => expect(row("a2").textContent).toMatch(/decided by me/));
-    expect(screen.queryByText(/^approvals (failed|isn.t connected)/)).toBeNull();
+    expect(screen.queryByText("approvals: not found")).toBeNull();
   });
 
   test("reason is model-written and rendered literally", async () => {
@@ -366,7 +366,7 @@ describe("swarm card", () => {
 
   test("a failed swarms.review.get shows an error", async () => {
     await mount([commit("c1")], { "swarms.review.get": () => { throw new Error("down"); } });
-    expect(await screen.findByText(/^review (failed|isn.t connected)/)).toBeTruthy();
+    expect(await screen.findByText("review: not found")).toBeTruthy();
   });
 
   test("a failed RE-RUN shows an error and RE-RUN is disabled while it runs", async () => {
@@ -380,7 +380,7 @@ describe("swarm card", () => {
     await waitFor(() => expect(btn(row("c1"), /re-run/i).disabled).toBe(true));
     expect(btn(row("c1"), /approve/i).disabled).toBe(false);
     fail(new Error("nope"));
-    expect(await screen.findByText(/^review (failed|isn.t connected)/)).toBeTruthy();
+    expect(await screen.findByText("review: not found")).toBeTruthy();
     expect(btn(row("c1"), /re-run/i).disabled).toBe(false);
   });
 

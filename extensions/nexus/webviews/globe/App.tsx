@@ -115,13 +115,13 @@ export function App({ bridge: injected }: AppProps = {}) {
   useLiveEvents(onLive, ready);
 
   const release = useCallback(() => setTracked(undefined), []);
-  // Escape stops tracking (outside inputs, where Escape already closes the search dropdown).
+  // Escape stops tracking unless something consumed it (an open search dropdown) or focus is in another input.
   useEffect(() => {
     if (!tracked) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape" || e.defaultPrevented) return;
       const t = e.target;
-      if (t instanceof Element && t.closest("input, textarea, select, [contenteditable]:not([contenteditable=false])")) return;
+      if (t instanceof Element && t.closest("textarea, select, [contenteditable]:not([contenteditable=false]), input:not([role=combobox])")) return;
       setTracked(undefined);
     };
     document.addEventListener("keydown", onKey);

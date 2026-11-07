@@ -1,4 +1,5 @@
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { makeBinding } from "./binding";
 import { handle, resetState, type Env } from "./index";
 import { DOMAIN, ISS, json, makeKey, mockFetch, nowSec, signJwt, unsignedJwt, type Responder, type TestKey } from "./test-helpers";
 
@@ -26,6 +27,8 @@ function setup(extra: Record<string, Responder> = {}) {
   return mockFetch({ [JWKS_URL]: () => json({ keys: [key.jwk] }), ...extra });
 }
 const startBody = { approvalId: "abcdef1234567890", sessionId: "s1", actionLabel: "run npm test", approverAuth0UserId: "auth0|approver" };
+// poll requires the binding that /ciba/start issued to this caller (sub "auth0|caller")
+const bound = async (authReqId = "req-1") => ({ authReqId, binding: await makeBinding(SECRET, authReqId, "auth0|caller") });
 const bcOk = () => json({ auth_req_id: "req-1", expires_in: 300, interval: 5 });
 
 describe("auth", () => {
@@ -86,7 +89,7 @@ describe("/ciba/start", () => {
   it("sends the exact bc-authorize form and returns the ids", async () => {
     const m = setup({ [BC_URL]: bcOk });
     const res = await handle(post("/ciba/start", startBody, await bearer()), env, { fetch: m.fn });
-    expect(await res.json()).toEqual({ authReqId: "req-1", expiresIn: 300, interval: 5 });
+    expect(await res.json()).toEqual({ authReqId: "req-1", binding: (await bound()).binding, expiresIn: 300, interval: 5 });
     const call = m.calls.find((c) => c.url === BC_URL)!;
     expect(call.method).toBe("POST");
     expect(call.headers.get("content-type")).toContain("application/x-www-form-urlencoded");
@@ -150,7 +153,7 @@ describe("/ciba/start", () => {
 describe("/ciba/poll", () => {
   const poll = async (responder: Responder) => {
     const m = setup({ [TOKEN_URL]: responder });
-    const res = await handle(post("/ciba/poll", { authReqId: "req-1" }, await bearer()), env, { fetch: m.fn });
+    const res = await handle(post("/ciba/poll", await bound(), await bearer()), env, { fetch: m.fn });
     return { res, m, body: (await res.json()) as Record<string, unknown> };
   };
 
@@ -173,10 +176,10 @@ describe("/ciba/poll", () => {
   it("maps slow_down to pending with a bumped Retry-After", async () => {
     const m = setup({ [TOKEN_URL]: () => json({ error: "slow_down" }, 400) });
     const auth = await bearer();
-    const r1 = await handle(post("/ciba/poll", { authReqId: "req-1" }, auth), env, { fetch: m.fn });
+    const r1 = await handle(post("/ciba/poll", await bound(), auth), env, { fetch: m.fn });
     expect(await r1.json()).toEqual({ status: "pending", retryAfter: 10 });
     expect(r1.headers.get("Retry-After")).toBe("10");
-    const r2 = await handle(post("/ciba/poll", { authReqId: "req-1" }, auth), env, { fetch: m.fn });
+    const r2 = await handle(post("/ciba/poll", await bound(), auth), env, { fetch: m.fn });
     expect(r2.headers.get("Retry-After")).toBe("15");
   });
   it("maps access_denied to rejected and expired_token to expired", async () => {
@@ -207,7 +210,7 @@ describe("/ciba/poll", () => {
   it("rejects bad bodies with 400", async () => {
     const m = setup({ [TOKEN_URL]: () => json({}) });
     const auth = await bearer();
-    for (const body of [{}, { authReqId: "" }, "nope", { authReqId: "x", more: true }]) {
+    for (const body of [{}, { authReqId: "" }, "nope", { ...(await bound()), more: true }, { ...(await bound()), binding: 5 }]) {
       expect((await handle(post("/ciba/poll", body, auth), env, { fetch: m.fn })).status).toBe(400);
     }
   });

@@ -1,6 +1,7 @@
 // Nexus auth service: starts and polls Auth0 CIBA requests for approvals. Stores nothing durable.
 // Secrets stay in the Worker env; nothing here logs, throws or returns the client secret or any token.
 import { z } from "zod";
+import { makeBinding, verifyBinding } from "./binding";
 import { decodeJwtPayload, resetJwtState, verifyAccessToken } from "./jwt";
 
 export interface Env {
@@ -17,7 +18,7 @@ const StartBody = z.object({
   actionLabel: z.string().min(1).max(500),
   approverAuth0UserId: z.string().min(1).max(200),
 }).strict();
-const PollBody = z.object({ authReqId: z.string().min(1).max(500) }).strict();
+const PollBody = z.object({ authReqId: z.string().min(1).max(500), binding: z.string().max(200).optional() }).strict();
 
 const DEFAULT_INTERVAL = 5;
 const MAX_ENTRIES = 1000;
@@ -25,7 +26,7 @@ const MAX_ENTRIES = 1000;
 // Per Worker isolate only, best effort: another isolate (or a restart) can start a second CIBA request for one approval.
 // The in-flight promise is stored immediately so simultaneous starts for one approval share one Auth0 call.
 // Auth0 allows 5 CIBA requests per minute per user.
-type StartResult = { ok: true; authReqId: string; interval: number; expiresIn: number; expiresAt: number } | { ok: false; status: number; error: string; message: string };
+type StartResult = { ok: true; authReqId: string; interval: number; expiresIn: number; expiresAt: number; sub: string } | { ok: false; status: number; error: string; message: string };
 const started = new Map<string, Promise<StartResult>>();
 const intervals = new Map<string, number>();
 
@@ -49,12 +50,21 @@ async function readJson(res: Response): Promise<Record<string, unknown>> {
 
 const RATE_MSG = "Auth0 allows 5 CIBA requests per minute per user; try again shortly.";
 
-const startReply = (r: StartResult, now: number): Response =>
-  r.ok
-    ? reply({ authReqId: r.authReqId, expiresIn: Math.max(1, Math.round((r.expiresAt - now) / 1000)), interval: r.interval })
-    : fail(r.status, r.error, r.message);
+const FORBIDDEN = () => fail(403, "forbidden", "This approval request belongs to another user.");
 
-async function callAuth0Start(b: z.infer<typeof StartBody>, env: Env, f: typeof fetch, now: number): Promise<StartResult> {
+// The binding ties the auth_req_id to the verified caller (sub); a cached start by another user is refused, never shared.
+async function startReply(r: StartResult, now: number, sub: string, env: Env): Promise<Response> {
+  if (!r.ok) return fail(r.status, r.error, r.message);
+  if (r.sub !== sub) return FORBIDDEN();
+  return reply({
+    authReqId: r.authReqId,
+    binding: await makeBinding(env.AUTH0_CLIENT_SECRET, r.authReqId, sub),
+    expiresIn: Math.max(1, Math.round((r.expiresAt - now) / 1000)),
+    interval: r.interval,
+  });
+}
+
+async function callAuth0Start(b: z.infer<typeof StartBody>, env: Env, f: typeof fetch, now: number, sub: string): Promise<StartResult> {
   const res = await f(`https://${env.AUTH0_DOMAIN}/bc-authorize`, {
     method: "POST",
     headers: FORM_HEADERS,
@@ -72,10 +82,10 @@ async function callAuth0Start(b: z.infer<typeof StartBody>, env: Env, f: typeof 
   if (!res.ok || typeof data.auth_req_id !== "string") return { ok: false, status: 502, error: "auth0_error", message: "Auth0 did not start the approval request." };
   const expiresIn = typeof data.expires_in === "number" ? data.expires_in : 300;
   const interval = typeof data.interval === "number" ? data.interval : DEFAULT_INTERVAL;
-  return { ok: true, authReqId: data.auth_req_id, interval, expiresIn, expiresAt: now + expiresIn * 1000 };
+  return { ok: true, authReqId: data.auth_req_id, interval, expiresIn, expiresAt: now + expiresIn * 1000, sub };
 }
 
-async function start(req: Request, env: Env, f: typeof fetch, now: number): Promise<Response> {
+async function start(req: Request, env: Env, f: typeof fetch, now: number, sub: string): Promise<Response> {
   const parsed = StartBody.safeParse(await req.json().catch(() => undefined));
   if (!parsed.success) return fail(400, "bad_request", "Body must be {approvalId, sessionId, actionLabel, approverAuth0UserId}.");
   const b = parsed.data;
@@ -83,27 +93,28 @@ async function start(req: Request, env: Env, f: typeof fetch, now: number): Prom
     const existing = started.get(b.approvalId);
     if (!existing) break;
     const r = await existing;   // an in-flight or finished start for this approval
-    if (!r.ok || r.expiresAt > now) return startReply(r, now);
+    if (!r.ok || r.expiresAt > now) return startReply(r, now, sub, env);
     if (started.get(b.approvalId) === existing) { started.delete(b.approvalId); break; }   // expired: allow a new start
     // another caller already replaced the expired entry while we waited: read it again instead of starting a second one
   }
   if (started.size >= MAX_ENTRIES) started.delete(started.keys().next().value as string);
-  const p = callAuth0Start(b, env, f, now);
+  const p = callAuth0Start(b, env, f, now, sub);
   started.set(b.approvalId, p);
   try {
     const r = await p;
     if (!r.ok && started.get(b.approvalId) === p) started.delete(b.approvalId);   // failed: a retry may start again
-    return startReply(r, now);
+    return startReply(r, now, sub, env);
   } catch (e) {
     if (started.get(b.approvalId) === p) started.delete(b.approvalId);
     throw e;
   }
 }
 
-async function poll(req: Request, env: Env, f: typeof fetch): Promise<Response> {
+async function poll(req: Request, env: Env, f: typeof fetch, sub: string): Promise<Response> {
   const parsed = PollBody.safeParse(await req.json().catch(() => undefined));
   if (!parsed.success) return fail(400, "bad_request", "Body must be {authReqId}.");
-  const { authReqId } = parsed.data;
+  const { authReqId, binding } = parsed.data;
+  if (!(await verifyBinding(env.AUTH0_CLIENT_SECRET, authReqId, sub, binding))) return FORBIDDEN();   // before any Auth0 call
   const res = await f(`https://${env.AUTH0_DOMAIN}/oauth/token`, {
     method: "POST",
     headers: FORM_HEADERS,
@@ -147,7 +158,9 @@ export async function handle(req: Request, env: Env, deps: Deps = {}): Promise<R
     const claims = await verifyAccessToken(req.headers.get("authorization"),
       { domain: env.AUTH0_DOMAIN, audience: env.AUTH0_AUDIENCE || undefined, fetch: f, nowSec: Math.floor(now / 1000) });
     if (!claims) return fail(401, "unauthorized", "A valid Nexus access token is required.");
-    return path === "/ciba/start" ? await start(req, env, f, now) : await poll(req, env, f);
+    const sub = claims.sub;
+    if (typeof sub !== "string" || !sub) return fail(401, "unauthorized", "A valid Nexus access token is required.");
+    return path === "/ciba/start" ? await start(req, env, f, now, sub) : await poll(req, env, f, sub);
   } catch {
     return fail(502, "upstream_error", "The request to Auth0 failed.");   // never echo the underlying error
   }

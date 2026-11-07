@@ -1,3 +1,4 @@
+import { plainNotificationText as plain } from "../shared/plain-text";
 import { describeAction } from "./approvals/approvals-controller";
 import type { Lane1 } from "./compose";
 
@@ -12,7 +13,7 @@ export interface CommandUi {
   pickApproval(items: Array<{ id: string; label: string; detail: string }>): Promise<string | undefined>;
 }
 
-const failure = (e: unknown, fallback: string) => (e instanceof Error && e.message ? e.message : fallback);
+const failure = (e: unknown, fallback: string) => (e instanceof Error && e.message ? plain(e.message) : fallback);
 
 export function lane1Commands(lane: Lane1, ui: CommandUi, identity: () => string) {
   async function decide(approvalId: string | undefined, decision: "approved" | "rejected"): Promise<void> {
@@ -23,11 +24,11 @@ export function lane1Commands(lane: Lane1, ui: CommandUi, identity: () => string
         if (pending.length === 0) { ui.info("Nothing is waiting for approval."); return; }
         id = pending.length === 1
           ? pending[0].id
-          : await ui.pickApproval(pending.map(a => ({ id: a.id, label: `Agent wants to ${describeAction(a.action)}`, detail: `${a.reason} (model-written)` })));
+          : await ui.pickApproval(pending.map(a => ({ id: a.id, label: `Agent wants to ${plain(describeAction(a.action), 200)}`, detail: `${plain(a.reason)} (model-written)` })));
         if (!id) return;                                         // dismissed: a decision is only ever an explicit click
       }
       const res = await lane.approvals.resolve(id, decision, { via: "app", userId: identity() });
-      if (!res.won) ui.info(`Already decided by ${res.approval.decidedBy?.userId ?? "someone"} via ${res.approval.decidedBy?.via ?? "another surface"}.`);
+      if (!res.won) ui.info(`Already decided by ${plain(res.approval.decidedBy?.userId ?? "someone", 100)} via ${plain(res.approval.decidedBy?.via ?? "another surface", 50)}.`);
     } catch (e) {
       ui.error(failure(e, "Could not record the decision."));
     }
@@ -41,7 +42,7 @@ export function lane1Commands(lane: Lane1, ui: CommandUi, identity: () => string
       if (!channelId || !threadTs) { ui.info("Choose \"Make task\" on a thread in the Slack view."); return; }
       try {
         const task = await lane.tasks.createFromThread(channelId, threadTs);
-        ui.info(`Created a draft task: ${task.title}`);
+        ui.info(`Created a draft task: ${plain(task.title, 200)}`);
       } catch (e) { ui.error(failure(e, "Could not make a task from that thread.")); }
     },
 

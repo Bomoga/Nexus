@@ -1,4 +1,5 @@
 import { ApprovalRequest, DecidedBy, type ApprovalAction, type Req, type Res } from "../../contracts";
+import { plainNotificationText } from "../../shared/plain-text";
 import { redact } from "../../shared/redact";
 import type { Clock, StorePort, Unsubscribe } from "../ports";
 import type { ApprovalRequester, SessionEvents } from "../sessions/sessions-controller";
@@ -248,7 +249,7 @@ export class ApprovalsController implements ApprovalRequester {
   // ---- internals ----
 
   private announce(approval: ApprovalRequest): void {
-    this.deps.notify.show(approval, `Agent wants to ${describeAction(approval.action)}: ${approval.reason} (model-written)`, decision => {
+    this.deps.notify.show(approval, `Agent wants to ${plainNotificationText(describeAction(approval.action), 200)}: ${plainNotificationText(approval.reason)} (model-written)`, decision => {
       this.resolve(approval.id, decision, { via: "app", userId: this.deps.identity() }).catch(e => this.deps.log?.(`could not record the decision: ${e instanceof Error ? e.message : "unknown error"}`));
     });
   }
@@ -271,7 +272,7 @@ export class ApprovalsController implements ApprovalRequester {
     try {
       // A throwing UI surface must neither skip the agent's wake-up nor the rest of the bookkeeping.
       const who = approval.decidedBy ? `${approval.decidedBy.userId} via ${approval.decidedBy.via.replace("_", " ")}` : "a teammate";
-      try { this.deps.notify.update(approval.id, `Decided by ${who}: ${decision}`); } catch (e) { this.deps.log?.(`could not update the notification: ${e instanceof Error ? e.message : "unknown error"}`); }
+      try { this.deps.notify.update(approval.id, `Decided by ${plainNotificationText(who, 100)}: ${decision}`); } catch (e) { this.deps.log?.(`could not update the notification: ${e instanceof Error ? e.message : "unknown error"}`); }
       try { this.emitChange(approval); } catch (e) { this.deps.log?.(`an approval subscriber failed: ${e instanceof Error ? e.message : "unknown error"}`); }
       if (sessionId === undefined) return;                            // not ours: nothing to wake
       // Each step stands alone: a failed event write must not leave the session showing "awaiting_approval" or skip waking the host.

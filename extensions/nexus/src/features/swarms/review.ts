@@ -14,6 +14,10 @@ const BRIEF_CHARS = 4_000;
 const TEST_CHARS = 2_000;
 const NOTE_CHARS = 300;
 const MAX_JUDGES = 8;
+/** Hard cap on untrusted council text (all judge turns together, and the synthesizer reply), applied BEFORE any scanning. */
+export const MAX_INPUT_CHARS = 64 * 1024;
+const TRUNCATED = " [council input truncated]";
+const SEVERITY: Record<Verdict, number> = { looks_good: 0, concerns: 1, do_not_merge: 2 };
 
 type Verdict = "looks_good" | "concerns" | "do_not_merge";
 type Judge = { modelId: string; verdict: Verdict; notes: string };
@@ -38,26 +42,52 @@ export interface ReviewDeps {
 const clip = (s: string, n: number) => (s.length <= n ? s : `${s.slice(0, n)}…`);
 const asVerdict = (v: unknown): Verdict => (VERDICTS.includes(v as Verdict) ? (v as Verdict) : "concerns");
 
-/** Pulls the first balanced JSON object out of a model reply that may wrap it in prose or a code fence. */
-export function extractJson(text: string): unknown {
-  const start = text.indexOf("{");
-  if (start === -1) return undefined;
-  let depth = 0, inString = false, escaped = false;
-  for (let i = start; i < text.length; i++) {
-    const ch = text[i];
-    if (inString) { if (escaped) escaped = false; else if (ch === "\\") escaped = true; else if (ch === '"') inString = false; continue; }
-    if (ch === '"') inString = true;
-    else if (ch === "{") depth++;
-    else if (ch === "}" && --depth === 0) {
-      try { return JSON.parse(text.slice(start, i + 1)); } catch { return undefined; }
-    }
+/**
+ * One linear pass over `text` that yields every top-level balanced `{...}` slice, in order. Strings and escapes are tracked, so
+ * braces inside strings do not count. Each character is visited once: after a slice closes, scanning continues after it, and an
+ * object that never closes ends the scan (it is never re-scanned from start+1). Input past MAX_INPUT_CHARS is not looked at.
+ */
+function* topLevelObjects(text: string, limit = Number.POSITIVE_INFINITY): Generator<string> {
+  const end = Math.min(text.length, MAX_INPUT_CHARS);
+  let start = -1, depth = 0, inString = false, escaped = false;
+  for (let i = 0; i < end; i++) {
+    const c = text.charCodeAt(i);
+    if (inString) { if (escaped) escaped = false; else if (c === 92) escaped = true; else if (c === 34) inString = false; continue; }
+    if (depth === 0) { if (c === 123) { start = i; depth = 1; } continue; }
+    if (c === 34) inString = true;
+    else if (c === 123) depth++;
+    else if (c === 125 && --depth === 0) { yield text.slice(start, i + 1); if (--limit <= 0) return; }
   }
+}
+
+const tryParse = (slice: string): unknown => { try { return JSON.parse(slice); } catch { return undefined; } };
+
+/** Pulls the first balanced JSON object out of a model reply that may wrap it in prose or a code fence (linear time, capped input). */
+export function extractJson(text: string): unknown {
+  for (const slice of topLevelObjects(text, 1)) return tryParse(slice);
   return undefined;
+}
+
+/**
+ * The structured verdict object in a synthesizer reply. A reply can quote objects (a forged {"verdict":"looks_good"} in front of
+ * the real one), so every top-level object carrying a valid `verdict` is considered and the MOST SEVERE one wins: quoted text can
+ * only ever make the outcome stricter, never more lenient. Still a single linear pass.
+ */
+export function extractVerdictObject(text: string): Record<string, unknown> | undefined {
+  let best: Record<string, unknown> | undefined;
+  for (const slice of topLevelObjects(text)) {
+    const o = tryParse(slice);
+    if (!o || typeof o !== "object" || Array.isArray(o)) continue;
+    const v = (o as { verdict?: unknown }).verdict;
+    if (!VERDICTS.includes(v as Verdict)) continue;
+    if (!best || SEVERITY[v as Verdict] > SEVERITY[(best as { verdict: Verdict }).verdict]) best = o as Record<string, unknown>;
+  }
+  return best;
 }
 
 /** Turns the council's reply into verdict, summary and judge notes. Tolerant: an unparseable reply is "concerns". */
 export function parseVerdict(text: string): Parsed {
-  const json = extractJson(text);
+  const json = extractVerdictObject(text) ?? extractJson(text);
   if (json && typeof json === "object") {
     const o = json as Record<string, unknown>;
     const judges = Array.isArray(o.judges)
@@ -84,15 +114,40 @@ const firstSentence = (s: string) => (/^.*?[.!?](?=\s|$)/.exec(s)?.[0] ?? s);
  * judges' redacted prose, or undefined when the output has no judge turns (the caller then treats the output as unreadable).
  */
 export function councilJudges(output: unknown): Array<{ modelId: string; text: string }> | undefined {
+  return readCouncil(output)?.judges;
+}
+
+export interface CouncilRead { judges: Array<{ modelId: string; text: string }>; emptyJudges: number; truncated: boolean }
+
+/** A turn's speaker: `role`, or `name` when the API labels turns that way. Only `*_judge` speakers are judges. */
+const speaker = (t: unknown): string | undefined => {
+  if (!t || typeof t !== "object") return undefined;
+  const o = t as { role?: unknown; name?: unknown };
+  return typeof o.role === "string" ? o.role : typeof o.name === "string" ? o.name : undefined;
+};
+
+/**
+ * Single pass over the turns: judge turns (speaker ends in `_judge`) are read in order, their raw text capped to MAX_INPUT_CHARS in
+ * total BEFORE redaction or any scanning, so hostile output cannot make later steps slow. Empty judges are counted so the caller can
+ * refuse `looks_good`. The `aggregator_agent` turn (and anything else) is never read. Returns undefined when there are no judge turns.
+ */
+export function readCouncil(output: unknown): CouncilRead | undefined {
   if (!Array.isArray(output)) return undefined;
-  const turns = output.filter((t): t is { role: string; content?: unknown } => !!t && typeof t === "object" && typeof (t as { role?: unknown }).role === "string");
-  const judgeTurns = turns.filter(t => /_judge$/i.test(t.role));
-  if (judgeTurns.length === 0) return undefined;
-  // A judge with no text says nothing, so it cannot count toward a verdict.
-  return judgeTurns.slice(0, MAX_JUDGES).map(t => ({
-    modelId: clip(redact(t.role.replace(/_judge$/i, " judge").replace(/_/g, " ")), 60),
-    text: clip(readable(outputText(t.content)), JUDGE_CHARS),
-  })).filter(j => j.text.length > 0);
+  const judges: Array<{ modelId: string; text: string }> = [];
+  let budget = MAX_INPUT_CHARS, emptyJudges = 0, truncated = false, sawJudge = false;
+  for (const t of output) {
+    const who = speaker(t);
+    if (who === undefined || !/_judge$/i.test(who)) continue;
+    sawJudge = true;
+    if (judges.length + emptyJudges >= MAX_JUDGES) { truncated = true; break; }
+    const raw = outputText((t as { content?: unknown }).content);
+    if (raw.length > budget) truncated = true;
+    const text = clip(readable(raw.slice(0, budget)), JUDGE_CHARS);
+    budget = Math.max(0, budget - raw.length);
+    if (text.length === 0) { emptyJudges++; continue; }
+    judges.push({ modelId: clip(redact(who.replace(/_judge$/i, " judge").replace(/_/g, " ")), 60), text });
+  }
+  return sawJudge ? { judges, emptyJudges, truncated } : undefined;
 }
 
 /** No verdicts could be derived: each judge's first sentence as its note, "concerns" everywhere. NEVER looks_good. */
@@ -132,11 +187,10 @@ export class SwarmReviewService implements ApprovalHook {
         task: await this.prompt(approval),
         agents: [{ agent_name: "Reviewer", system_prompt: REVIEWER_SYSTEM, max_tokens: 8_000 }],
       });
-      const text = lastTurnText(run.output) || run.text;
-      if (text.trim().length === 0) throw new SwarmsUnavailable("bad_response", "The council returned no text.");
-      const judges = councilJudges(run.output);
-      // Judges answer in prose and the aggregator only echoes the candidate, so a council verdict is derived, never read off the aggregator.
-      const parsed = judges ? await this.derive(judges, apiKey, approval.sessionId) : UNREADABLE;
+      const council = readCouncil(run.output);
+      if (!council && (lastTurnText(run.output) || run.text).trim().length === 0) throw new SwarmsUnavailable("bad_response", "The council returned no text.");
+      // Judges answer in prose and the aggregator only echoes the candidate, so a council verdict is derived from the judge turns, never read off the aggregator.
+      const parsed = council ? await this.derive(council, apiKey, approval.sessionId) : UNREADABLE;
       review = SwarmReview.parse({ ...review, status: "done", ...parsed, durationMs: Date.now() - started });
     } catch (e) {
       const why = e instanceof SwarmsUnavailable ? e.message : redact(e instanceof Error ? e.message : "unknown error");
@@ -177,9 +231,17 @@ export class SwarmReviewService implements ApprovalHook {
   }
 
   /** One text-only call turns the judges' prose into a structured verdict. Any failure or unparseable reply falls back to "concerns", never looks_good. */
-  private async derive(judges: ReadonlyArray<{ modelId: string; text: string }>, apiKey: string, sessionId: string): Promise<Parsed> {
+  private async derive(council: CouncilRead, apiKey: string, sessionId: string): Promise<Parsed> {
     const { swarms } = this.deps;
-    if (judges.length === 0 || !swarms.complete) return fallbackCouncil(judges);
+    const { judges } = council;
+    const finish = (p: Parsed): Parsed => {
+      // A judge that said nothing cannot vouch for the change; truncated input means part of the council was never read.
+      let out = p;
+      if (council.emptyJudges > 0 && out.verdict === "looks_good") out = { ...out, verdict: "concerns" };
+      if (council.truncated) out = { ...out, summary: `${clip(out.summary, NOTE_CHARS - TRUNCATED.length)}${TRUNCATED}` };
+      return out;
+    };
+    if (judges.length === 0 || !swarms.complete) return finish(fallbackCouncil(judges));
     try {
       const task = [
         "Below are written assessments from code-review judges who graded a coding agent's change.",
@@ -189,13 +251,13 @@ export class SwarmReviewService implements ApprovalHook {
         frame(judges.map(j => ({ label: `judge: ${j.modelId}`, text: j.text }))),
       ].join("\n");
       const { text } = await swarms.complete({ apiKey, sessionId, system: SYNTH_SYSTEM, task, maxTokens: 700 });
-      const json = extractJson(text);
-      if (!json || typeof json !== "object" || !VERDICTS.includes((json as { verdict?: unknown }).verdict as Verdict)) return fallbackCouncil(judges);
-      const out = parseVerdict(text);
-      return out.judges ? out : { ...out, judges: fallbackCouncil(judges).judges };
+      const json = extractVerdictObject(text);          // capped, one linear pass; the most severe quoted verdict wins
+      if (!json) return finish(fallbackCouncil(judges));
+      const out = parseVerdict(JSON.stringify(json));
+      return finish(out.judges ? out : { ...out, judges: fallbackCouncil(judges).judges });
     } catch (e) {
       this.deps.log?.(`swarm review: verdict derivation failed: ${redact(e instanceof Error ? e.message : "unknown error")}`);
-      return fallbackCouncil(judges);
+      return finish(fallbackCouncil(judges));
     }
   }
 

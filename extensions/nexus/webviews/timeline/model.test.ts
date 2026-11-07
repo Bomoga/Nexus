@@ -3,7 +3,7 @@ import type { NexusEvent } from "../../src/contracts";
 import { fx } from "../../src/contracts/fixtures";
 import { scriptedNexusEvents } from "../../src/contracts/fixtures/stream";
 import { familiesOf, windowMs } from "../globe/model";
-import { ACTIVITY_H, BLOCK_H, LANE_H, PLOT_W, activityCenterY, eventX, laneCenterY, laneIndex, layoutEvents, plotHeight, scrollFor, ticksFor, xFor } from "./model";
+import { ACTIVITY_H, BLOCK_H, LANE_H, PLOT_W, activityCenterY, eventX, keepIfSame, laneCenterY, laneIndex, layoutEvents, plotHeight, scrollFor, ticksFor, xFor } from "./model";
 
 const NOW = Date.parse("2026-11-08T15:00:00Z");
 const H = 3_600_000;
@@ -97,5 +97,17 @@ describe("scrollFor", () => {
     expect(scrollFor(10, 400, 1600)).toBe(0);
     expect(scrollFor(1600, 400, 1600)).toBe(1200);
     expect(scrollFor(500, 2000, 1600)).toBe(0);
+  });
+});
+
+describe("keepIfSame", () => {
+  test("keeps the previous array when the events are the same, else takes the new one", () => {
+    const a = { ...fx.event, id: "a" };
+    const b = { ...fx.event, id: "b" };
+    const prev = [a, b];
+    expect(keepIfSame(prev, [a, b])).toBe(prev);
+    expect(keepIfSame(prev, [a])).not.toBe(prev);
+    expect(keepIfSame(prev, [b, a])).not.toBe(prev);
+    expect(keepIfSame(prev, [a, { ...b }])).not.toBe(prev);
   });
 });

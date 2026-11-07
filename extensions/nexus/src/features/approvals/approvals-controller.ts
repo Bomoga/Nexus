@@ -74,6 +74,10 @@ export class ApprovalsController implements ApprovalRequester {
   /** Approvals whose creation failed after they were announced: nobody waits on them, so no decision may ever be written. */
   private readonly dead = new Map<string, ApprovalRequest>();
   private readonly listeners = new Set<(a: ApprovalRequest) => void>();
+  /** Human decisions already applied on this machine, kept from the moment settle() clears `pending` until a waiter takes them (bounded). */
+  private readonly settled = new Map<string, Decision>();
+  /** approvalId -> sessionId for approvals created here; never cleared by settle(), so a missing store row can still be tied to its session. */
+  private readonly sessionOf = new Map<string, string>();
 
   constructor(private readonly deps: ApprovalsDeps) {}
 
@@ -89,6 +93,7 @@ export class ApprovalsController implements ApprovalRequester {
     });
     this.creating.set(approval.id, undefined);
     this.pending.set(approval.id, approval.sessionId);
+    this.sessionOf.set(approval.id, approval.sessionId);
     this.known.add(approval.id);
     // From here on the approval may exist in the store, on screen and on other machines. ANY failure before it is handed back
     // means the caller (the gate) fails, so nobody waits on it: it must never be decidable afterwards (see abandon()).
@@ -136,6 +141,9 @@ export class ApprovalsController implements ApprovalRequester {
 
   /** Resolves when ANY surface or machine decides. There is no timeout path: a silent human leaves it pending. */
   async waitForDecision(approvalId: string): Promise<Decision> {
+    // A human decision already applied here (settle() ran before this call, e.g. during create()) is returned as is.
+    const early = this.settled.get(approvalId);
+    if (early) { this.settled.delete(approvalId); return early; }
     // Register first, then look at the store: a decision that lands in between must not leave this waiting forever.
     let register!: Waiter;
     const waiting = new Promise<Decision>((resolve, reject) => {
@@ -144,6 +152,7 @@ export class ApprovalsController implements ApprovalRequester {
       list.push(register);
       this.waiters.set(approvalId, list);
     });
+    waiting.catch(() => { /* wakeWithError may reject before the caller awaits the returned promise */ });
     let stored: ApprovalRequest | undefined;
     try {
       stored = await this.deps.store.getApproval(approvalId);
@@ -155,9 +164,17 @@ export class ApprovalsController implements ApprovalRequester {
     }
     // Already woken while the read was in flight (a human decided, or the session ended): that outcome stands, the read is stale.
     if (!(this.waiters.get(approvalId) ?? []).includes(register)) return waiting;
+    const human = this.settled.get(approvalId);
+    if (human) {                                                      // settled while the read was in flight: the human's decision beats a stale row
+      this.settled.delete(approvalId);
+      const rest = (this.waiters.get(approvalId) ?? []).filter(w => w !== register);
+      if (rest.length > 0) this.waiters.set(approvalId, rest); else this.waiters.delete(approvalId);
+      return human;
+    }
+    const sessionId = stored?.sessionId ?? this.sessionOf.get(approvalId);
     if (stored?.decision && !this.pending.has(approvalId)) this.wake(approvalId, stored.decision);
-    else if (!stored?.decision && (this.dead.has(approvalId) || (stored ? this.ended.has(stored.sessionId) : !this.pending.has(approvalId)))) {
-      // A missing row is dead only when this machine no longer owns the approval: a live pending one is still being waited for.
+    else if (!stored?.decision && (this.dead.has(approvalId) || (sessionId !== undefined && this.ended.has(sessionId)))) {
+      // A missing row is dead only when the approval was abandoned or its session is known to have ended; anything else keeps waiting.
       // Nothing can ever wake this waiter (its session ended, or it was abandoned): release the gate as rejected, writing no decision.
       const rest = (this.waiters.get(approvalId) ?? []).filter(w => w !== register);
       if (rest.length > 0) this.waiters.set(approvalId, rest); else this.waiters.delete(approvalId);
@@ -270,7 +287,11 @@ export class ApprovalsController implements ApprovalRequester {
       return;
     }
     const sessionId = this.pending.get(approval.id);
-    if (sessionId !== undefined) this.pending.delete(approval.id);
+    if (sessionId !== undefined) {
+      this.pending.delete(approval.id);
+      this.settled.set(approval.id, decision);                        // same moment as the delete, so a waiter arriving in the gap still gets the decision
+      while (this.settled.size > 256) this.settled.delete(this.settled.keys().next().value as string);
+    }
     try {
       // A throwing UI surface must neither skip the agent's wake-up nor the rest of the bookkeeping.
       const who = approval.decidedBy ? `${approval.decidedBy.userId} via ${approval.decidedBy.via.replace("_", " ")}` : "a teammate";
@@ -304,8 +325,10 @@ export class ApprovalsController implements ApprovalRequester {
   }
 
   private wake(approvalId: string, decision: Decision): void {
-    for (const w of this.waiters.get(approvalId) ?? []) w.resolve(decision);
+    const list = this.waiters.get(approvalId) ?? [];
+    for (const w of list) w.resolve(decision);
     this.waiters.delete(approvalId);
+    if (list.length > 0) this.settled.delete(approvalId);             // consumed
   }
 
   /** Releases the gate with an error instead of a decision, so its text says what really happened. */
@@ -327,16 +350,22 @@ export class ApprovalsController implements ApprovalRequester {
       }
     }
     this.ended.add(sessionId);
+    const released: string[] = [];
+    // Release every waiter first, synchronously: nothing below may hold one back.
     for (const id of waiting) {
       if (!this.pending.has(id)) continue;                            // already settled above
       this.pending.delete(id);
+      released.push(id);
       // A throwing notification must never keep the gate waiting.
       try { this.deps.notify.update(id, "The session ended; there is nothing to approve."); } catch (e) { this.deps.log?.(`could not update the notification: ${e instanceof Error ? e.message : "unknown error"}`); } finally {
         if (how === "cancelled") this.wake(id, "rejected");         // the cancelling human's "no"
         else this.wakeWithError(id, new Error(`the session ended (${how}); nothing was approved`));
-        try { const a = await this.deps.store.getApproval(id); if (a) this.emitChange(a); } catch (e) { this.deps.log?.(`could not refresh approval ${id}: ${e instanceof Error ? e.message : "unknown error"}`); }
       }
     }
+    // Then refresh the cards; a slow or hung read of one approval never delays another.
+    await Promise.allSettled(released.map(async id => {
+      try { const a = await this.deps.store.getApproval(id); if (a) this.emitChange(a); } catch (e) { this.deps.log?.(`could not refresh approval ${id}: ${e instanceof Error ? e.message : "unknown error"}`); }
+    }));
   }
 }
 

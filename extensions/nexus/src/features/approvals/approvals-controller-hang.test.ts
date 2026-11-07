@@ -240,7 +240,7 @@ describe("approvals: store failures never leave the agent waiting", () => {
     await expect(s.approvals.resolve(id, "approved", { via: "slack", userId: "brandon" })).rejects.toThrow("session has ended");
   });
 
-  it("sessionEnded(failed): a completely failing store still releases the waiter as rejected, without a decision", async () => {
+  it("sessionEnded(failed): a completely failing store still releases the waiter with an error, without a decision", async () => {
     const s = await setup();
     const result = s.runCommand();
     await vi.waitFor(() => expect(s.shown).toHaveLength(1));
@@ -345,7 +345,7 @@ describe("probe (a): failures that must not stop the agent", () => {
     expect(await bounded(result)).toBe("ran");
   });
 
-  it("sessionEnded(failed): notify.update throwing still releases the gate as rejected", async () => {
+  it("sessionEnded(failed): notify.update throwing still releases the gate with an error", async () => {
     const s = await setup();
     const result = s.runCommand();
     await vi.waitFor(() => expect(s.shown).toHaveLength(1));

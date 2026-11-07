@@ -99,8 +99,12 @@
 - Demo repo check: seeded demo/seed.mjs into C:\dev\nexus-launch\demo with --t0 now; the globe shows its 46 git events across 6 orbits end to end (Lane 2 watcher → store → router → globe), all in view. Screenshots C:\dev\nexus-launch\demo-globe*.png.
 - Follow-ups (non-blocking): a short sha typed right after startup can say "no commit" until the git extension has opened the repo; "$(" escaping in QuickPick is broader than VS Code's own.
 
+## PR #38 lane-3 → main (L3-15 + globe/timeline polish): MERGED 22:13Z after nexus-ci `extension` passed on f1806bfe
+- Elkin tested by hand first in the fork on the demo repo: Open commit (file list + diff), bad SHA error, globe search → track → Enter opens → Esc stops, all 6 orbits in view, Merge agent branch with no done sessions. All passed.
+- Merged main first: Lane 2 fixed most Windows test failures (11 left, all in Lane 2's gate/git/coderef files).
+
 ## In flight
-- (none). Hourly polls turned off at Elkin's request. lane-3 is ahead of main by L3-15 + the polish above: open a PR when Elkin is back. Waiting on: PR #9 (Brandon's approval), the shared router in extension.ts (Adrian), panel body-data and the bot-only/escaping fixes (Brandon), Lane 2's git service (for L3-15). Next per the playbook: wave 6 (L3-06 activity strip, L3-14 task-plan review, L3-16 empty/error states). L3-06 and L3-14 have only a header line in PLAN and depend on Lane 2/Lane 1 work in the same wave.
+- (none). Hourly polls off. Everything Lane 3 has is on main. Next: cp-2 (T+22–24) — Elkin's laptop starts an agent session that should orbit on Adrian's globe. Waiting on: PR #9 (Brandon's approval), the shared router in extension.ts (Adrian), panel body-data and the bot-only/escaping fixes (Brandon), Lane 2's git service (for L3-15). Next per the playbook: wave 6 (L3-06 activity strip, L3-14 task-plan review, L3-16 empty/error states). L3-06 and L3-14 have only a header line in PLAN and depend on Lane 2/Lane 1 work in the same wave.
 
 ## Webview host: RESOLVED by Lane 2 (main 0fb28e17, merged into lane-3 at ~T+14)
 - Brandon's host now reads media/<entry>/index.html (our Vite output) and loads its module scripts (with the nonce) and stylesheets; script-src includes cspSource, so our lazy chunks (fakeBridge/fixtures) load too. No Lane 3 build change needed.

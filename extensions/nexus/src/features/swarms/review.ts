@@ -42,13 +42,19 @@ export interface ReviewDeps {
 const clip = (s: string, n: number) => (s.length <= n ? s : `${s.slice(0, n)}…`);
 const asVerdict = (v: unknown): Verdict => (VERDICTS.includes(v as Verdict) ? (v as Verdict) : "concerns");
 
+/** What one scan of a reply found. `tainted`: an object was left open at the end, or a balanced one did not parse, so text may be hidden. */
+interface Scan { slices: string[]; open: boolean; capped: boolean }
+
 /**
- * One linear pass over `text` that yields every top-level balanced `{...}` slice, in order. Strings and escapes are tracked, so
- * braces inside strings do not count. Each character is visited once: after a slice closes, scanning continues after it, and an
- * object that never closes ends the scan (it is never re-scanned from start+1). Input past MAX_INPUT_CHARS is not looked at.
+ * One linear pass over `text` that collects every top-level balanced `{...}` slice, in order. Strings and escapes are tracked, so
+ * braces inside strings do not count. Each character is visited once and scanning resumes after a closed slice. An object still
+ * open at the end of the scan (or of the MAX_INPUT_CHARS cap) swallows everything after its `{`, including any real verdict, so it is
+ * reported in `open` and callers treat the reply as untrustworthy (never more lenient than `concerns`). Input past the cap is not
+ * looked at and is reported in `capped`.
  */
-function* topLevelObjects(text: string, limit = Number.POSITIVE_INFINITY): Generator<string> {
+function scan(text: string, limit = Number.POSITIVE_INFINITY): Scan {
   const end = Math.min(text.length, MAX_INPUT_CHARS);
+  const slices: string[] = [];
   let start = -1, depth = 0, inString = false, escaped = false;
   for (let i = 0; i < end; i++) {
     const c = text.charCodeAt(i);
@@ -56,49 +62,70 @@ function* topLevelObjects(text: string, limit = Number.POSITIVE_INFINITY): Gener
     if (depth === 0) { if (c === 123) { start = i; depth = 1; } continue; }
     if (c === 34) inString = true;
     else if (c === 123) depth++;
-    else if (c === 125 && --depth === 0) { yield text.slice(start, i + 1); if (--limit <= 0) return; }
+    else if (c === 125 && --depth === 0) { slices.push(text.slice(start, i + 1)); if (slices.length >= limit) return { slices, open: false, capped: false }; }
   }
+  return { slices, open: depth > 0, capped: text.length > MAX_INPUT_CHARS };
 }
 
 const tryParse = (slice: string): unknown => { try { return JSON.parse(slice); } catch { return undefined; } };
 
 /** Pulls the first balanced JSON object out of a model reply that may wrap it in prose or a code fence (linear time, capped input). */
 export function extractJson(text: string): unknown {
-  for (const slice of topLevelObjects(text, 1)) return tryParse(slice);
-  return undefined;
+  const first = scan(text, 1).slices[0];
+  return first === undefined ? undefined : tryParse(first);
 }
+
+export interface VerdictObject { object?: Record<string, unknown>; tainted: boolean }
 
 /**
  * The structured verdict object in a synthesizer reply. A reply can quote objects (a forged {"verdict":"looks_good"} in front of
- * the real one), so every top-level object carrying a valid `verdict` is considered and the MOST SEVERE one wins: quoted text can
- * only ever make the outcome stricter, never more lenient. Still a single linear pass.
+ * the real one), so every top-level object carrying a valid `verdict` is considered and the MOST SEVERE one wins. A reply is
+ * `tainted` when an object was left open, a balanced object failed to parse, or the cap cut it: a real verdict may have been hidden,
+ * so the caller must not let it be more lenient than `concerns`. Single linear pass.
  */
-export function extractVerdictObject(text: string): Record<string, unknown> | undefined {
+export function readVerdictObject(text: string): VerdictObject {
+  const { slices, open, capped } = scan(text);
   let best: Record<string, unknown> | undefined;
-  for (const slice of topLevelObjects(text)) {
+  let tainted = open || capped;
+  for (const slice of slices) {
     const o = tryParse(slice);
+    if (o === undefined) { tainted = true; continue; }
     if (!o || typeof o !== "object" || Array.isArray(o)) continue;
     const v = (o as { verdict?: unknown }).verdict;
     if (!VERDICTS.includes(v as Verdict)) continue;
     if (!best || SEVERITY[v as Verdict] > SEVERITY[(best as { verdict: Verdict }).verdict]) best = o as Record<string, unknown>;
   }
-  return best;
+  return { ...(best ? { object: best } : {}), tainted };
 }
 
-/** Turns the council's reply into verdict, summary and judge notes. Tolerant: an unparseable reply is "concerns". */
+export function extractVerdictObject(text: string): Record<string, unknown> | undefined {
+  return readVerdictObject(text).object;
+}
+
+const worst = (a: Verdict, b: Verdict): Verdict => (SEVERITY[b] > SEVERITY[a] ? b : a);
+
+/**
+ * Turns the council's reply into verdict, summary and judge notes. Tolerant: an unparseable reply is "concerns".
+ * The overall verdict is never more lenient than a tainted reply allows (`concerns`), and never more lenient than a per-judge
+ * `do_not_merge` inside the same object.
+ */
 export function parseVerdict(text: string): Parsed {
-  const json = extractVerdictObject(text) ?? extractJson(text);
-  if (json && typeof json === "object") {
-    const o = json as Record<string, unknown>;
+  const { object: json, tainted } = readVerdictObject(text);
+  const first = json ?? extractJson(text);
+  if (first && typeof first === "object") {
+    const o = first as Record<string, unknown>;
     const judges = Array.isArray(o.judges)
       ? o.judges.slice(0, MAX_JUDGES).filter((j): j is Record<string, unknown> => !!j && typeof j === "object").map(j => ({
           modelId: clip(redact(String(j.modelId ?? j.name ?? "judge")), 60), verdict: asVerdict(j.verdict), notes: clip(redact(String(j.notes ?? j.summary ?? "")), NOTE_CHARS),
         }))
       : undefined;
     const summary = typeof o.summary === "string" && o.summary.trim() ? o.summary : "The council gave a verdict without a summary.";
-    return { verdict: asVerdict(o.verdict), summary: clip(redact(summary.trim()), NOTE_CHARS), ...(judges && judges.length > 0 ? { judges } : {}) };
+    let verdict = asVerdict(o.verdict);
+    if (judges?.some(j => j.verdict === "do_not_merge")) verdict = worst(verdict, "do_not_merge");
+    if (tainted && verdict === "looks_good") verdict = "concerns";
+    return { verdict, summary: clip(redact(summary.trim()), NOTE_CHARS), ...(judges && judges.length > 0 ? { judges } : {}) };
   }
-  return { verdict: "concerns", summary: clip(redact(`Unstructured reply: ${text.trim().replace(/\s+/g, " ")}`), NOTE_CHARS) };
+  return { verdict: "concerns", summary: clip(redact(`Unstructured reply: ${text.slice(0, 4 * NOTE_CHARS).trim().replace(/\s+/g, " ")}`), NOTE_CHARS) };
 }
 
 const NO_VERDICTS = "The judges returned prose and their verdicts could not be derived; read their notes.";
@@ -118,6 +145,18 @@ export function councilJudges(output: unknown): Array<{ modelId: string; text: s
 }
 
 export interface CouncilRead { judges: Array<{ modelId: string; text: string }>; emptyJudges: number; truncated: boolean }
+
+/** Cuts `raw` to `n` chars without splitting a token: when the cut lands inside a run of non-space characters, that run is dropped (up to 512 chars), so a key can never reach redaction as a bare prefix. */
+export function cutAtWord(raw: string, n: number): string {
+  if (raw.length <= n) return raw;
+  let cut = n;
+  if (!/\s/.test(raw[n] ?? " ")) {
+    const floor = Math.max(0, n - 512);
+    while (cut > floor && !/\s/.test(raw[cut - 1])) cut--;
+    if (cut === floor && !/\s/.test(raw[cut - 1] ?? " ")) cut = floor;
+  }
+  return raw.slice(0, cut);
+}
 
 /** A turn's speaker: `role`, or `name` when the API labels turns that way. Only `*_judge` speakers are judges. */
 const speaker = (t: unknown): string | undefined => {
@@ -142,7 +181,7 @@ export function readCouncil(output: unknown): CouncilRead | undefined {
     if (judges.length + emptyJudges >= MAX_JUDGES) { truncated = true; break; }
     const raw = outputText((t as { content?: unknown }).content);
     if (raw.length > budget) truncated = true;
-    const text = clip(readable(raw.slice(0, budget)), JUDGE_CHARS);
+    const text = clip(readable(cutAtWord(raw, budget)), JUDGE_CHARS);
     budget = Math.max(0, budget - raw.length);
     if (text.length === 0) { emptyJudges++; continue; }
     judges.push({ modelId: clip(redact(who.replace(/_judge$/i, " judge").replace(/_/g, " ")), 60), text });
@@ -234,11 +273,11 @@ export class SwarmReviewService implements ApprovalHook {
   private async derive(council: CouncilRead, apiKey: string, sessionId: string): Promise<Parsed> {
     const { swarms } = this.deps;
     const { judges } = council;
-    const finish = (p: Parsed): Parsed => {
+    const finish = (p: Parsed, replyTruncated = false): Parsed => {
       // A judge that said nothing cannot vouch for the change; truncated input means part of the council was never read.
       let out = p;
       if (council.emptyJudges > 0 && out.verdict === "looks_good") out = { ...out, verdict: "concerns" };
-      if (council.truncated) out = { ...out, summary: `${clip(out.summary, NOTE_CHARS - TRUNCATED.length)}${TRUNCATED}` };
+      if (council.truncated || replyTruncated) out = { ...out, summary: `${clip(out.summary, NOTE_CHARS - TRUNCATED.length)}${TRUNCATED}` };
       return out;
     };
     if (judges.length === 0 || !swarms.complete) return finish(fallbackCouncil(judges));
@@ -251,10 +290,13 @@ export class SwarmReviewService implements ApprovalHook {
         frame(judges.map(j => ({ label: `judge: ${j.modelId}`, text: j.text }))),
       ].join("\n");
       const { text } = await swarms.complete({ apiKey, sessionId, system: SYNTH_SYSTEM, task, maxTokens: 700 });
-      const json = extractVerdictObject(text);          // capped, one linear pass; the most severe quoted verdict wins
-      if (!json) return finish(fallbackCouncil(judges));
-      const out = parseVerdict(JSON.stringify(json));
-      return finish(out.judges ? out : { ...out, judges: fallbackCouncil(judges).judges });
+      const { object, tainted } = readVerdictObject(text);          // capped, one linear pass; the most severe quoted verdict wins
+      if (!object) return finish(fallbackCouncil(judges), text.length > MAX_INPUT_CHARS);
+      let out = parseVerdict(JSON.stringify(object));
+      // Unfinished or unparseable objects in the reply, or a judges list that omits a judge we read, mean it is not to be trusted as looks_good.
+      const listed = Array.isArray(object.judges) ? object.judges.length : 0;
+      if ((tainted || listed < judges.length) && out.verdict === "looks_good") out = { ...out, verdict: "concerns" };
+      return finish(out.judges ? out : { ...out, judges: fallbackCouncil(judges).judges }, text.length > MAX_INPUT_CHARS);
     } catch (e) {
       this.deps.log?.(`swarm review: verdict derivation failed: ${redact(e instanceof Error ? e.message : "unknown error")}`);
       return finish(fallbackCouncil(judges));

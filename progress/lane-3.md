@@ -122,8 +122,11 @@
 - Lead follow-ups from the review: picking a search result newer than the pinned time returns to live (test fails on the old code); the strip rebuilds once per bucket, not every 5 s tick; its query has one bucket of slack on the left.
 - Note: Lane 2's Windows-only test failures vary run to run (11–18), all in src/services/{gate,git,coderef}.
 
+## PR #43 (L3-06) MERGED 23:30Z after nexus-ci passed on 4d862dd6 — ALL 17 LANE 3 TASKS ARE ON MAIN
+- Before the PR: merged main (39 commits; Lane 2 landed events.activity in src/services/events/activity.ts and Token Vault). Launch check on the demo repo: the activity strip shows real 15-minute bars from Lane 2's events.activity, no Lane 3 change needed (screenshot C:\dev\nexus-launch\launch-l306.png).
+
 ## In flight
-- (none). lane-3 is ahead of main by L3-06 + fixes: PR when Elkin agrees. Next: cp-2 (T+22–24) — Elkin's laptop starts an agent session that should orbit on Adrian's globe. Waiting on: PR #9 (Brandon's approval), the shared router in extension.ts (Adrian), panel body-data and the bot-only/escaping fixes (Brandon), Lane 2's git service (for L3-15). Next per the playbook: wave 6 (L3-06 activity strip, L3-14 task-plan review, L3-16 empty/error states). L3-06 and L3-14 have only a header line in PLAN and depend on Lane 2/Lane 1 work in the same wave.
+- (none). Next: cp-2 (T+22–24); review follow-ups as time allows. Next: cp-2 (T+22–24) — Elkin's laptop starts an agent session that should orbit on Adrian's globe. Waiting on: PR #9 (Brandon's approval), the shared router in extension.ts (Adrian), panel body-data and the bot-only/escaping fixes (Brandon), Lane 2's git service (for L3-15). Next per the playbook: wave 6 (L3-06 activity strip, L3-14 task-plan review, L3-16 empty/error states). L3-06 and L3-14 have only a header line in PLAN and depend on Lane 2/Lane 1 work in the same wave.
 
 ## Webview host: RESOLVED by Lane 2 (main 0fb28e17, merged into lane-3 at ~T+14)
 - Brandon's host now reads media/<entry>/index.html (our Vite output) and loads its module scripts (with the nonce) and stylesheets; script-src includes cspSource, so our lazy chunks (fakeBridge/fixtures) load too. No Lane 3 build change needed.

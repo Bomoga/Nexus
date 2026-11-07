@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { ModelInfo, OptimizerSetting, ProviderAccount, Task } from "../../src/contracts";
 import { Button, Chip, EmptyState, Input, Select, StatusLine, getBridge } from "../shared";
 import type { BridgeClient } from "../shared";
@@ -12,10 +12,11 @@ const DATA_USE_LABEL = {
   unknown: "data use unknown",
 } as const;
 
-export function modelLabel(m: ModelInfo, account: ProviderAccount | undefined): string {
-  const use = DATA_USE_LABEL[account?.dataUse ?? "unknown"];
+export function modelLabel(m: ModelInfo, account: ProviderAccount | undefined, viaPrune: boolean): string {
+  // Through Prune (all_roles) the payload also goes to the Prune service, whatever the provider says (CLAUDE.md section 14).
+  const use = viaPrune ? DATA_USE_LABEL.unknown : DATA_USE_LABEL[account?.dataUse ?? "unknown"];
   // No account means we cannot say the data stays local, so assume it leaves.
-  const leaves = account ? account.dataLeavesMachine : true;
+  const leaves = viaPrune || !account || account.dataLeavesMachine;
   return `${m.displayName} | ${m.provider} | ${use}${leaves ? " | LEAVES MACHINE" : ""}`;
 }
 
@@ -24,7 +25,8 @@ const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 export interface AppProps {
   bridge?: BridgeClient;
-  taskId: string;
+  /** Undefined when the host gave no task id: the panel shows an error and makes no requests. */
+  taskId: string | undefined;
 }
 
 export function App({ bridge, taskId }: AppProps) {
@@ -37,18 +39,29 @@ export function App({ bridge, taskId }: AppProps) {
   const [selected, setSelected] = useState("");
   const [busy, setBusy] = useState<"" | "starting" | "decomposing">("");
   const [error, setError] = useState("");
+  const [titleEmpty, setTitleEmpty] = useState(false);
   const [note, setNote] = useState("");
   const [failed, setFailed] = useState(false);
+  // Latest values for persist(), which START awaits after the user's last keystroke.
+  const saved = useRef<Task | undefined>(undefined);
+  const titleRef = useRef("");
+  const restRef = useRef("");
+  const chain = useRef<Promise<unknown>>(Promise.resolve());
+  const starting = useRef(false);
+  titleRef.current = title;
+  restRef.current = rest;
 
   useEffect(() => {
+    if (!taskId) return;
     let live = true;
     const b = bridge ?? getBridge();
     b.request("tasks.get", { taskId })
       .then((t) => {
         if (!live) return;
+        saved.current = t;
         setTask(t);
         setTitle(t.title);
-        setRest(splitBrief(t.brief).rest);
+        setRest(splitBrief(t.brief, t.source.kind === "thread").rest);
       })
       .catch(() => live && setFailed(true));
     b.request("models.list", { role: "agent" })
@@ -59,69 +72,113 @@ export function App({ bridge, taskId }: AppProps) {
       .catch(() => undefined); // labels fall back to "data use unknown" + leaves machine
     b.request("optimizer.get", {})
       .then((o) => live && setOptimizer(o))
-      .catch(() => undefined);
+      .catch(() => undefined); // the chip stays "Prune: ?"
     return () => {
       live = false;
     };
   }, [bridge, taskId]);
 
+  const viaPrune = optimizer?.enabled === true && optimizer.scope === "all_roles";
   const options = useMemo(
     () => [
       { value: "", label: "SELECT MODEL" },
-      ...models.map((m) => ({ value: modelKey(m), label: modelLabel(m, accounts.find((a) => a.provider === m.provider)) })),
+      ...models.map((m) => ({ value: modelKey(m), label: modelLabel(m, accounts.find((a) => a.provider === m.provider), viaPrune) })),
     ],
-    [models, accounts],
+    [models, accounts, viaPrune],
   );
 
+  if (!taskId) return <StatusLine tone="error">no task id</StatusLine>;
   if (failed) return <StatusLine tone="error">task unavailable</StatusLine>;
   if (!task) return <StatusLine>loading task</StatusLine>;
 
   const b = bridge ?? getBridge();
-  const { quote } = splitBrief(task.brief);
+  const isThread = task.source.kind === "thread";
+  const { quote } = splitBrief(task.brief, isThread);
   const fullBrief = composeBrief(quote, rest);
   const editable = task.status === "draft";
   const chosen = models.find((m) => modelKey(m) === selected);
 
-  const save = (patch: { title?: string; brief?: string }) => {
-    setError("");
-    b.request("tasks.update", { taskId, ...patch })
-      .then((t) => setTask((cur) => (cur ? { ...cur, title: t.title, brief: t.brief } : t)))
-      .catch((e) => setError(message(e)));
-  };
-
-  const onTitleBlur = () => {
-    const next = title.trim();
-    if (next && next !== task.title) save({ title: next });
-  };
-  const onBriefBlur = () => {
-    if (fullBrief !== task.brief) save({ brief: fullBrief });
+  /** Saves any unsaved title/brief edit, after any save already in flight. Resolves false when nothing may start on it. */
+  const persist = (): Promise<boolean> => {
+    const run = async (): Promise<boolean> => {
+      const cur = saved.current;
+      if (!cur) return false;
+      const nextTitle = titleRef.current.trim();
+      setTitleEmpty(!nextTitle);
+      if (!nextTitle) return false;
+      const patch: { title?: string; brief?: string } = {};
+      if (nextTitle !== cur.title) patch.title = nextTitle;
+      const brief = composeBrief(splitBrief(cur.brief, cur.source.kind === "thread").quote, restRef.current);
+      if (brief !== cur.brief) patch.brief = brief;
+      if (patch.title === undefined && patch.brief === undefined) return true;
+      try {
+        const u = await b.request("tasks.update", { taskId, ...patch });
+        saved.current = { ...cur, title: u.title, brief: u.brief };
+        setTask(saved.current);
+        setError("");
+        return true;
+      } catch (e) {
+        setError(`save failed: ${message(e)}`);
+        return false;
+      }
+    };
+    const p = chain.current.then(run);
+    chain.current = p;
+    return p;
   };
 
   const start = () => {
-    if (!chosen || busy) return;
+    if (!chosen || busy || starting.current || !editable) return;
+    starting.current = true;
     setBusy("starting");
     setError("");
-    b.request("agent.start", { taskId, model: { provider: chosen.provider, modelId: chosen.modelId } })
-      .then((s) => b.request("ui.openTarget", { type: "session", sessionId: s.id }))
+    persist()
+      .then(async (ok) => {
+        if (!ok) return; // never start on a brief that was not saved
+        const s = await b.request("agent.start", { taskId, model: { provider: chosen.provider, modelId: chosen.modelId } });
+        saved.current = { ...(saved.current as Task), status: "running", sessionId: s.id };
+        setTask(saved.current);
+        await b.request("ui.openTarget", { type: "session", sessionId: s.id });
+      })
       .catch((e) => setError(message(e)))
-      .finally(() => setBusy(""));
+      .finally(() => {
+        starting.current = saved.current?.status !== "draft"; // stays locked once started
+        setBusy("");
+      });
   };
 
   const decompose = () => {
     setBusy("decomposing");
     setError("");
     setNote("");
-    b.request("tasks.decompose", { taskId })
-      .then((p) => setNote(`plan ${p.id} proposed: ${p.subtasks.length} subtasks`))
+    persist()
+      .then(async (ok) => {
+        if (!ok) return;
+        const p = await b.request("tasks.decompose", { taskId });
+        setNote(`plan ${p.id} proposed: ${p.subtasks.length} subtasks`);
+      })
       .catch((e) => setError(message(e)))
       .finally(() => setBusy(""));
   };
+
+  const prune = optimizer ? (optimizer.enabled ? "ON" : "OFF") : "?";
 
   return (
     <div className="task-app">
       <div className="task-field">
         <label className="task-label" htmlFor="task-title">title</label>
-        <Input id="task-title" aria-label="title" value={title} disabled={!editable} onChange={(e) => setTitle(e.target.value)} onBlur={onTitleBlur} />
+        <Input
+          id="task-title"
+          aria-label="title"
+          value={title}
+          disabled={!editable}
+          onChange={(e) => {
+            setTitle(e.target.value);
+            if (e.target.value.trim()) setTitleEmpty(false);
+          }}
+          onBlur={() => void persist()}
+        />
+        {titleEmpty ? <StatusLine tone="error">title can't be empty</StatusLine> : null}
       </div>
 
       <div className="task-field">
@@ -139,8 +196,9 @@ export function App({ bridge, taskId }: AppProps) {
           disabled={!editable}
           spellCheck={false}
           onChange={(e) => setRest(e.target.value)}
-          onBlur={onBriefBlur}
+          onBlur={() => void persist()}
         />
+        <div className="task-quote-tag">{'lines starting with "> " are treated as quoted data by the agent'}</div>
       </div>
 
       <div className="task-field">
@@ -156,8 +214,8 @@ export function App({ bridge, taskId }: AppProps) {
       <div className="task-field">
         <label className="task-label" htmlFor="task-model">model</label>
         <div className="task-actions">
-          <Select id="task-model" aria-label="model" className="task-model" options={options} value={selected} onChange={(e) => setSelected(e.target.value)} />
-          <Chip tone={optimizer?.enabled ? "ok" : "muted"}>{`Prune: ${optimizer?.enabled ? "ON" : "OFF"}`}</Chip>
+          <Select id="task-model" aria-label="model" className="task-model" options={options} value={selected} disabled={!editable} onChange={(e) => setSelected(e.target.value)} />
+          <Chip>{`Prune: ${prune}`}</Chip>
         </div>
         {models.length === 0 ? <EmptyState message="no agent models available" /> : null}
       </div>
@@ -169,6 +227,7 @@ export function App({ bridge, taskId }: AppProps) {
         ) : null}
       </div>
 
+      {!editable ? <StatusLine>{`task ${task.status}: editing and start are locked`}</StatusLine> : null}
       {error ? <StatusLine tone="error">{error}</StatusLine> : null}
       {note ? <StatusLine>{note}</StatusLine> : null}
     </div>

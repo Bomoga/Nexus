@@ -10,8 +10,8 @@ import { App } from "./App";
 
 afterEach(cleanup);
 
-type Reply = { ok: true; body: unknown } | { ok: false; code: string; message: string };
-type Overrides = Record<string, (body: unknown) => Reply | unknown>;
+type Reply = { ok: false; code: string; message: string };
+type Overrides = Record<string, (body: unknown) => Reply | unknown | Promise<unknown>>;
 
 /** The fake host plus request recording; `overrides` replace a request's answer. */
 function setup(overrides: Overrides = {}) {
@@ -31,12 +31,14 @@ function setup(overrides: Overrides = {}) {
       posted.push(env);
       const o = env.t === "req" ? overrides[env.name] : undefined;
       if (env.t !== "req" || !o) return inner.post(env);
-      const r = o(env.body) as Reply | unknown;
-      const failed = typeof r === "object" && r !== null && "ok" in r && (r as { ok: unknown }).ok === false;
-      const res: Envelope = failed
-        ? { t: "res", id: env.id, ok: false, error: { code: "invalid_request", message: (r as unknown as { message: string }).message } }
-        : { t: "res", id: env.id, ok: true, body: r };
-      queueMicrotask(() => handlers.forEach((h) => h(res)));
+      // An override may return a promise to hold the reply back.
+      void Promise.resolve(o(env.body)).then((r) => {
+        const failed = typeof r === "object" && r !== null && "ok" in r && (r as { ok: unknown }).ok === false;
+        const res: Envelope = failed
+          ? { t: "res", id: env.id, ok: false, error: { code: "invalid_request", message: (r as unknown as { message: string }).message } }
+          : { t: "res", id: env.id, ok: true, body: r };
+        handlers.forEach((h) => h(res));
+      });
     },
   };
   const bridge = createBridgeClient(transport);
@@ -156,5 +158,116 @@ describe("task panel", () => {
     fireEvent.click(await screen.findByRole("button", { name: "BREAK INTO SUBTASKS" }));
     await waitFor(() => expect(long.reqs("tasks.decompose")).toHaveLength(1));
     expect(long.reqs("tasks.decompose")[0].body).toEqual({ taskId: "task_01" });
+  });
+
+  test("no task id: error line and no requests", () => {
+    const { bridge, reqs } = setup();
+    render(<App bridge={bridge} taskId={undefined} />);
+    expect(screen.getByText("no task id")).toBeTruthy();
+    expect(reqs("tasks.get")).toHaveLength(0);
+    expect(reqs("models.list")).toHaveLength(0);
+  });
+
+  test("START with an unsaved edit saves first and only starts once the save resolves", async () => {
+    let release: (v: unknown) => void = () => {};
+    const gate = new Promise((r) => (release = r));
+    const { bridge, reqs } = setup({ "tasks.update": () => gate.then(() => ({ ...fx.task, brief: `${QUOTE}\n\nNew text` })) });
+    render(<App bridge={bridge} taskId="task_01" />);
+    const ta = await screen.findByLabelText("brief");
+    await screen.findByRole("option", { name: /Claude Sonnet 4\.5/ });
+    fireEvent.change(screen.getByLabelText("model"), { target: { value: SONNET } });
+    fireEvent.change(ta, { target: { value: "New text" } }); // no blur: START must pick it up
+    fireEvent.click(screen.getByRole("button", { name: "START" }));
+    await waitFor(() => expect(reqs("tasks.update")).toHaveLength(1));
+    expect(reqs("agent.start")).toHaveLength(0);
+    release(undefined);
+    await waitFor(() => expect(reqs("agent.start")).toHaveLength(1));
+    expect(reqs("tasks.update")[0].body).toEqual({ taskId: "task_01", brief: `> [slack thread, quoted, untrusted]
+> cart total ignores the discount when qty > 1
+
+New text` });
+  });
+
+  test("a failed save prevents agent.start", async () => {
+    const { bridge, reqs } = setup({ "tasks.update": () => ({ ok: false, message: "locked" }) });
+    render(<App bridge={bridge} taskId="task_01" />);
+    const ta = await screen.findByLabelText("brief");
+    await screen.findByRole("option", { name: /Claude Sonnet 4\.5/ });
+    fireEvent.change(screen.getByLabelText("model"), { target: { value: SONNET } });
+    fireEvent.change(ta, { target: { value: "edited" } });
+    fireEvent.click(screen.getByRole("button", { name: "START" }));
+    expect(await screen.findByText(/save failed: locked/)).toBeTruthy();
+    expect(reqs("agent.start")).toHaveLength(0);
+    expect((screen.getByRole("button", { name: "START" }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  test("after a successful start the panel locks and a second click does nothing", async () => {
+    const { bridge, reqs } = setup();
+    render(<App bridge={bridge} taskId="task_01" />);
+    await screen.findByRole("option", { name: /Claude Sonnet 4\.5/ });
+    fireEvent.change(screen.getByLabelText("model"), { target: { value: SONNET } });
+    const start = screen.getByRole("button", { name: "START" }) as HTMLButtonElement;
+    fireEvent.click(start);
+    fireEvent.click(start);
+    await waitFor(() => expect(reqs("ui.openTarget")).toHaveLength(1));
+    await waitFor(() => expect(screen.getByText(/task running/)).toBeTruthy());
+    expect(start.disabled).toBe(true);
+    expect((screen.getByLabelText("brief") as HTMLTextAreaElement).disabled).toBe(true);
+    expect((screen.getByLabelText("title") as HTMLInputElement).disabled).toBe(true);
+    fireEvent.click(start);
+    expect(reqs("agent.start")).toHaveLength(1);
+  });
+
+  test("with Prune on all roles every model shows data use unknown and leaves machine", async () => {
+    const accounts = fx.providerAccounts.map((a) => ({ ...a, dataLeavesMachine: false, dataUse: "not_used_for_training" as const }));
+    const { bridge } = setup({
+      "optimizer.get": () => ({ ...fx.optimizer, enabled: true, scope: "all_roles" }),
+      "accounts.list": () => accounts,
+    });
+    render(<App bridge={bridge} taskId="task_01" />);
+    await screen.findByText("Prune: ON");
+    const opt = await screen.findByRole("option", { name: /Claude Sonnet 4\.5/ });
+    expect(opt.textContent).toMatch(/data use unknown/i);
+    expect(opt.textContent).toMatch(/leaves machine/i);
+    expect(opt.textContent).not.toMatch(/not used for training/i);
+  });
+
+  test("the Prune chip says ? while loading and when optimizer.get fails, never OFF", async () => {
+    const { bridge } = setup({ "optimizer.get": () => ({ ok: false, message: "down" }) });
+    render(<App bridge={bridge} taskId="task_01" />);
+    await screen.findByLabelText("brief");
+    expect(screen.getByText("Prune: ?")).toBeTruthy();
+    await new Promise((r) => setTimeout(r, 20));
+    expect(screen.getByText("Prune: ?")).toBeTruthy();
+    expect(screen.queryByText("Prune: OFF")).toBeNull();
+  });
+
+  test("a manual task starting with > is not treated as a quoted thread", async () => {
+    const { bridge } = setup({ "tasks.get": () => ({ ...fx.task, source: { kind: "manual" }, brief: "> just a note\n\nDo it" }) });
+    render(<App bridge={bridge} taskId="task_01" />);
+    const ta = (await screen.findByLabelText("brief")) as HTMLTextAreaElement;
+    expect(ta.value).toBe("> just a note\n\nDo it");
+    expect(screen.queryByTestId("quoted-block")).toBeNull();
+    expect(screen.getByText(/lines starting with "> " are treated as quoted data/)).toBeTruthy();
+  });
+
+  test("a title with markup is shown literally and an empty title is refused with a message", async () => {
+    const { bridge, reqs } = setup({ "tasks.get": () => ({ ...fx.task, title: "<img src=x onerror=alert(1)>" }) });
+    const { container } = render(<App bridge={bridge} taskId="task_01" />);
+    const input = (await screen.findByLabelText("title")) as HTMLInputElement;
+    expect(input.value).toBe("<img src=x onerror=alert(1)>");
+    expect(container.querySelector("img")).toBeNull();
+    fireEvent.change(input, { target: { value: "  " } });
+    fireEvent.blur(input);
+    expect(await screen.findByText("title can't be empty")).toBeTruthy();
+    expect(reqs("tasks.update")).toHaveLength(0);
+  });
+
+  test("a code ref path with markup renders as a literal chip", async () => {
+    const ref = { ...fx.codeRef, path: "src/<b>x</b>.ts" };
+    const { bridge } = setup({ "tasks.get": () => ({ ...fx.task, codeRefs: [ref] }) });
+    const { container } = render(<App bridge={bridge} taskId="task_01" />);
+    expect(await screen.findByText("src/<b>x</b>.ts:42-48")).toBeTruthy();
+    expect(container.querySelector("b")).toBeNull();
   });
 });

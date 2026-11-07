@@ -12,6 +12,7 @@ import { Picking } from "./picking";
 import { Activity } from "./rings";
 import { Tracking } from "./Tracking";
 import { Fit } from "./Fit";
+import { DriftFrozen } from "./live";
 import { WORLD_ROTATION } from "../model/tracking";
 import { CAMERA_FAR, outerRadius } from "../model/fit";
 
@@ -27,17 +28,20 @@ export interface SceneProps {
   tracked?: NexusEvent;
   /** The user dragged the globe while tracking. */
   onRelease?: () => void;
+  /** The globe is pinned to a past time: stop the per-frame drift. */
+  frozen?: boolean;
   /** Seam for arcs, activity rings and picking: rendered inside the same world group. */
   children?: ReactNode;
 }
 
 /** The Canvas fills its parent, which must have an explicit (not content-driven) height; r3f handles resize. */
-export function Scene({ events, now, window, onPick, tracked, onRelease, children }: SceneProps) {
+export function Scene({ events, now, window, onPick, tracked, onRelease, frozen = false, children }: SceneProps) {
   // Rebuild orbits only when the set of families changes, not on every events/now update.
   const key = familiesKey(familiesOf(events));
   const layout = useMemo(() => orbitLayout(key.split("\u0000")), [key]);
   return (
     <Canvas camera={{ fov: 40, position: [0, 0.8, 8.2], near: 0.1, far: CAMERA_FAR }} dpr={[1, 2]} gl={{ antialias: true, alpha: true }}>
+      <DriftFrozen.Provider value={frozen}>
       <OrbitControls enablePan={false} minDistance={4} maxDistance={14} rotateSpeed={0.6} makeDefault />
       <Fit radius={outerRadius(layout)} tracking={tracked !== undefined} />
       {onPick ? <Picking events={events} layout={layout} onPick={onPick} /> : null}
@@ -50,6 +54,7 @@ export function Scene({ events, now, window, onPick, tracked, onRelease, childre
         <Arcs events={events} layout={layout} now={now} window={window} />
         {children}
       </group>
+      </DriftFrozen.Provider>
     </Canvas>
   );
 }

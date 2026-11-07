@@ -5,6 +5,7 @@ import { BridgeError, type BridgeRouter } from "../bridge/types";
 import type { Disposable } from "../bridge/types";
 import type { ApprovalHook } from "../features/approvals/approvals-controller";
 import type { Lane2Services } from "./lane-1-features";
+import { createActivity, registerActivity, type ActivityQueryClient } from "../services/events/activity";
 import type { EventStore } from "../services/events/store";
 import { createGate } from "../services/gate/gate";
 import type { ApprovalsHook } from "../services/gate/types";
@@ -52,6 +53,8 @@ export interface Lane2Inputs {
   executeCommand?: (id: string, ...args: unknown[]) => Promise<unknown>;
   /** The editor side of opening a code reference; without it (or without git) coderef.open is not served. */
   codeRefEditor?: CodeRefEditor;
+  /** The shared store's client for the activity strip's continuous aggregate; counted from the local copy without it. */
+  activityQuery?: ActivityQueryClient;
   /** Test seams for the Slack service. */
   slackSeams?: Pick<CreateSlackServiceOptions, "webOptions" | "makeBotApi" | "socketOptions">;
 }
@@ -145,6 +148,8 @@ export function buildLane2(i: Lane2Inputs): Lane2Built {
     { dispose: i.store.subscribeEvents(e => r.publish("events.subscribe", e)) },
 
     registerOpenExternal(r, i.openExternal),
+    // The activity strip under the globe: 15-minute buckets per orbit (L2-12).
+    registerActivity(r, createActivity({ ...(i.activityQuery ? { query: i.activityQuery } : {}), localEvents: w => i.store.queryEvents({ from: w.from, to: w.to, limit: w.limit }) })),
   );
   if (i.executeCommand) parts.push(registerOpenTarget(r, { executeCommand: i.executeCommand }));
 

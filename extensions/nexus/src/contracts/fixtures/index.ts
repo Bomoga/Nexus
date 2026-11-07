@@ -41,7 +41,7 @@ const channels: Channel[] = [
 ];
 
 const thread: Thread = { channelId: "C_DEMO", threadTs: "1762485300.000100", messages: [
-  { id: "C_DEMO:1762485300.000100", channelId: "C_DEMO", ts: "1762485300.000100", author: { id: "U_ADRIAN", name: "adrian", isBot: false }, text: "cart total ignores the discount when qty > 1 — see nexus://coderef/ws_demo/3f2a9c1e4b7d8a6f5e0c9b2a1d4f6e8c7b5a3d21/42-48/src%2Fcart.ts", codeRefs: [codeRef], replyCount: 1, sentVia: "user" },
+  { id: "C_DEMO:1762485300.000100", channelId: "C_DEMO", ts: "1762485300.000100", author: { id: "U_ADRIAN", name: "adrian", isBot: false }, text: "cart total ignores the discount when qty > 1 — see nexus://nexus.nexus/coderef/ws_demo/3f2a9c1e4b7d8a6f5e0c9b2a1d4f6e8c7b5a3d21/42-48/src%2Fcart.ts", codeRefs: [codeRef], replyCount: 1, sentVia: "user" },
   { id: "C_DEMO:1762485360.000200", channelId: "C_DEMO", ts: "1762485360.000200", threadTs: "1762485300.000100", author: { id: "U_BRANDON", name: "brandon", isBot: false }, text: "can an agent take this?", codeRefs: [], sentVia: "user" },
 ] };
 

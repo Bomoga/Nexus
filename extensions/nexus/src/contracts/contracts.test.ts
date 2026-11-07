@@ -96,11 +96,31 @@ describe("scriptedNexusEvents", () => {
 describe("contract rules", () => {
   it("round-trips a CodeRef through nexus://", () => {
     const uri = C.encodeCodeRef(fx.codeRef);
-    expect(uri).toBe("nexus://coderef/ws_demo/3f2a9c1e4b7d8a6f5e0c9b2a1d4f6e8c7b5a3d21/42-48/src%2Fcart.ts");
+    expect(uri).toBe("nexus://nexus.nexus/coderef/ws_demo/3f2a9c1e4b7d8a6f5e0c9b2a1d4f6e8c7b5a3d21/42-48/src%2Fcart.ts");
     expect(C.decodeCodeRef(uri)).toEqual(fx.codeRef);
   });
+  it("builds links with the extension id as authority and still reads the legacy form", () => {
+    expect(C.encodeCodeRef(fx.codeRef).startsWith("nexus://nexus.nexus/coderef/")).toBe(true);
+    expect(C.decodeCodeRef(C.encodeCodeRef(fx.codeRef).replace("nexus.nexus/", ""))).toEqual(fx.codeRef);
+  });
+  it("never throws on a malformed percent escape", () => {
+    const sha = fx.codeRef.commit;
+    expect(() => C.decodeCodeRef(`nexus://nexus.nexus/coderef/ws/${sha}/1-2/%E0%A4%A`)).not.toThrow();
+    expect(C.decodeCodeRef(`nexus://nexus.nexus/coderef/ws/${sha}/1-2/%E0%A4%A`)).toBeNull();
+    expect(C.decodeCodeRef(`nexus://nexus.nexus/coderef/%E0/${sha}/1-2/a.ts`)).toBeNull();
+  });
+  it("accepts an optional clientId on ChatMessage", () => {
+    const m = fx.thread.messages[0];
+    expect(C.ChatMessage.safeParse({ ...m, clientId: "c_1" }).success).toBe(true);
+    expect(C.ChatMessage.safeParse({ ...m, clientId: 5 }).success).toBe(false);
+  });
+  it("validates ui.openExternal as https only", () => {
+    const r = C.Requests["ui.openExternal"].req;
+    expect(r.safeParse({ url: "https://example.com/x" }).success).toBe(true);
+    for (const url of ["http://example.com", "javascript:alert(1)", "file:///c:/x", "nexus://nexus.nexus/x", "not a url"]) expect(r.safeParse({ url }).success, url).toBe(false);
+  });
   it("rejects bad CodeRefs", () => {
-    expect(C.decodeCodeRef("nexus://coderef/ws/main/1-2/a.ts")).toBeNull();
+    expect(C.decodeCodeRef("nexus://nexus.nexus/coderef/ws/main/1-2/a.ts")).toBeNull();
     expect(C.CodeRef.safeParse({ ...fx.codeRef, path: "../etc/passwd" }).success).toBe(false);
     expect(C.CodeRef.safeParse({ ...fx.codeRef, startLine: 9, endLine: 3 }).success).toBe(false);
   });
@@ -110,6 +130,9 @@ describe("contract rules", () => {
   it("applies orbitOf", () => {
     expect(C.orbitOf("main")).toBe("main");
     expect(C.orbitOf("lane-2/L2-07")).toBe("lane-2");
+    expect(C.orbitOf("lane-2-wt/L2-07")).toBe("lane-2");
+    expect(C.orbitOf("lane-12-wt/a/b")).toBe("lane-12");
+    expect(C.orbitOf("lane-2-wtx/a")).toBe("lane-2-wtx/a");
     expect(C.orbitOf("nexus/agent-ses_01")).toBe("main");
     expect(C.orbitOf("feature/x/y")).toBe("feature/x");
   });

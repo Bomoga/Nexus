@@ -123,7 +123,7 @@ describe("token vault", () => {
   });
 
   it("drops error fields that look like tokens", async () => {
-    for (const error of ["xoxp-1234-5678-abcdefSECRET", "abc123SECRET", "Bad_Token"]) {
+    for (const error of ["xoxp-1234-5678-abcdefSECRET", "abc123SECRET", "Bad_Token", "xoxp-1234-5678-9abc-def0", "xoxb-12-34-abcdef"]) {
       const { vault } = setup({}, () => res(400, { error }));
       const err = await vault.getUserToken().catch(e => e) as TokenVaultError;
       expect(err.code).toBe("unauthorized");
@@ -188,5 +188,19 @@ describe("token vault", () => {
     cfg = { ...CFG, slackConnection: "other" };
     await vault.getUserToken();
     expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not hand a caller with a new config the old config's in-flight exchange", async () => {
+    let cfg = CFG;
+    let release!: () => void;
+    const gate = new Promise<void>(r => { release = r; });
+    let n = 0;
+    const { vault, fetch } = setup({ config: () => cfg }, async () => { n++; const mine = `xoxp-T${n}`; if (n === 1) await gate; return res(200, { access_token: mine, expires_in: 3600 }); });
+    const first = vault.getUserToken();
+    await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
+    cfg = { ...CFG, slackConnection: "other" };
+    const second = await vault.getUserToken();
+    release();
+    expect([(await first)?.token, second?.token, fetch.mock.calls.length]).toEqual(["xoxp-T1", "xoxp-T2", 2]);
   });
 });

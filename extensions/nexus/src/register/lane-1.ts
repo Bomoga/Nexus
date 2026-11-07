@@ -6,6 +6,8 @@ import * as vscode from "vscode";
 import { AccountsService, secretKeyFor } from "../features/accounts/accounts-service";
 import { connectProvider, type ConnectUi } from "../features/accounts/connect-provider";
 import { ModelPicker, type PickerItem, type PickerUi } from "../features/accounts/model-picker";
+import { Auth0Session } from "../features/auth/auth0-signin";
+import { setCurrentAuth } from "../features/auth/current";
 import { reseedDemoRepo } from "../features/demo/reseed";
 import { HomeKeeper } from "../features/home/open-home";
 import { createProviders } from "../models/registry";
@@ -18,6 +20,39 @@ export function registerLane1(context: vscode.ExtensionContext): void {
   registerConnectProvider(context, accounts, picker);
   registerReseedDemoRepo(context);
   registerHomeKeeper(context);
+  registerAuth(context);
+}
+
+function registerAuth(context: vscode.ExtensionContext): void {
+  const auth = new Auth0Session({
+    config: () => {
+      const c = vscode.workspace.getConfiguration("nexus.auth0");
+      const domain = c.get<string>("domain")?.trim();
+      const clientId = c.get<string>("clientId")?.trim();
+      const audience = c.get<string>("audience")?.trim();
+      return domain && clientId ? { domain, clientId, ...(audience ? { audience } : {}) } : undefined;
+    },
+    secrets: context.secrets,
+    openExternal: async url => vscode.env.openExternal(vscode.Uri.parse(url)),
+    log: m => console.warn(`Nexus auth: ${m}`),
+  });
+  setCurrentAuth(auth);                                   // Lane 2's nexus:// URI handler delegates nexus://auth/* here
+  context.subscriptions.push(
+    { dispose: () => setCurrentAuth(undefined) },
+    vscode.commands.registerCommand("nexus.signIn", async () => {
+      try {
+        const status = await auth.signIn();
+        void vscode.window.showInformationMessage(`Signed in to Nexus as ${status.name ?? status.auth0UserId}.`);
+      } catch (e) {
+        void vscode.window.showErrorMessage(e instanceof Error ? e.message : "Sign-in failed.");
+      }
+    }),
+    vscode.commands.registerCommand("nexus.signOut", async () => {
+      await auth.signOut();
+      void vscode.window.showInformationMessage("Signed out of Nexus.");
+    }),
+  );
+  void auth.restore();                                    // a stored refresh token signs in silently
 }
 
 function registerModelPicker(context: vscode.ExtensionContext, accounts: AccountsService): ModelPicker {

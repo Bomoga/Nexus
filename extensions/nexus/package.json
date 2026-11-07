@@ -89,9 +89,37 @@
         "title": "Nexus: Pick model"
       },
       {
+        "command": "nexus.signIn",
+        "title": "Nexus: Sign in (Auth0)"
+      },
+      {
+        "command": "nexus.signOut",
+        "title": "Nexus: Sign out"
+      },
+      {
         "command": "nexus.dev.reseedDemoRepo",
         "title": "Nexus (dev): Re-seed demo repo"
       }
-    ]
+    ],
+    "configuration": {
+      "title": "Nexus",
+      "properties": {
+        "nexus.auth0.domain": {
+          "type": "string",
+          "default": "",
+          "description": "Auth0 tenant host name, for example your-tenant.eu.auth0.com (no https://)."
+        },
+        "nexus.auth0.clientId": {
+          "type": "string",
+          "default": "",
+          "description": "Client ID of the Auth0 Native application. Not a secret."
+        },
+        "nexus.auth0.audience": {
+          "type": "string",
+          "default": "",
+          "description": "Optional API audience to request in the access token."
+        }
+      }
+    }
   }
 }

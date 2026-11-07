@@ -151,8 +151,10 @@ export class ApprovalsController implements ApprovalRequester {
       if (rest.length > 0) this.waiters.set(approvalId, rest); else this.waiters.delete(approvalId);
       throw e;
     }
+    // Already woken while the read was in flight (a human decided, or the session ended): that outcome stands, the read is stale.
+    if (!(this.waiters.get(approvalId) ?? []).includes(register)) return waiting;
     if (stored?.decision && !this.pending.has(approvalId)) this.wake(approvalId, stored.decision);
-    else if (!stored?.decision && (this.dead.has(approvalId) || !this.pending.has(approvalId) || (stored && this.ended.has(stored.sessionId)))) {
+    else if (!stored?.decision && (this.dead.has(approvalId) || (stored && this.ended.has(stored.sessionId)))) {
       // Nothing can ever wake this waiter (its session ended, or it was abandoned): release the gate as rejected, writing no decision.
       const rest = (this.waiters.get(approvalId) ?? []).filter(w => w !== register);
       if (rest.length > 0) this.waiters.set(approvalId, rest); else this.waiters.delete(approvalId);

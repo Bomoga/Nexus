@@ -109,4 +109,21 @@ describe("approvals: the session ends while create() is writing the approval", (
     expect((s.approvals as unknown as { waiters: Map<string, unknown> }).waiters.size).toBe(0);
     expect((await s.store.getApproval(a.id))!.decision).toBeUndefined();
   });
+
+  it("a human approval that lands while waitForDecision is reading the store still returns approved", async () => {
+    const s = await setup();
+    vi.restoreAllMocks();
+    const a = await s.approvals.create({ sessionId: s.session.id, action: { kind: "run_command", command: "npm test" }, reason: "r" });
+    const real = s.store.getApproval.bind(s.store);
+    let release!: () => void;
+    const held = new Promise<void>(r => { release = r; });
+    let entered!: () => void;
+    const inRead = new Promise<void>(r => { entered = r; });
+    vi.spyOn(s.store, "getApproval").mockImplementationOnce(async id => { const pre = await real(id); entered(); await held; return pre; });   // the pre-decision row
+    const waiting = s.approvals.waitForDecision(a.id);
+    await inRead;
+    await s.approvals.resolve(a.id, "approved", { via: "slack", userId: "brandon" });
+    release();
+    expect(await bounded(waiting)).toBe("approved");
+  });
 });

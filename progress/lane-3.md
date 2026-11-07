@@ -63,6 +63,10 @@
 - ASK ADRIAN (blocks real data in every Lane 3 view): nobody constructs Lane 2's NexusBridgeRouter yet. Lane 1 serves its handlers on its FakeBridgeServer fallback, and Lane 3's views attach to a separate stand-in router, so every request answers "no handler". Fix in extension.ts (Lane 1's file): create ONE NexusBridgeRouter (with the real containsSecret from src/shared/redact.ts and a log sink), register app.ping on it (registerAppPing), then `registerLane1(context, { router })`, `registerLane2(...)`, `registerLane3(context, router)`. registerLane3 already takes the router as its second argument.
 - Cleaner later (Lane 2's host.ts): let openPanel take body data attributes, so the html is set once instead of being rewritten.
 
+## PR #16 lane-3 → main: MERGED (~T+15:40, https://github.com/Bomoga/Nexus/pull/16)
+- Before opening: merged main (PR #9 contracts, CIBA hook, CODEOWNERS fix; package.json regenerated from fragments), added the ui.openExternal fake-bridge handler, 1043 tests / 70 files green, launch check re-run on the merged tree (globe home, no tab, no errors; screenshot C:\dev\nexus-launch\launch-check-2.png). No contract files touched.
+- Elkin approved merging once CI passed. `gh pr merge --auto` merged at once, because main has no required checks since Lane 1 dropped branch protection. nexus-ci `extension` passed (1m31s). The other checks are upstream VS Code workflows (CodeQL, Component Fixtures, Code OSS) that stay queued and don't test Nexus. Lesson: with no required checks, wait for nexus-ci before merging; don't rely on --auto.
+
 ## In flight
 - (none). Hourly polls turned off at Elkin's request. Waiting on: PR #9 (Brandon's approval), the shared router in extension.ts (Adrian), panel body-data and the bot-only/escaping fixes (Brandon), Lane 2's git service (for L3-15). Next per the playbook: wave 6 (L3-06 activity strip, L3-14 task-plan review, L3-16 empty/error states). L3-06 and L3-14 have only a header line in PLAN and depend on Lane 2/Lane 1 work in the same wave.
 

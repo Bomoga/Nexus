@@ -1,10 +1,112 @@
 ## Done
+- H0-N1 webview skeleton smoke (in C:\dev\nexus-hello, outside the repo)
+- H0-N3 theme.css + style test drafted; theme.css and Button seeded into webviews/shared/
+- L3-02 globe core (attempt 2 confirmed by review; merged T+3:40)
+- L3-08 Slack view part 1 (confirmed on first review; merged T+3:45)
+- L3-01 first drop (component stubs + fakeBridge) merged early at T+3:25 so L3-02/L3-08 could start
+- L3-01 shared kit (attempt 2 confirmed by review; merged T+4:00). Integration fixes at merge: chat tests import createFakeTransport from shared/fakeBridge; globe/chat local env.d.ts replaced by shared/env.d.ts; globe loads fixtures lazily so production bundles carry no demo data (checked: 0 demo strings in chat/globe main bundles).
+- Wave 1 verified in a browser on ?fake=1: globe renders 159 scripted events with no console errors; Slack view shows channels, history and the status line.
+- Lead: Slack and Approvals sidebar views declared in contributes/lane-3.json; package.json regenerated (contributes:check clean).
+- L3-03 globe arcs, activity rings, live inserts (attempt 2 disputed only for literal NUL bytes in model/arcs.ts; Elkin approved a lead fix: separators now "\n"; merged T+5).
+- L3-13 task editor (attempt 2 disputed only for §14 labels while the optimizer state is unknown; Elkin approved a lead fix: unknown optimizer ⇒ "data use unknown" + LEAVES MACHINE, fields locked during START, regression test proven to fail without the fix; merged T+5).
+- After both merges: 134 tests / 11 files, typechecks, lint, build of chat/globe/task, contributes:check all green; 0 fixture strings in production bundles; 0 NUL bytes. Browser check on ?fake=1: task editor renders; globe live count rises with cubes/diamonds on the activity rings.
+
+- Morning run (scheduled, Elkin asleep): merged origin/main into lane-3 (35 lane-2 commits: bridge router + webview host, slack web client, local event store) — clean, 291 tests green, pushed.
+
+## L3-09 (Slack threads + composer): attempt 2 MERGED (Elkin chose option A in the morning)
+- Merged dd52edc0 into lane-3 (7f26b4f6). The only conflict was chat.css, where both L3-09 and L3-10 had appended rules; kept both, and fixed the 10 px bot label to the 11 px token. 985 tests green. The worktree is removed; branch lane-3-wt/L3-09 is kept (7a988ac1 has the outbox-store ideas) for the clientId redo once PR #9 is on main.
+- History of the decision, kept for the redo. Commits: 085b63ed (attempt 1), dd52edc0 (attempt 2), 7a988ac1 (approved fix round: app-owned outbox store, MAKE TASK keyed by thread). All 129 tests pass; the four bugs from last night are fixed for their tested scenarios (their regression tests fail on dd52edc0).
+- The fix round was DISPUTED (Opus reviewer, reproduced with probes in a scratch copy):
+  1. NEW silent loss (regression vs dd52edc0): dropConfirmed (live.ts:157-167) matches identity + text with no ts bound, so an OLDER message of ours with the same text ("ok", "thanks") deletes a genuinely failed send and its RETRY — on return to the channel, or even with no navigation when the page loads after the failure. Fix: only our own copy with ts ≥ the echo's send time (minus skew) confirms it, one copy confirms at most one echo.
+  2. Bug (b) still open for restored PENDING echoes: Slack delivers while away, user returns, pending echo shown beside the real message; the 30 s timeout then turns it into RETRY → double post.
+  3. Post results reach only the view that sent them: close/reopen the thread pane while a reply is in flight → the row stays pending forever (failure) or a stale pending row stays beside the reply (success). Fix: the store notifies subscribed views per target; settlement must not go through the sender's closure.
+- Root cause: without a clientId on ChatMessage, the view has to guess which Slack copy is "ours". The robust fix is cross-lane: an optional `clientId` on ChatMessage echoed by the host (contract change, Lane 1) and/or slack.post idempotent by clientId (Lane 2) — then every match is exact and RETRY after a timeout is safe.
+- Options: (A) merge dd52edc0 (attempt 2) as the cp-1 version — its known issues are edge cases around switching channels/threads mid-send — and do the store work after the clientId contract lands; (B) one more focused fix round on 7a988ac1 for items 1-3 with probe-based tests; (C) hold until the contract change. Lead recommendation: (A) for cp-1 + push the clientId ask to Adrian/Brandon today; never merge 7a988ac1 as-is (item 1 is a regression).
+
+- L3-04 globe picking + detail strip (attempt 2 confirmed by review; merged in the morning run). Click picks markers (individual + instanced), merge arcs and activity cubes/diamonds; drag never selects; one-row DetailStrip with OPEN/Enter → ui.openTarget; T+ origin 2026-11-07T03:00Z (22:00 ET). After merge: 312 tests / 21 files, typechecks, lint, builds, contributes:check green; 0 fixture strings; 0 NUL bytes. Not checked in a real browser: raycasting (jsdom can't render the Canvas) — worth a manual click test on /globe/?fake=1.
+- Not done for L3-04: ?debug=1 pause/speed controls (no seam in Globe.tsx; small follow-up).
+
+- Wave 4 (hourly poll, ~T+10, Elkin asleep) — all three confirmed on the first review and merged:
+  - L3-05 globe event search + tracking: debounced events.search dropdown (newest first; title/kind/orbit/T+/sha), arrows/Enter/Escape, widen the window to the smallest one containing the event (ui.setTimeWindow), camera follows the event at ~85% distance with a purple ring, drag/wheel or STOP TRACKING releases. "/" and Ctrl+F focus the box.
+  - L3-10 code-ref chips (coderef.open, stale outline), bot messages (purple rule + "NEXUS · model-written", APPROVE/REJECT from Block Kit via approvals.resolve, "decided by …"), share-selection.ts (Share to Slack flow with injected deps) + editor/context menu in contributes/lane-3.json; package.json regenerated by the lead.
+  - L3-11 session view (webviews/session): header status, LOG/DIFF/TESTS/RECEIPTS tabs, replay from seq 0 with dedupe and gap warning, CANCEL via agent.cancel, inline approvals via approvals.resolve, receipt totals.
+  - After the merges: 375 tests, both typechecks, eslint, build of chat/globe/session/task, contributes:check green; 0 fixture strings; 0 NUL bytes. Not checked in a browser or the fork.
+- Lead adjustments used in wave 4 (no contract changes): approve/reject buttons and CANCEL use the existing bridge requests approvals.resolve / agent.cancel instead of running nexus.approve/reject/cancelSession commands (no command bridge exists); receipt OPEN is a disabled button until a bridge path exists; nexus.searchEvents can't push "focus" into the webview (no host→webview message in the protocol), so the box takes "/" and Ctrl+F.
+
+- Poll at ~T+12: merged origin/main (Lane 1 PR #10: swarm review reads the council's judge turns, auth callback routed to the extension id). Clean, with no shared-file changes. 878 tests / 59 files, typechecks, build, contributes:check green; pushed.
+
+## Lane 1 contracts change: PR #9 (https://github.com/Bomoga/Nexus/pull/9) APPROVED by Elkin; waiting on Brandon's approval and the merge
+- Test-merged into lane-3: 950 tests pass. One follow-up for us when it lands: webviews/shared/fakeBridge.ts needs a `"ui.openExternal": () => ({})` handler, or the webview typecheck fails.
+- It adds an optional `clientId` on ChatMessage (the host echoes the sender's id) and `ui.openExternal` {url: https only}, which are our two asks. It also moves nexus:// links to the `nexus.nexus` authority (old links are still read), makes decodeCodeRef non-throwing, and maps `lane-N-wt/<id>` branches to orbit lane-N.
+- Contract PRs need both other engineers' approval (CODEOWNERS), so Elkin has to review and approve it. I couldn't check whether a PR is open (gh isn't on this shell's PATH).
+- Once it's on main, it unblocks: L3-09's robust fix (match pending echoes by clientId instead of guessing; makes options B/C viable), chat links opening via ui.openExternal, and receipt OPEN (the Prune verify URL).
+
+- Wave 5 (poll at ~T+13; started 20 min before the usage reset, so it used budget that would have expired anyway):
+  - L3-07 timeline fallback (webviews/timeline): one SVG with a lane per branch family, time on x, square commit marks, merge connectors, activity strip, the globe's Search + DetailStrip reused, live inserts. Attempt 1 was disputed (the commit-mark CSS selector matched nothing, so marks rendered black). Attempt 2 was confirmed: real selectors, a style-guard test that parses the CSS against the rendered shapes, and drift as one group transform.
+  - L3-12 approvals view (webviews/approvals): pending first, run_command monospace, commit message + collapsed diffPreview, model-written labels, per-approval busy, swarm card (council reviewing / verdict + judges / unavailable + RE-RUN via swarms.review.rerun), and decider names via slack.users. Attempt 1 was disputed: (1) the real host answers a lost race with BridgeError "conflict", not the winner, so the view showed an error and left the buttons live; (2) a decided approval with no decidedBy kept its buttons. Attempt 2 was confirmed: on conflict it re-lists and shows the winner, and branches on the decision alone.
+  - After both merges: 927 tests, typechecks, eslint, build of approvals/chat/globe/session/task/timeline, contributes:check green; 0 fixture strings; 0 NUL. Not checked in a browser or the fork.
+  - L3-15 git views SKIPPED (needs a decision): there is no Lane 2 git service or nexus-git: content provider on main yet (no git.commit.show handler), and webviews can't run commands (vscode.diff), so the brief's "click a file in a webview → built-in diff editor" can't work. Options: (a) do the file list as a built-in QuickPick from src/features/gitviews/open-commit.ts (fits CLAUDE.md "use what the fork has") and drop the webview; (b) wait for a command bridge request. Lead recommendation: (a), once Lane 2's git service lands.
+
+- Poll at ~T+14: merged origin/main (Lane 2: Vite webview host, git interface + fake, nexus:// URI router, code-ref links with the extension-id authority, store test fixes). Clean. 946 tests / 65 files, typechecks, build of all six views, contributes:check green; pushed. No new Lane 3 tasks started: waves 4-5 are done except L3-15 (skipped), and the approval-conflict fix below is waiting on Elkin.
+
+## Approval conflicts in views merged earlier: FIXED (morning, Elkin approved; 7d332fe4, 14003d22, 79c31e17; Opus review confirmed)
+- Session view: on "conflict" it re-lists and shows the winner; a decided approval is final (putApproval everywhere).
+- Slack BotMessage: on "conflict" it shows the winner. On mount it looks the approval id up in the store: buttons appear only when the store knows the approval and it's pending; an already-decided one shows its decision after a reload; an unknown id gets "approval not known on this machine" and no buttons (the Lane 3 half of the bot-spoof fix). A late empty lookup never hides buttons a live event already showed. "already decided elsewhere" shows when a lost race has no winner yet.
+- 991 tests green; the 5 new tests fail on the old code.
+- Left for later (from the review): one approvals.list call per approval message (fine at demo scale; an approvals.get would be better); no automatic retry after a failed lookup.
+- Original finding: the real host (src/features/approvals/approvals-controller.ts:265 + wire-bridge.ts:8) answers approvals.resolve on a lost race with BridgeError code "conflict", NOT the winner (protocol.ts:46's comment says otherwise; worth telling Adrian). L3-11 session view (webviews/session/App.tsx) and L3-10 BotMessage (webviews/chat/BotMessage.tsx) both assume a returned winner, so in demo step 6 (teammate approves from the phone first) the presenter's click shows a red error and the buttons stay live. Fix like L3-12: on code "conflict", re-fetch (approvals.list) and show the winner. Small lead task, one commit per view.
+- Also from that review: RE-RUN uses the 30 s default bridge timeout while a council run can take 45 s (a false "timed out" error); approvals of ended (failed/done) sessions show as pending with live buttons that fail with "internal error" (use pendingOnly:true to tell them apart).
+
+## Lane 3 wiring for cp-1: DONE (f85495dc, 76d5cd59; Opus review confirmed)
+- src/register/lane-3.ts + src/features/views/lane3-views.ts (vscode-free, 11 tests): the nexus.chat and nexus.approvals sidebar views; nexus.openHome / nexus.searchEvents → the globe as the `nexus.home` panel (the id Lane 1's core change hides tabs for), one at a time; nexus.openTimeline; nexus.openSlack / nexus.openApprovals focus the views; nexus.openSession(id) → one session panel per id, the id written as <body data-session-id>; exported openTaskEditor(taskId) for Lane 1's Make task flow (<body data-task-id>). Ids must match [A-Za-z0-9_-]{1,128}. nexus.shareSelectionToSlack is a stub with a clear message (delete it when wiring registerShareSelection, or activation throws).
+- Launch check (fresh profile, --extensionDevelopmentPath, screenshot C:\dev\nexus-launch\launch-check-home.png): Nexus activated with no errors; the globe home opened at startup with no tab; the views show "no handler for …" because of the stand-in router (below).
+- ASK ADRIAN (blocks real data in every Lane 3 view): nobody constructs Lane 2's NexusBridgeRouter yet. Lane 1 serves its handlers on its FakeBridgeServer fallback, and Lane 3's views attach to a separate stand-in router, so every request answers "no handler". Fix in extension.ts (Lane 1's file): create ONE NexusBridgeRouter (with the real containsSecret from src/shared/redact.ts and a log sink), register app.ping on it (registerAppPing), then `registerLane1(context, { router })`, `registerLane2(...)`, `registerLane3(context, router)`. registerLane3 already takes the router as its second argument.
+- Cleaner later (Lane 2's host.ts): let openPanel take body data attributes, so the html is set once instead of being rewritten.
 
 ## In flight
+- (none). Hourly polls turned off at Elkin's request. Waiting on: PR #9 (Brandon's approval), the shared router in extension.ts (Adrian), panel body-data and the bot-only/escaping fixes (Brandon), Lane 2's git service (for L3-15). Next per the playbook: wave 6 (L3-06 activity strip, L3-14 task-plan review, L3-16 empty/error states). L3-06 and L3-14 have only a header line in PLAN and depend on Lane 2/Lane 1 work in the same wave.
+
+## Webview host: RESOLVED by Lane 2 (main 0fb28e17, merged into lane-3 at ~T+14)
+- Brandon's host now reads media/<entry>/index.html (our Vite output) and loads its module scripts (with the nonce) and stylesheets; script-src includes cspSource, so our lazy chunks (fakeBridge/fixtures) load too. No Lane 3 build change needed.
+- Still open for Brandon: the host renders a plain <body>, so the task editor and session panel can't receive their ids (`<body data-task-id>` / `<body data-session-id>`). Ask: an optional body-attributes (or query) parameter on openPanel.
+- Lane 2 also landed the git service interface + fake (src/services/git/types.ts), but there's no real git implementation or git.commit.show handler yet, so L3-15 still waits.
+- Lead wiring still to do in src/register/lane-3.ts (now unblocked except for the panel ids): register the chat/approvals views and globe home via createWebviewHost, nexus.openSession → session panel with `data-session-id`, registerShareSelection with real deps (reviewer notes: asRelativePath(uri,false), 1-based lines, drop a trailing line when the selection ends at column 0, undefined for untitled/out-of-workspace), nexus.searchEvents → reveal the globe.
+
+## Security follow-up — ask Brandon (high priority before the demo)
+- L3-10 review: Lane 2 marks EVERY bot author as sentVia "bot" and keeps its blocks (web-client.ts:306-307). Any other Slack app/webhook in the channel could post a fake "NEXUS" message with nexus.approve/nexus.reject buttons carrying a real pending approval id, so a human might approve a risky action on spoofed text. A human still decides and the write is conditional, but the context is spoofed. Fix: Lane 2 only marks the Nexus bot's own bot_id as "bot"; Lane 3 shows buttons only for approval ids found in approvals.list and shows the stored ApprovalRequest.action instead of the block text.
+- Snippets posted by Share to Slack (and slack.post generally) aren't escaped for Slack's `&`, `<`, `>` — `Map<string, number>` gets mangled and `<!channel>` would ping. Should be escaped in Lane 2's slack.post.
+- Lane 2's webview host (src/bridge/host.ts) renders a plain <body>; the task editor needs <body data-task-id="…"> (ask Brandon).
+- Lead merge checklist now includes a NUL-byte scan (literal NULs slipped in twice and make git treat files as binary). The earlier `grep -P` scan silently errored in the Git Bash locale; it now uses `tr -d '\000' | cmp` and was verified to catch a NUL. A full rescan found 0 files with NUL in webviews/, src/features/, contributes/ and scripts/.
+- Poll at ~T+11: merged origin/main (Lane 1 PR #8: Nexus branding, tab-less nexus.home editor, startup defaults, extension build, @types/react-dom, `test.css: true`). The only conflict was the generated package.json. Resolved by taking main's copy and regenerating it from the fragments (`npm run contributes`), with no hand edits. 861 tests / 58 files, typechecks, lint, build, contributes:check green. Then added webviews/shared/style.test.tsx (the L3-01 §6 style test, 13 tests pass).
+
+## Follow-ups (from reviews, not yet scheduled)
+- Fake bridge live streams don't echo the fake's own writes (approvals.resolve, slack.post, tasks.*); slack.subscribe ignores channelIds.
+- Chat (for L3-09): older-page load errors are silent; paging stalls if the first page doesn't overflow; Slack mrkdwn (`<url|label>`, `<@U…>`, `&amp;`) shown raw — who normalizes, Lane 2 or the view?; not-a-member dot uses amber (reserved for pending approval) and its tooltip isn't keyboard-reachable; no error boundary in main.tsx.
+- Globe: rename model `useInstancing` (not a hook) to `shouldInstance`; tilts repeat after 5 families; InstancedMesh remounts when the count changes.
+- Kit: dispose() leaves pending requests unsettled and sends no unsub; the lazy fake import has no .catch; two bridge tests don't pin pending-entry deletion and timer clearing on reply; active tab line overlaps the container border.
+- L3-05 (non-blocking): Enter typed within 150 ms of a change or before the first response picks the old hit / nothing; a widened-window re-query can drop the tracked event when truncated at 5000; a far-future event says "outside the 30d window"; Tracking.tsx glue has no component test.
+- L3-10 (non-blocking): a decided approval shows buttons again after reload until the next event (needs an approvals.list lookup on mount); one approvals.subscribe per approval row; stale chip state lost on remount; decider shown as a raw Slack id; Share to Slack thread reply needs a typed ts; §6 nits (10 px label, 2 px rule, 18 px chip).
+- L3-11 (non-blocking, worth fixing before cp-2): a late undecided approvals.subscribe event can overwrite a decided one (buttons come back); approval row stuck on "(loading)" when approvals.list fails (silent catches on tasks.get/receipts.list too); savings not clamped per row (can go negative, jumps after the first live receipt); agent.cancel's returned session is ignored; state not reset if the session id changes; one busy flag for all approvals; errors never clear; diff +/- uses status green/red; log time is UTC, not T+.
+- L3-07 (non-blocking): the drift optimisation does nothing in the real App, because App's `visible` is a new array every tick, so Timeline re-lays out all marks every 5 s (still correct). Fix: keep the previous array when the ids are unchanged. The style guard doesn't render the selection rect.
+- L3-12 (non-blocking): a failed slack.users lookup is never retried (raw id stays); a failed swarms.review.get retries only when the approvals map changes.
+- Globe scene rendering has no test (a broken split in Scene.tsx compiled and passed all tests during the merge; caught by hand).
 
 ## Blocked
+- Opening links from webviews: no contract request for external URLs (ui.openTarget only takes commit/session/thread). Asked Lane 1 for e.g. ui.openExternal; chat links render as buttons that do nothing until then.
+- Slack avatars: remote images are blocked by the webview CSP; initials are shown. Asked Lane 2 to hand avatars over as data: URIs.
+- (resolved ~T+11) @types/react-dom and `test.css: true` landed on main via Lane 1. Small follow-up: drop the ambient `react-dom/client` declaration in webviews/shared/env.d.ts now that the real types exist (typecheck passes either way).
 
 ## Decisions
-T+0 = <HH:MM ET>, 2026-11-06
+T+0 = 22:00 ET, 2026-11-06 (as recorded by lane-2; team chat showed 22:02)
+- RAM 32 GB, AMD Radeon RX 7900 XT (discrete GPU), Windows 11 → max 3 workers. Lead shell: Node v24.22.1 via fnm.
+- Fork build test: npm install 6.7 min, first build ~1 min, incremental rebuild ~4.5 s, globe test pass.
+- H0-N1 WebGL in a webview VIEW: yes. WebGL 2 (ANGLE/D3D11) with no warnings in a sidebar view and in a panel, under a strict CSP (nonce script, localResourceRoots = media/, Three.js 0.187 bundled by Vite 8, React 19). View 279x279: 360 fps (display refresh cap); panel 528x520: 229-245 fps. app.ping round trip 0.6 ms warm, 53 ms during extension-host startup.
+- For L3-02: resizing the renderer inside a ResizeObserver callback while the canvas drives page height loops forever. Resize on the next frame, only when the width changes.
+- Style test: jsdom does not substitute CSS custom properties, so the test resolves var(--nx-*) from theme.css :root itself. Verified it fails on a 24 px control and a rounded chip.
+- H0-N4 provider smoke: skipped (no personal Anthropic credits); relying on Adrian's demo-machine smoke for model IDs.
+- Worker branches are `lane-3-wt/<id>` (same reason as lane-2: git cannot create `lane-3/<id>` while `lane-3` exists).
+- Open: accent color. PLAN L3-01 says #8b5cf6; the globe prototype uses #7F77DD. The kit seed uses #8b5cf6 until Adrian picks.
 
 ## Next
+- Wave 1: Worker A on L3-01 (first commit = component stubs + fakeBridge.ts); then Worker B L3-02 and Worker C L3-08 once that commit is merged.
+- Slack: authorize the Nexus app when the install link is available; set SLACK_USER_TOKEN.

@@ -1,2 +1,23 @@
-// Placeholder entry for the shared webview kit (lane 3, L3-01). Keeps webviews/tsconfig.json non-empty.
-export {};
+// Public surface of the Nexus webview kit.
+export { Button } from "./Button";
+export type { ButtonProps } from "./Button";
+export { Input } from "./Input";
+export type { InputProps } from "./Input";
+export { Select } from "./Select";
+export type { SelectOption, SelectProps } from "./Select";
+export { Tabs } from "./Tabs";
+export type { TabItem, TabsProps } from "./Tabs";
+export { Table } from "./Table";
+export type { TableColumn, TableProps } from "./Table";
+export { StatusLine } from "./StatusLine";
+export type { StatusLineProps, Tone } from "./StatusLine";
+export { KeyValueRow, KeyValueList } from "./KeyValueRow";
+export type { KeyValueRowProps } from "./KeyValueRow";
+export { Chip } from "./Chip";
+export type { ChipProps } from "./Chip";
+export { Toolbar } from "./Toolbar";
+export type { ToolbarProps } from "./Toolbar";
+export { EmptyState } from "./EmptyState";
+export type { EmptyStateProps } from "./EmptyState";
+export { request, subscribe, createBridgeClient, getBridge, isFakeMode, BridgeError } from "./bridgeClient";
+export type { BridgeClient, Transport, ReqIn, SubIn, RequestOptions } from "./bridgeClient";

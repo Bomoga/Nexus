@@ -1,0 +1,24 @@
+/* Globe layout only. Chrome comes from the kit; the 3D scene is purple regardless of theme. */
+html, body, #root { height: 100%; }
+body { overflow: hidden; }
+.globe-app { display: flex; flex-direction: column; height: 100vh; }
+.globe-stage { position: relative; flex: 1 1 0; min-height: 0; height: 0; }
+.globe-stage > div { position: absolute; inset: 0; }
+.globe-bar { display: flex; align-items: center; gap: var(--nx-gap-2); padding: var(--nx-gap-1) var(--nx-gap-2); border-bottom: var(--nx-border-w) solid var(--nx-border); }
+.globe-bar .nx-data { margin-left: auto; color: var(--nx-muted); }
+.globe-strip { display: flex; align-items: center; gap: var(--nx-gap-2); height: 22px; min-height: 22px; padding: 0 var(--nx-pad-x); border-top: var(--nx-border-w) solid var(--nx-border); overflow: hidden; white-space: nowrap; font-size: var(--nx-font-ui-sm); }
+.globe-strip:focus-visible { outline: var(--nx-border-w) solid var(--nx-focus); outline-offset: -1px; }
+.globe-strip .nx-button { height: 20px; margin-left: auto; flex: none; }
+.globe-strip-title { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.globe-strip-kind { color: var(--nx-accent-hi); flex: none; }
+.globe-strip-cell { flex: none; color: var(--nx-muted); }
+.globe-strip-empty { color: var(--nx-muted); }
+.globe-strip-error { flex: none; color: var(--nx-error); }
+.globe-search { position: relative; flex: 1 1 0; max-width: 480px; min-width: 120px; }
+.globe-search .nx-input { width: 100%; }
+.globe-search-list { position: absolute; z-index: 5; top: 100%; left: 0; right: 0; margin: 0; padding: 0; list-style: none; max-height: 220px; overflow-y: auto; background: var(--nx-surface); border: var(--nx-border-w) solid var(--nx-border); }
+.globe-search-row { display: flex; align-items: center; gap: var(--nx-gap-2); height: 20px; padding: 0 var(--nx-pad-x); overflow: hidden; white-space: nowrap; font-size: var(--nx-font-ui-sm); cursor: default; }
+.globe-search-row.is-active { background: var(--nx-hover-bg); outline: var(--nx-border-w) solid var(--nx-accent); outline-offset: -1px; }
+.globe-search-title { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.globe-search-cell { flex: none; color: var(--nx-muted); }
+.globe-search-cell.nx-data { font-family: var(--nx-font-data); font-variant-numeric: tabular-nums; }

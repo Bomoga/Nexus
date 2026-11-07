@@ -1,0 +1,18 @@
+/* Approvals view: tokens and geometry come from the kit's theme.css. */
+html, body, #root { height: 100%; }
+
+.ap-app { height: 100%; overflow-y: auto; }
+.ap-row { padding: var(--nx-gap-1) var(--nx-pad-x); border-bottom: var(--nx-border-w) solid var(--nx-border); font-size: var(--nx-font-ui); display: flex; flex-direction: column; gap: var(--nx-gap-1); }
+.ap-row:hover { background: var(--nx-hover-bg); }
+.ap-line { display: flex; align-items: center; gap: var(--nx-gap-1); flex-wrap: wrap; min-height: var(--nx-row-h); }
+.ap-kind { font-size: var(--nx-font-ui-sm); color: var(--nx-muted); text-transform: uppercase; }
+.ap-text { min-width: 0; white-space: pre-wrap; word-break: break-word; user-select: text; }
+.ap-block { display: block; white-space: pre-wrap; word-break: break-all; user-select: text; }
+.ap-reason { display: flex; align-items: baseline; gap: var(--nx-gap-1); flex-wrap: wrap; }
+.ap-label { font-size: var(--nx-font-ui-sm); color: var(--nx-muted); text-transform: uppercase; border: var(--nx-border-w) solid var(--nx-border); padding: 0 3px; }
+.ap-diff { margin: 0; padding: var(--nx-gap-1); border: var(--nx-border-w) solid var(--nx-border); font-size: var(--nx-font-ui-sm); white-space: pre-wrap; word-break: break-all; user-select: text; }
+.ap-swarm { border: var(--nx-border-w) solid var(--nx-border); padding: var(--nx-gap-1); display: flex; flex-direction: column; gap: var(--nx-gap-1); }
+.ap-judges { display: flex; flex-direction: column; gap: var(--nx-gap-1); }
+.ap-judge { display: flex; align-items: baseline; gap: var(--nx-gap-1); flex-wrap: wrap; font-size: var(--nx-font-ui-sm); }
+.ap-note { font-size: var(--nx-font-ui-sm); color: var(--nx-muted); }
+.ap-decided { font-size: var(--nx-font-ui-sm); color: var(--nx-muted); }

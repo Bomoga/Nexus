@@ -1,0 +1,27 @@
+/* Task panel: tokens and geometry come from the kit's theme.css. */
+html, body, #root { height: 100%; }
+
+.task-app { display: flex; flex-direction: column; height: 100%; overflow-y: auto; padding: var(--nx-pad-x); gap: var(--nx-gap-2, 8px); }
+.task-field { display: flex; flex-direction: column; gap: 2px; }
+.task-label { font-size: var(--nx-font-ui-sm); color: var(--nx-muted); text-transform: uppercase; }
+.task-row { display: flex; align-items: center; gap: var(--nx-gap-1); flex-wrap: wrap; }
+
+.task-quote {
+  margin: 0; padding: 4px 6px;
+  border: var(--nx-border-w) dashed var(--nx-border); border-left: 2px solid var(--nx-muted);
+  background: var(--nx-surface); color: var(--nx-muted); user-select: text;
+  font-family: var(--nx-font-data); font-size: var(--nx-font-ui); white-space: pre-wrap; word-break: break-word;
+}
+.task-quote-tag { font-size: var(--nx-font-ui-sm); color: var(--nx-muted); text-transform: uppercase; }
+
+.task-brief {
+  min-height: 140px; resize: vertical; padding: 4px 6px;
+  border: var(--nx-border-w) solid var(--nx-input-border); border-radius: var(--nx-radius);
+  background: var(--nx-input-bg); color: var(--nx-input-fg);
+  font-family: var(--nx-font-data); font-size: var(--nx-font-ui);
+}
+.task-brief:focus { outline: var(--nx-border-w) solid var(--nx-focus); outline-offset: -1px; }
+.task-brief:disabled { opacity: 0.6; }
+
+.task-actions { display: flex; align-items: center; gap: var(--nx-gap-1); }
+.task-model { flex: 1; min-width: 0; }

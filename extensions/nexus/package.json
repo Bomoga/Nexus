@@ -56,7 +56,9 @@
   "activationEvents": [
     "onCustomEditor:nexus.home",
     "onStartupFinished",
-    "onUri"
+    "onUri",
+    "onView:nexus.approvals",
+    "onView:nexus.chat"
   ],
   "contributes": {
     "viewsContainers": {
@@ -128,6 +130,34 @@
       {
         "command": "nexus.cancelSession",
         "title": "Nexus: Cancel agent session"
+      },
+      {
+        "command": "nexus.shareSelectionToSlack",
+        "title": "Nexus: Share to Slack"
+      },
+      {
+        "command": "nexus.openHome",
+        "title": "Nexus: Open Home"
+      },
+      {
+        "command": "nexus.searchEvents",
+        "title": "Nexus: Search events"
+      },
+      {
+        "command": "nexus.openTimeline",
+        "title": "Nexus: Open timeline (globe fallback)"
+      },
+      {
+        "command": "nexus.openSlack",
+        "title": "Nexus: Open Slack"
+      },
+      {
+        "command": "nexus.openApprovals",
+        "title": "Nexus: Open approvals"
+      },
+      {
+        "command": "nexus.openSession",
+        "title": "Nexus: Open session"
       }
     ],
     "configuration": {
@@ -156,6 +186,35 @@
         "uiTheme": "vs-dark",
         "path": "./themes/nexus-dark.json"
       }
-    ]
+    ],
+    "views": {
+      "nexus": [
+        {
+          "type": "webview",
+          "id": "nexus.chat",
+          "name": "Slack"
+        },
+        {
+          "type": "webview",
+          "id": "nexus.approvals",
+          "name": "Approvals"
+        }
+      ]
+    },
+    "menus": {
+      "editor/context": [
+        {
+          "command": "nexus.shareSelectionToSlack",
+          "when": "editorHasSelection",
+          "group": "nexus"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "nexus.openSession",
+          "when": "false"
+        }
+      ]
+    }
   }
 }

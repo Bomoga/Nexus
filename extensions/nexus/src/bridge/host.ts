@@ -67,7 +67,7 @@ function configureWebview(api: HostApi, ctx: vscode.ExtensionContext, entry: str
 interface HostedWebview {
   webview: vscode.Webview;
   onDidDispose(cb: () => void): Disposable;
-  onDidChangeVisibility(cb: (visible: boolean) => void): Disposable;
+  onDidChangeVisibility?(cb: (visible: boolean) => void): Disposable;
 }
 
 /** Attach a webview to the router; its session is dropped on dispose and its ctx.subscriptions entry removed. */
@@ -77,7 +77,7 @@ function attachTracked(ctx: vscode.ExtensionContext, router: NexusBridgeRouter, 
     post: m => webview.postMessage(m),
     onMessage: cb => webview.onDidReceiveMessage(cb),
     onDidDispose: cb => hosted.onDidDispose(cb),
-    onDidChangeVisibility: cb => hosted.onDidChangeVisibility(cb),
+    ...(hosted.onDidChangeVisibility ? { onDidChangeVisibility: (cb: (visible: boolean) => void) => hosted.onDidChangeVisibility!(cb) } : {}),
   };
   const attached = router.attach(transport);
   ctx.subscriptions.push(attached);
@@ -98,8 +98,10 @@ export interface WebviewHost {
 
 /**
  * Host one webview entry (media/<entry>.js) as a sidebar view and/or editor panel, wired to the router.
- * retainContextWhenHidden stays off (memory), so hiding a webview destroys its page: the router drops that webview's
- * subscriptions on hide and the reloaded page subscribes again.
+ * Views: retainContextWhenHidden stays off (memory), so hiding one destroys its page: the router drops its subscriptions
+ * on hide and the reloaded page subscribes again. Panels: retained, because moving a panel or maximizing another group can
+ * destroy an unretained page while `visible` stays true, so a panel keeps its subscriptions across a hide. Moving a panel
+ * to another window still reloads it; the reloaded page's reused ids replace the old subscriptions.
  */
 export function createWebviewHost(ctx: vscode.ExtensionContext, viewId: string, entry: string, router: NexusBridgeRouter, api: HostApi = realApi()): WebviewHost {
   const provider: vscode.WebviewViewProvider = {
@@ -116,12 +118,11 @@ export function createWebviewHost(ctx: vscode.ExtensionContext, viewId: string, 
     register: () => api.window.registerWebviewViewProvider(viewId, provider, { webviewOptions: { retainContextWhenHidden: false } }),
     openPanel(title, column) {
       const media = api.Uri.joinPath(ctx.extensionUri, "media");
-      const panel = api.window.createWebviewPanel(viewId, title, column ?? api.ViewColumn.Active, { enableScripts: true, localResourceRoots: [media] });
+      const panel = api.window.createWebviewPanel(viewId, title, column ?? api.ViewColumn.Active, { enableScripts: true, localResourceRoots: [media], retainContextWhenHidden: true });
       configureWebview(api, ctx, entry, panel.webview, title);
       attachTracked(ctx, router, {
         webview: panel.webview,
         onDidDispose: cb => panel.onDidDispose(cb),
-        onDidChangeVisibility: cb => panel.onDidChangeViewState(e => cb(e.webviewPanel.visible)),
       });
       return panel;
     },

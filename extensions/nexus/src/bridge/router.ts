@@ -15,20 +15,21 @@ export interface WebviewTransport {
   /** The webview is gone for good. */
   onDidDispose(cb: () => void): Disposable;
   /**
-   * Visibility changes. With retainContextWhenHidden off, a hidden webview loses its page: the router drops all of
-   * that webview's subscriptions when it becomes hidden, and the reloaded page subscribes again.
+   * Visibility changes, for webviews whose page dies when hidden (retainContextWhenHidden off): the router drops all of
+   * that webview's subscriptions when it becomes hidden, and the reloaded page subscribes again. Omit it for a retained
+   * webview, whose page and subscriptions outlive a hide.
    */
-  onDidChangeVisibility(cb: (visible: boolean) => void): Disposable;
+  onDidChangeVisibility?(cb: (visible: boolean) => void): Disposable;
 }
 
 export interface RouterOptions {
   /** Required, no default: true if the value looks like it contains a secret. A flagged body or error is never posted. A throwing check counts as flagged. */
   containsSecret: (value: unknown) => boolean;
   /**
-   * Where drops and internal-error detail go (never to the webview). The sink receives only: context strings, request and
-   * subscription names, and error objects whose message, stack and cause chain passed `containsSecret`. If any of those
-   * is flagged, it receives `{ redacted: true, name, code }` instead. It never receives request, response or event bodies.
-   * A throwing sink is swallowed.
+   * Where drops and internal-error detail go (never to the webview). The sink receives only context strings, request and
+   * subscription names, and a plain summary of an error: name, message, stack, code and up to 5 causes, all of which
+   * passed `containsSecret`. If any of that is flagged it receives `{ redacted: true }`. It never receives a raw Error
+   * (extra fields such as headers stay out) or a request, response or event body. A throwing sink is swallowed.
    */
   log: (message: string, detail?: unknown) => void;
   limits?: { maxIdLength?: number; maxSubscriptionsPerWebview?: number; maxHeldEvents?: number };
@@ -40,10 +41,16 @@ const DEFAULT_LIMITS = { maxIdLength: 128, maxSubscriptionsPerWebview: 256, maxH
 function isRequestName(n: string): n is RequestName { return Object.hasOwn(Requests, n); }
 function isSubscriptionName(n: string): n is SubscriptionName { return Object.hasOwn(Subscriptions, n); }
 
-/** Plain-data view of an error and its cause chain, so the secret check sees everything a log line would carry. */
-function chain(e: unknown, depth = 0): unknown {
-  if (!(e instanceof Error)) return e;
-  return { name: e.name, message: e.message, stack: e.stack, code: (e as { code?: unknown }).code, cause: depth < 5 ? chain(e.cause, depth + 1) : undefined };
+/** The plain summary the secret check sees and the log sink receives, so the two cannot differ. Strings pass; other values reduce to their type. */
+function logView(e: unknown, depth = 0): unknown {
+  if (typeof e === "string") return e;
+  if (!(e instanceof Error)) return e === undefined ? undefined : { type: typeof e };
+  const code = (e as { code?: unknown }).code;
+  return {
+    name: e.name, message: e.message, stack: e.stack,
+    code: typeof code === "string" || typeof code === "number" ? code : undefined,
+    cause: depth < 5 && e.cause !== undefined ? logView(e.cause, depth + 1) : undefined,
+  };
 }
 
 /** postMessage serializes as JSON. Round-trip first so what we validate and secret-check is exactly what the webview gets. */
@@ -64,10 +71,9 @@ class Guard {
   }
 
   log(message: string, detail?: unknown): void {
-    let out = detail;
-    if (detail !== undefined && this.flagged(chain(detail))) {
-      out = { redacted: true, name: detail instanceof Error ? detail.name : typeof detail, code: detail instanceof BridgeError ? detail.code : undefined };
-    }
+    let out: unknown;
+    try { out = logView(detail); } catch { out = { redacted: true }; }   // a throwing getter on a hostile error
+    if (out !== undefined && this.flagged(out)) out = { redacted: true };
     try { this.opts.log(message, out); } catch { /* a broken sink must never escape */ }
   }
 
@@ -117,6 +123,9 @@ export class NexusBridgeRouter implements BridgeRouter {
     for (const s of [...this.sessions]) s.subs.publish(sub, parsed);
   }
 
+  /** Webviews currently attached. */
+  sessionCount(): number { return this.sessions.size; }
+
   /** Serve one webview. Disposing the result (or the webview) disposes all its subscriptions. */
   attach(transport: WebviewTransport): Disposable {
     const session = new WebviewSession(this.handlers, this.subHandlers, transport, this.guard, this.limits, s => { this.sessions.delete(s); });
@@ -141,7 +150,7 @@ class WebviewSession {
     this.subs = new SubscriptionSet(limits.maxHeldEvents);
     this.listeners.push(t.onMessage(m => { void this.onMessage(m); }));
     this.listeners.push(t.onDidDispose(() => { this.dispose(); }));
-    this.listeners.push(t.onDidChangeVisibility(visible => { if (!visible) this.reset(); }));
+    if (t.onDidChangeVisibility) this.listeners.push(t.onDidChangeVisibility(visible => { if (!visible) this.reset(); }));
   }
 
   /** Forget everything the (now gone) page had: subscriptions with their cleanups, ids, and in-flight work. */
@@ -214,17 +223,20 @@ class WebviewSession {
   private async onSub(id: string, name: string, body: unknown): Promise<void> {
     if (!isSubscriptionName(name)) { this.guard.log("dropped subscribe with unknown name", name.slice(0, 100)); return; }
     if (id.length > this.limits.maxIdLength) { this.fail(id.slice(0, this.limits.maxIdLength), new BridgeError("invalid_request", "id too long"), name); return; }
-    if (this.ids.has(id)) { this.fail(id, new BridgeError("conflict", "duplicate subscription id"), name); return; }
-    if (this.ids.size >= this.limits.maxSubscriptionsPerWebview) { this.fail(id, new BridgeError("invalid_request", "too many subscriptions"), name); return; }
     const req = Subscriptions[name].req.safeParse(body);
     if (!req.success) { this.fail(id, new BridgeError("invalid_request", `invalid subscribe body for ${name}`), name); return; }
+    // A reused id means the page reloaded without reporting hidden (a moved panel): the new open replaces the old one.
+    const previous = this.ids.get(id);
+    if (previous) { this.ids.delete(id); previous.dispose(); }
+    if (this.ids.size >= this.limits.maxSubscriptionsPerWebview) { this.fail(id, new BridgeError("invalid_request", "too many subscriptions"), name); return; }
     const handler = this.subHandlers.get(name) as OpenHandler | undefined;
     const epoch = this.epoch;
     let mine: Handle | undefined;
-    // A failure deletes the id only if it is still this open's, and is not reported if the open was already abandoned.
+    // A failure deletes the id only if it is still this open's, and is reported at most once, never for an abandoned open.
     const settleFail = (e: unknown) => {
       if (mine && this.ids.get(id) === mine) this.ids.delete(id);
       if (mine?.cancelled || epoch !== this.epoch) return;
+      if (mine) mine.cancelled = true;
       this.fail(id, e, name);
     };
     const send = (evt: unknown) => {

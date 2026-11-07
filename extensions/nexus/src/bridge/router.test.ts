@@ -96,6 +96,32 @@ describe("NexusBridgeRouter requests", () => {
     expect(logged).not.toContain("hunter2");
     expect(t.logs.some(l => (l[1] as { redacted?: boolean })?.redacted === true)).toBe(true);
     expect(JSON.stringify(t.logs.map(l => [l[0], (l[1] as Error)?.stack]))).not.toContain("hunter2");
+    expect(t.logs.some(l => l[1] instanceof Error)).toBe(false);   // a plain summary, never the raw object
+  });
+
+  it("keeps extra error fields, deep causes and aggregates out of the log", async () => {
+    const deep = (n: number): Error => new Error(n === 0 ? "sk-ant-deep" : "wrap", n === 0 ? undefined : { cause: deep(n - 1) });
+    const cases: unknown[] = [
+      Object.assign(new Error("401"), { headers: { "x-api-key": "sk-ant-header" } }),
+      deep(8),
+      new AggregateError([new Error("sk-ant-agg")], "many"),
+      { "x-api-key": "sk-ant-plain" },
+    ];
+    for (const thrown of cases) {
+      const t = setup(v => JSON.stringify(v).includes("sk-ant"));
+      t.router.handle("store.status", () => { throw thrown; });
+      await t.send({ t: "req", id: "1", name: "store.status", body: {} });
+      expect(t.logs.length).toBeGreaterThan(0);
+      expect(JSON.stringify(t.logs)).not.toContain("sk-ant");
+    }
+  });
+
+  it("the redacted record carries nothing from the error", async () => {
+    const t = setup(v => JSON.stringify(v).includes("sk-ant"));
+    const e = Object.assign(new Error("x"), { name: "sk-ant-name", code: "sk-ant-code" });
+    t.router.handle("store.status", () => { throw e; });
+    await t.send({ t: "req", id: "1", name: "store.status", body: {} });
+    expect(t.logs[0][1]).toEqual({ redacted: true });
   });
 
   it("suppresses a flagged BridgeError message on requests and subscribes", async () => {
@@ -234,7 +260,7 @@ describe("NexusBridgeRouter subscriptions", () => {
     expect(t.msg.size).toBe(0);
   });
 
-  it("removes a subscription and reports the error when onSubscribe throws or the id repeats", async () => {
+  it("removes a subscription and reports the error when onSubscribe throws", async () => {
     const t = setup();
     t.router.onSubscribe("tasks.subscribe", () => { throw new Error("secret detail"); });
     await t.send({ t: "sub", id: "a", name: "tasks.subscribe", body: {} });
@@ -242,9 +268,71 @@ describe("NexusBridgeRouter subscriptions", () => {
     t.router.publish("tasks.subscribe", fx.task);
     await tick();
     expect(t.posted).toHaveLength(1);
+  });
+
+  it("a reused id replaces the old subscription, with its cleanup run and no error", async () => {
+    const t = setup();
+    let cleaned = 0;
+    t.router.onSubscribe("events.subscribe", () => ({ dispose: () => { cleaned++; } }));
     await t.send({ t: "sub", id: "e", name: "events.subscribe", body: {} });
     await t.send({ t: "sub", id: "e", name: "events.subscribe", body: {} });
-    expect(t.posted[1]).toMatchObject({ id: "e", ok: false, error: { code: "conflict" } });
+    expect(cleaned).toBe(1);
+    t.router.publish("events.subscribe", fx.event);
+    await tick();
+    expect(t.posted.map(p => p.t)).toEqual(["evt"]);   // once, to the new subscription
+    await t.send({ t: "unsub", id: "e" });
+    expect(cleaned).toBe(2);
+  });
+
+  it("an invalid reuse leaves the existing subscription in place", async () => {
+    const t = setup();
+    await t.send({ t: "sub", id: "s", name: "agent.subscribe", body: { sessionId: "s1" } });
+    await t.send({ t: "sub", id: "s", name: "agent.subscribe", body: {} });
+    t.router.publish("agent.subscribe", agentEvt(0));
+    await tick();
+    expect(t.posted.map(p => p.t)).toEqual(["res", "evt"]);
+  });
+
+  it("an old open already reported cannot post on its successor's id", async () => {
+    const t = setup(v => JSON.stringify(v).includes("flag-me"));
+    t.router.onSubscribe("agent.subscribe", () => undefined);
+    await t.send({ t: "sub", id: "a", name: "agent.subscribe", body: { sessionId: "s1" } });
+    t.router.publish("agent.subscribe", { sessionId: "s1", seq: 0, at: fx.task.createdAt, type: "message", text: "flag-me" });   // removes "a", reports once
+    await tick();
+    expect(t.posted.map(p => [p.t, p.error?.code])).toEqual([["res", "internal"]]);
+    await t.send({ t: "sub", id: "a", name: "agent.subscribe", body: { sessionId: "s1" } });
+    t.router.publish("agent.subscribe", agentEvt(1));
+    await tick();
+    expect(t.posted.map(p => p.t)).toEqual(["res", "evt"]);
+  });
+
+  it("an open that failed through overflow stays silent when its handler rejects later", async () => {
+    const t = setup(() => false, { limits: { maxHeldEvents: 1 } });
+    let rejectFirst: (e: Error) => void = () => {};
+    let calls = 0;
+    t.router.onSubscribe("events.subscribe", () => {
+      calls++;
+      return calls === 1 ? new Promise<void>((_, rej) => { rejectFirst = rej; }) : undefined;
+    });
+    await t.send({ t: "sub", id: "h", name: "events.subscribe", body: {} });
+    t.router.publish("events.subscribe", fx.event);
+    t.router.publish("events.subscribe", { ...fx.event, id: "e2" });   // overflow: fails "h", reports once
+    await tick();
+    expect(t.posted.map(p => p.t)).toEqual(["res"]);
+    await t.send({ t: "sub", id: "h", name: "events.subscribe", body: {} });
+    rejectFirst(new Error("late"));
+    await tick();
+    expect(t.posted.map(p => p.t)).toEqual(["res"]);   // no second report on the live id
+    t.router.publish("events.subscribe", { ...fx.event, id: "e3" });
+    await tick();
+    expect(t.posted.map(p => p.t)).toEqual(["res", "evt"]);
+  });
+
+  it("drops a closed webview's session", async () => {
+    const t = setup();
+    expect(t.router.sessionCount()).toBe(1);
+    t.close();
+    expect(t.router.sessionCount()).toBe(0);
   });
 
   it("rejects invalid subscribe bodies", async () => {
@@ -323,8 +411,10 @@ describe("NexusBridgeRouter subscriptions", () => {
     t.router.publish("events.subscribe", fx.event);
     await tick();
     expect(t.posted.map(p => p.t)).toEqual(["evt"]);   // the new subscription still works and still owns the id
-    await t.send({ t: "sub", id: "a", name: "events.subscribe", body: {} });
-    expect(t.posted[1]).toMatchObject({ ok: false, error: { code: "conflict" } });
+    await t.send({ t: "unsub", id: "a" });
+    t.router.publish("events.subscribe", { ...fx.event, id: "e2" });
+    await tick();
+    expect(t.posted.map(p => p.t)).toEqual(["evt"]);   // unsub reached it
   });
 
   it("enforces caps: id length, subscriptions per webview, held events", async () => {

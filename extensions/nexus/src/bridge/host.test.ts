@@ -115,6 +115,7 @@ describe("webview host", () => {
     const opts = panelArgs[0].options as vscode.WebviewOptions;
     expect(opts.enableScripts).toBe(true);
     expect(opts.localResourceRoots?.map(String)).toEqual(["ext/media"]);
+    expect((panelArgs[0].options as vscode.WebviewPanelOptions).retainContextWhenHidden).toBe(true);
     const w = panels[0].webview;
     expect(String(w.options?.localResourceRoots?.[0])).toBe("ext/media");
     const nonce = /nonce-([^']+)'/.exec(w.html)![1];
@@ -159,7 +160,7 @@ describe("webview host", () => {
     expect(c.subscriptions).toHaveLength(0);
   });
 
-  it("hiding a view or panel drops its subscriptions; showing it lets the same ids subscribe again", async () => {
+  it("hiding a view drops its subscriptions, and the same id subscribes again; a retained panel keeps its own", async () => {
     const { api, providers, panels } = fakeApi();
     const r = router();
     let cleaned = 0;
@@ -171,13 +172,17 @@ describe("webview host", () => {
     const sub = async (received: Set<(m: unknown) => void>) => { for (const cb of received) cb({ t: "sub", id: "a", name: "events.subscribe", body: {} }); await tick(); };
     await sub(v.received); await sub(panels[0].received);
     v.setVisible(false); panels[0].setVisible(false);
-    expect(cleaned).toBe(2);
-    v.setVisible(true); panels[0].setVisible(true);
-    await sub(v.received); await sub(panels[0].received);
+    expect(cleaned).toBe(1);   // the view's only: the panel's page is retained
     r.publish("events.subscribe", fx.event);
     await tick();
-    expect(v.posted.map(m => (m as { t: string }).t)).toEqual(["evt"]);   // no conflict error, live event reaches the new page
+    expect(v.posted).toEqual([]);
     expect(panels[0].posted.map(m => (m as { t: string }).t)).toEqual(["evt"]);
+    v.setVisible(true); panels[0].setVisible(true);
+    await sub(v.received);
+    r.publish("events.subscribe", { ...fx.event, id: "e2" });
+    await tick();
+    expect(v.posted.map(m => (m as { t: string }).t)).toEqual(["evt"]);
+    expect(panels[0].posted.map(m => (m as { t: string }).t)).toEqual(["evt", "evt"]);
   });
 });
 

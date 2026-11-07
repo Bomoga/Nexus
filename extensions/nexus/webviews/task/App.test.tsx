@@ -242,6 +242,20 @@ New text` });
     expect(screen.queryByText("Prune: OFF")).toBeNull();
   });
 
+  test("while the Prune state is unknown, models show data use unknown and leaves machine", async () => {
+    const accounts = fx.providerAccounts.map((a) => ({ ...a, dataLeavesMachine: false, dataUse: "not_used_for_training" as const }));
+    const { bridge } = setup({
+      "optimizer.get": () => ({ ok: false, message: "down" }),
+      "accounts.list": () => accounts,
+    });
+    render(<App bridge={bridge} taskId="task_01" />);
+    const opt = await screen.findByRole("option", { name: /Claude Sonnet 4\.5/ });
+    expect(screen.getByText("Prune: ?")).toBeTruthy();
+    expect(opt.textContent).toMatch(/data use unknown/i);
+    expect(opt.textContent).toMatch(/leaves machine/i);
+    expect(opt.textContent).not.toMatch(/not used for training/i);
+  });
+
   test("a manual task starting with > is not treated as a quoted thread", async () => {
     const { bridge } = setup({ "tasks.get": () => ({ ...fx.task, source: { kind: "manual" }, brief: "> just a note\n\nDo it" }) });
     render(<App bridge={bridge} taskId="task_01" />);

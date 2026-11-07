@@ -78,7 +78,9 @@ export function App({ bridge, taskId }: AppProps) {
     };
   }, [bridge, taskId]);
 
-  const viaPrune = optimizer?.enabled === true && optimizer.scope === "all_roles";
+  // §14: while the optimizer state is unknown (loading or failed), calls might go through Prune,
+  // so labels say "unknown" + leaves machine rather than guessing in the user's favour.
+  const viaPrune = optimizer === undefined || (optimizer.enabled === true && optimizer.scope === "all_roles");
   const options = useMemo(
     () => [
       { value: "", label: "SELECT MODEL" },
@@ -171,7 +173,7 @@ export function App({ bridge, taskId }: AppProps) {
           id="task-title"
           aria-label="title"
           value={title}
-          disabled={!editable}
+          disabled={!editable || busy === "starting"}
           onChange={(e) => {
             setTitle(e.target.value);
             if (e.target.value.trim()) setTitleEmpty(false);
@@ -193,7 +195,7 @@ export function App({ bridge, taskId }: AppProps) {
           className="task-brief"
           aria-label="brief"
           value={rest}
-          disabled={!editable}
+          disabled={!editable || busy === "starting"}
           spellCheck={false}
           onChange={(e) => setRest(e.target.value)}
           onBlur={() => void persist()}
@@ -214,7 +216,7 @@ export function App({ bridge, taskId }: AppProps) {
       <div className="task-field">
         <label className="task-label" htmlFor="task-model">model</label>
         <div className="task-actions">
-          <Select id="task-model" aria-label="model" className="task-model" options={options} value={selected} disabled={!editable} onChange={(e) => setSelected(e.target.value)} />
+          <Select id="task-model" aria-label="model" className="task-model" options={options} value={selected} disabled={!editable || busy === "starting"} onChange={(e) => setSelected(e.target.value)} />
           <Chip>{`Prune: ${prune}`}</Chip>
         </div>
         {models.length === 0 ? <EmptyState message="no agent models available" /> : null}

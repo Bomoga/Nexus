@@ -86,8 +86,14 @@
 - Follow-ups (non-blocking): after a search pick, Enter in the search box doesn't OPEN (focus stays in the box; DetailStrip ignores inputs) — same shape as the ESC fix, worth doing before the demo (step 1: search, track, open); a zero-hit search swallows the first ESC.
 - Checklist: the control-byte scan now uses a Node script over the changed files (grep can't take NUL in a pattern in this shell); verified on a planted byte.
 
+## PR #30 lane-3 → main (L3-16 + Enter-after-pick fix): MERGED 20:37Z after nexus-ci `extension` passed on c70bde3b
+- Lead fix d7f46d37 (Sonnet review confirmed): after a search pick, Enter in the search box opens the event (the box is marked data-picked until the query changes); Escape with zero hits reaches the page on the first press. Both new tests fail without the fix.
+- Merged main first (Lane 2: session worktrees, git watcher, merge-agent-branch handler, Slack message cache, clientId echo in bot.ts/cache.ts; Lane 1 race fixes). Launch check on the merged tree: the globe now says "no events in this window" instead of "no handler" — Lane 2's real event store answers over the shared router (empty because the test folder isn't a git repo).
+- Tell Brandon: Lane 2's git tests (git-cli, merge, worktrees, watcher) all fail on Windows because the tests set GIT_CONFIG_GLOBAL/GIT_CONFIG_SYSTEM to os.devNull, which is `\\.\nul` on Windows and Git for Windows can't open it ("fatal: unable to access '\\.\nul'"), so every test repo fails at `git init`. Fix: point them at an empty temp file on win32. gate.test.ts fails separately (symlink EPERM without Developer Mode; POSIX exit code 137). Linux CI is unaffected.
+- Lane 2's git service is now on main (worktrees, merge handler), which may unblock L3-15 — check for a git.commit.show handler before starting it.
+
 ## In flight
-- (none). Hourly polls turned off at Elkin's request. lane-3 is ahead of main by L3-16; main has 25 commits not yet merged into lane-3 (merge before the next PR). Waiting on: PR #9 (Brandon's approval), the shared router in extension.ts (Adrian), panel body-data and the bot-only/escaping fixes (Brandon), Lane 2's git service (for L3-15). Next per the playbook: wave 6 (L3-06 activity strip, L3-14 task-plan review, L3-16 empty/error states). L3-06 and L3-14 have only a header line in PLAN and depend on Lane 2/Lane 1 work in the same wave.
+- (none). Hourly polls turned off at Elkin's request. Waiting on: PR #9 (Brandon's approval), the shared router in extension.ts (Adrian), panel body-data and the bot-only/escaping fixes (Brandon), Lane 2's git service (for L3-15). Next per the playbook: wave 6 (L3-06 activity strip, L3-14 task-plan review, L3-16 empty/error states). L3-06 and L3-14 have only a header line in PLAN and depend on Lane 2/Lane 1 work in the same wave.
 
 ## Webview host: RESOLVED by Lane 2 (main 0fb28e17, merged into lane-3 at ~T+14)
 - Brandon's host now reads media/<entry>/index.html (our Vite output) and loads its module scripts (with the nonce) and stylesheets; script-src includes cspSource, so our lazy chunks (fakeBridge/fixtures) load too. No Lane 3 build change needed.

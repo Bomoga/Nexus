@@ -103,13 +103,15 @@ export class FakeSlack implements SlackService {
   }
 
   private post(opts: PostOptions, author: ChatMessage["author"], sentVia: ChatMessage["sentVia"]): ChatMessage {
-    // opts.clientId is not on ChatMessage: the bridge matches the pending echo to the confirmed message with it.
+    // clientId is echoed only on the returned copy: Slack's own events and history never carry it.
     const ts = `${1762485400 + ++this.counter}.000000`;
     const msg: ChatMessage = { id: `${opts.channelId}:${ts}`, channelId: opts.channelId, ts, author, text: opts.text, codeRefs: [], sentVia };
     if (opts.threadTs) msg.threadTs = opts.threadTs;
     this.store(msg);
     this.emit({ type: "message", message: structuredClone(msg) });
-    return structuredClone(msg);
+    const confirmed = structuredClone(msg);
+    if (opts.clientId !== undefined) confirmed.clientId = opts.clientId;
+    return confirmed;
   }
 
   private store(m: ChatMessage, countReply = true): void {

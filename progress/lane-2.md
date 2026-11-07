@@ -1,4 +1,5 @@
 ## Done
+- Wave 2 merged to lane-2: L2-13 gate, L2-05 git read side, L2-03 live Slack (each disputed twice; lead applied the last fixes, each pinned by a mutant)
 - L2-08 LocalStore + search merged to lane-2 (three disputes; lead applied the last fix). Adrian's controllers shadowed into it: 1,069 writes, 0 refused
 - L2-01 router + host merged to lane-2 (lead applied the final fixes; panels retained, reused ids replace)
 - Wave 1 launch check on lane-2: nexus.nexus activated, no extension host errors
@@ -32,6 +33,9 @@ T+0 = 22:00 ET, 2026-11-06
 - 2026-11-07 URLs: the fork hands an extension only nexus://<extension-id>/..., so the frozen nexus://auth/callback and nexus://coderef/... never reach Nexus (extensionUrlHandler.ts:155). Also product.json urlProtocol is still code-oss, and trustedExtensionProtocolHandlers should list nexus.nexus. Needs Lane 1: a core change or a contracts PR. Lane 2's UriRouter accepts both spellings and a decoded vscode.Uri.
 - 2026-11-07 Webview host loads Vite's media/<entry>/index.html (proven in the fork with Lane 3's real chat and globe build). CSP: nonce plus cspSource for scripts, no strict-dynamic.
 - 2026-11-07 Git interface widened for L2-07/L2-13/L2-14: refs, branchesContaining, contains, fileAt, isDirty, and a path-scoped diff against a base commit.
+- 2026-11-07 Gate limits: a descendant that calls setsid() survives the timeout kill; Windows shim quoting, taskkill and bare-name refusal are unit-tested only (never run on Windows). The recheck between commit approval and commitIn leaves a window of tens of milliseconds.
+- 2026-11-07 For L2-06: git.diff must include untracked files (or the human approves a diff missing whole files that commitIn then commits).
+- 2026-11-07 Slack: the SDK's delayReconnectAttempt is replaced on our client (hardenReconnect) because the SDK drops a rejection and retries forever. Unpinned: no test catches createBoltApp dropping that call. The host must store ApprovalRequest.slackMessage before a card can be clicked. L2-S1 (live) not run yet.
 
 ## Next
-- PR lane-2 to main with wave 1, then wave 2: L2-13 gate, L2-03 socket, L2-05 git
+- Wiring in register/lane-2.ts, L2-S1 live Slack check, then wave 3 (L2-06 worktrees, L2-09 Tiger schema, L2-04 cache)

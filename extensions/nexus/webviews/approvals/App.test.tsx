@@ -1,13 +1,16 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import type { ApprovalRequest, Envelope, SwarmReview } from "../../src/contracts";
 import { fx } from "../../src/contracts/fixtures";
 import { createBridgeClient } from "../shared";
 import type { Transport } from "../shared";
 import { App } from "./App";
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.useRealTimers();
+});
 
 type Req = Extract<Envelope, { t: "req" }>;
 type Answers = Record<string, (body: Record<string, unknown>) => unknown>;
@@ -65,6 +68,68 @@ const mount = async (list: ApprovalRequest[], extra: Answers = {}) => {
   if (list.length) await waitFor(() => expect(rows().length).toBe(list.length));
   return s;
 };
+
+describe("approvals states", () => {
+  test("a not_found approvals.list shows the friendly line and RETRY re-requests", async () => {
+    let missing = true;
+    const s = setup({
+      "approvals.list": () => {
+        if (missing) throw Object.assign(new Error("no handler for approvals.list"), { code: "not_found" });
+        return [];
+      },
+    });
+    render(<App bridge={s.bridge} />);
+    expect(await screen.findByText("approvals isn't connected yet")).toBeTruthy();
+    expect(screen.queryByText(/no handler/)).toBeNull();
+    missing = false;
+    fireEvent.click(screen.getByRole("button", { name: "RETRY" }));
+    expect(await screen.findByText("No approvals")).toBeTruthy();
+    expect(s.reqs("approvals.list")).toHaveLength(2);
+    expect(screen.queryByText("approvals isn't connected yet")).toBeNull();
+  });
+
+  test("a failed review.get has RETRY that asks again", async () => {
+    let down = true;
+    const s = await mount([commit("c1")], {
+      "swarms.review.get": () => {
+        if (down) throw new Error("down");
+        return null;
+      },
+    });
+    expect(await screen.findByText(/^review (failed|isn.t connected)/)).toBeTruthy();
+    down = false;
+    fireEvent.click(screen.getByRole("button", { name: "RETRY" }));
+    await waitFor(() => expect(s.reqs("swarms.review.get")).toHaveLength(2));
+    expect(screen.queryByText(/^review (failed|isn.t connected)/)).toBeNull();
+  });
+
+  test("a pending approval shows amber waiting time and the no-timeout line; time never decides it", async () => {
+    const asked = Date.parse(base.requestedAt);
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
+    vi.setSystemTime(asked + 10_000);
+    const s = await mount([mk("a1"), mk("a2", { requestedAt: new Date(asked + 5 * 60_000).toISOString() })]);
+    expect(within(row("a1")).getByText("waiting <1m").className).toContain("nx-tone-pending");
+    expect(within(row("a1")).getAllByText("no timeout: the agent waits until someone decides")).toHaveLength(1);
+    act(() => {
+      vi.advanceTimersByTime(30_000 * 20);
+    });
+    expect(within(row("a1")).getByText("waiting 10m")).toBeTruthy();
+    act(() => {
+      vi.advanceTimersByTime(3 * 3_600_000);
+    });
+    for (const id of ["a1", "a2"]) {
+      expect(btn(row(id), /approve/i).disabled).toBe(false);
+      expect(within(row(id)).getByText("pending")).toBeTruthy();
+    }
+    expect(s.reqs("approvals.resolve")).toHaveLength(0);
+  });
+
+  test("a decided approval has no waiting line", async () => {
+    await mount([mk("d1", decidedApp)]);
+    expect(within(row("d1")).queryByText(/waiting/)).toBeNull();
+    expect(within(row("d1")).queryByText(/no timeout/)).toBeNull();
+  });
+});
 
 describe("approvals view", () => {
   test("empty list shows one line", async () => {
@@ -198,12 +263,12 @@ describe("approvals view", () => {
       },
     });
     fireEvent.click(btn(row("a1"), /approve/i));
-    expect(await screen.findByText(/approvals\.resolve|resolve failed|not_found/i)).toBeTruthy();
+    expect(await screen.findByText(/^approvals (failed|isn.t connected)/)).toBeTruthy();
     expect(btn(row("a1"), /approve/i).disabled).toBe(false);
     fail = false;
     fireEvent.click(btn(row("a2"), /approve/i));
     await waitFor(() => expect(row("a2").textContent).toMatch(/decided by me/));
-    expect(screen.queryByText(/approvals\.resolve|resolve failed|not_found/i)).toBeNull();
+    expect(screen.queryByText(/^approvals (failed|isn.t connected)/)).toBeNull();
   });
 
   test("reason is model-written and rendered literally", async () => {
@@ -301,7 +366,7 @@ describe("swarm card", () => {
 
   test("a failed swarms.review.get shows an error", async () => {
     await mount([commit("c1")], { "swarms.review.get": () => { throw new Error("down"); } });
-    expect(await screen.findByText(/swarms\.review\.get failed/)).toBeTruthy();
+    expect(await screen.findByText(/^review (failed|isn.t connected)/)).toBeTruthy();
   });
 
   test("a failed RE-RUN shows an error and RE-RUN is disabled while it runs", async () => {
@@ -315,7 +380,7 @@ describe("swarm card", () => {
     await waitFor(() => expect(btn(row("c1"), /re-run/i).disabled).toBe(true));
     expect(btn(row("c1"), /approve/i).disabled).toBe(false);
     fail(new Error("nope"));
-    expect(await screen.findByText(/swarms\.review\.rerun failed/)).toBeTruthy();
+    expect(await screen.findByText(/^review (failed|isn.t connected)/)).toBeTruthy();
     expect(btn(row("c1"), /re-run/i).disabled).toBe(false);
   });
 

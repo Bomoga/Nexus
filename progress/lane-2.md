@@ -15,6 +15,8 @@
 ## In flight
 
 ## Blocked
+- Tiger live: the TIGER_URL in Brandon's shell is not a postgres:// URL (a placeholder); the real connection string is needed, then sql/001, 002, 003 applied once.
+- Lane 1 handoff: lane-1-features.ts still passes vscode.env.machineId (a placeholder when telemetry is off) and no progress port; needs l2.machineId and l2.progress before the shared store goes live.
 
 ## Decisions
 T+0 = 22:00 ET, 2026-11-06
@@ -59,4 +61,10 @@ T+0 = 22:00 ET, 2026-11-06
 - 2026-11-07 Security: VS Code turns [label](command:...) in an extension's notification text into a clickable link that runs the command. All untrusted text in a notification goes through plainNotificationText (src/shared/plain-text.ts). Lane 2 uses it for code-ref paths and Slack names; Lane 1 fixed the approval notification and commands.ts in 344eb5ec. Still open, for Elkin: share-selection.ts:93 and :95 show file paths and raw errors, once it is wired.
 
 ## Next
-- Adrian: rerun `npx vitest run src/services/git src/services/gate src/services/coderef` on Windows; L2-S1 live Slack check (Brandon); L2-09 Tiger schema once the connection string is in; then L2-10 Tiger store, L2-11 sync, L2-12 aggregates; L2-15 Token Vault
+- All 17 planned Lane 2 tasks are on main (L2-01 to L2-17). Remaining are live checks and handoffs, not code:
+- Brandon: L2-S1 live Slack check (Socket Mode message + APPROVE click from the extension host: SLACK_TEST_CHANNEL + tokens, npm run test:int -- slack).
+- Brandon: real TIGER_URL; apply sql/001-003; run `npm run test:int -- schema` (team DB, rolled back) and, against a scratch DB via TIGER_TEST_URL, the tiger and sync int tests; the psql LISTEN check in 003's header (H0-B4).
+- Token Vault live check once Slack is linked in Auth0 (token-vault.int.test.ts; confirm the not-connected error names and the connect URL).
+- Adrian: l2.machineId + l2.progress in lane-1-features.ts; rerun the git, gate and code-ref tests on Windows.
+- Elkin: nexus.openSlack should reveal the { channelId, threadTs } it is given (it only focuses the view); wire Share to Slack to coderef.create and formatCodeRefForSlack, and sanitise its notification text.
+- Known small gaps: Token Vault's invalidate() is not called on Slack invalid_auth; the final progress edit has no model-written summary.

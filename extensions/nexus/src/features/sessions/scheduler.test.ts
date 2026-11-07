@@ -7,7 +7,7 @@ import { Scheduler, defaultConcurrency } from "./scheduler";
 const model = { provider: "anthropic", modelId: "claude-sonnet-4-5" };
 
 /** deps[i] = the indices subtask i waits for. */
-async function setup(deps: number[][], opts: { max?: number; capacity?: number; failStart?: number; model?: typeof model | undefined; status?: TaskPlan["status"] } = {}) {
+async function setup(deps: number[][], opts: { max?: number; capacity?: number; failStart?: number; busy?: number; model?: typeof model | undefined; status?: TaskPlan["status"] } = {}) {
   const store = new MemoryStore();
   const ids = deps.map((_, i) => `sub_${i}`);
   for (const [i, id] of ids.entries()) await store.putTask({ ...fx.task, id, title: `Subtask ${i}`, status: "draft", source: { kind: "plan", planId: "plan_1", subtaskIndex: i } });
@@ -18,11 +18,13 @@ async function setup(deps: number[][], opts: { max?: number; capacity?: number; 
   });
   const started: string[] = [];
   let concurrentNow = 0, concurrentMax = 0;
+  let busyLeft = opts.busy ?? 0;
   const scheduler: Scheduler = new Scheduler({
-    store, maxConcurrent: opts.max, model: () => ("model" in opts ? opts.model : model),
+    store, maxConcurrent: opts.max, retryMs: 5, model: () => ("model" in opts ? opts.model : model),
     sessions: {
       capacity: opts.capacity,
       async start(taskId) {
+        if (busyLeft > 0) { busyLeft--; throw new Error("An agent session is already running; cancel it or wait for it to finish."); }
         if (opts.failStart !== undefined && taskId === ids[opts.failStart]) throw new Error("no worktree");
         started.push(taskId);
         concurrentNow++; concurrentMax = Math.max(concurrentMax, concurrentNow);
@@ -121,6 +123,39 @@ describe("Scheduler.run", () => {
     await s.finish(2);
     expect(await done).toEqual({ done: ["sub_2"], failed: ["sub_0"], skipped: ["sub_1"] });
     expect((await s.store.getTask("sub_0"))!.status).toBe("failed");
+  });
+
+  it("never runs more than two at once, even if configured higher and the controller claims more capacity", async () => {
+    const s = await setup([[], [], [], []], { max: 5 });
+    expect(s.scheduler.maxConcurrent).toBe(2);
+    const done = s.scheduler.run(s.plan);
+    await vi.waitFor(() => expect(s.started).toHaveLength(2));
+    await settle();
+    expect(s.started).toHaveLength(2);
+    for (let i = 0; i < 4; i++) { await vi.waitFor(() => expect(s.started.length).toBeGreaterThan(i)); await s.finish(i); }
+    await done;
+    expect(s.concurrency()).toBe(2);
+  });
+
+  it("finishes (and does not hang) when a dependency points at a later subtask and the leaf fails", async () => {
+    const s = await setup([[1], [2], []], { max: 1 });                           // 0 waits for 1, 1 waits for 2
+    const done = s.scheduler.run(s.plan);
+    await vi.waitFor(() => expect(s.started).toEqual(["sub_2"]));
+    await s.finish(2, "failed");
+    expect(await done).toEqual({ done: [], failed: ["sub_2"], skipped: ["sub_0", "sub_1"] });
+    expect((await s.store.getTask("sub_0"))!.status).toBe("cancelled");
+    expect((await s.store.getTask("sub_1"))!.status).toBe("cancelled");
+  });
+
+  it("waits and asks again when the agent is busy with something outside the plan, instead of failing the subtask", async () => {
+    const s = await setup([[], [0]], { max: 1, busy: 3 });
+    const done = s.scheduler.run(s.plan);
+    await vi.waitFor(() => expect(s.started).toEqual(["sub_0"]), { timeout: 3000 });
+    expect((await s.store.getTask("sub_0"))!.status).toBe("running");            // never marked failed while it waited
+    await s.finish(0);
+    await vi.waitFor(() => expect(s.started).toEqual(["sub_0", "sub_1"]));
+    await s.finish(1);
+    expect(await done).toEqual({ done: s.ids, failed: [], skipped: [] });
   });
 
   it("does not start anything for a plan that was not accepted, or without a model", async () => {

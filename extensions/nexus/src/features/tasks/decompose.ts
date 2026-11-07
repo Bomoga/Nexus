@@ -52,7 +52,11 @@ export function parsePlan(text: string): RawSubtask[] {
     const title = typeof o.title === "string" ? clip(redact(o.title.replace(/\s+/g, " ").trim()), TITLE_CHARS) : "";
     const brief = typeof o.brief === "string" ? clip(redact(o.brief.trim()), BRIEF_CHARS) : "";
     if (!title || !brief) throw new Error(`Subtask ${i + 1} has no title or brief.`);
-    const dependsOn = Array.isArray(o.dependsOn) ? [...new Set(o.dependsOn.filter((d): d is number => Number.isInteger(d)))] : [];
+    // Strict: a dependency the swarm wrote badly (a string, a float) must reject the plan, not silently vanish.
+    if (o.dependsOn !== undefined && (!Array.isArray(o.dependsOn) || o.dependsOn.some(d => !Number.isInteger(d)))) {
+      throw new Error(`Subtask ${i + 1} lists a dependency that is not a subtask number.`);
+    }
+    const dependsOn = Array.isArray(o.dependsOn) ? [...new Set(o.dependsOn as number[])] : [];
     if (dependsOn.some(d => d < 0 || d >= list.length || d === i)) throw new Error(`Subtask ${i + 1} depends on a subtask that does not exist.`);
     return { title, brief, dependsOn };
   });
@@ -61,6 +65,8 @@ export function parsePlan(text: string): RawSubtask[] {
 }
 
 export class DecomposeService {
+  private readonly accepting = new Set<string>();
+
   constructor(private readonly deps: DecomposeDeps) {}
 
   /** tasks.decompose: ask the swarm for a plan. Returns a `proposed` plan; creates no task and starts nothing. */
@@ -96,26 +102,37 @@ export class DecomposeService {
   /** tasks.plan.accept: a human accepts; one draft Task per subtask is created, in order. */
   async accept(planId: string): Promise<TaskPlan> {
     const { store, clock } = this.deps;
-    const plan = await this.get(planId);
-    if (plan.status !== "proposed") throw new Error(`That plan is already ${plan.status}.`);
-    const parent = await store.getTask(plan.sourceTaskId);
-    if (!parent) throw new Error(`The task this plan came from (${plan.sourceTaskId}) no longer exists.`);
-    const created: string[] = [];
-    for (let i = 0; i < plan.subtasks.length; i++) {
-      const s = plan.subtasks[i];
-      const task = Task.parse({
-        id: clock.newId("task"), title: s.title,
-        brief: `${s.brief}\n\n(Part ${i + 1} of ${plan.subtasks.length} of: ${parent.title})`,
-        source: { kind: "plan", planId: plan.id, subtaskIndex: i }, workspaceId: parent.workspaceId, status: "draft",
-        createdAt: clock.now(), codeRefs: parent.codeRefs, ...(parent.createdBy ? { createdBy: parent.createdBy } : {}),
-      });
-      await store.putTask(task);
-      this.deps.onTaskCreated?.(task);
-      created.push(task.id);
+    // Accepting twice at once would create every task twice and orphan one set: only one accept per plan at a time.
+    if (this.accepting.has(planId)) throw new Error("That plan is already being accepted.");
+    this.accepting.add(planId);
+    const created: Task[] = [];
+    try {
+      const plan = await this.get(planId);
+      if (plan.status !== "proposed") throw new Error(`That plan is already ${plan.status}.`);
+      const parent = await store.getTask(plan.sourceTaskId);
+      if (!parent) throw new Error(`The task this plan came from (${plan.sourceTaskId}) no longer exists.`);
+      for (let i = 0; i < plan.subtasks.length; i++) {
+        const s = plan.subtasks[i];
+        const task = Task.parse({
+          id: clock.newId("task"), title: s.title,
+          brief: `${s.brief}\n\n(Part ${i + 1} of ${plan.subtasks.length} of: ${parent.title})`,
+          source: { kind: "plan", planId: plan.id, subtaskIndex: i }, workspaceId: parent.workspaceId, status: "draft",
+          createdAt: clock.now(), codeRefs: parent.codeRefs, ...(parent.createdBy ? { createdBy: parent.createdBy } : {}),
+        });
+        await store.putTask(task);
+        created.push(task);
+      }
+      const accepted = TaskPlan.parse({ ...plan, status: "accepted", createdTaskIds: created.map(t => t.id) });
+      await store.putPlan(accepted);
+      for (const t of created) this.deps.onTaskCreated?.(t);
+      return accepted;
+    } catch (e) {
+      // All or nothing: tasks made before the failure are cancelled so a retry does not leave duplicates running around.
+      for (const t of created) await store.putTask({ ...t, status: "cancelled" }).catch(() => undefined);
+      throw e;
+    } finally {
+      this.accepting.delete(planId);
     }
-    const accepted = TaskPlan.parse({ ...plan, status: "accepted", createdTaskIds: created });
-    await store.putPlan(accepted);
-    return accepted;
   }
 
   async reject(planId: string): Promise<TaskPlan> {

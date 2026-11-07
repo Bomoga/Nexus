@@ -104,6 +104,38 @@ describe("accept and reject", () => {
     await expect(s.service.get("nope")).rejects.toThrow("No plan");
   });
 
+  it("two concurrent accepts create one set of tasks, not two", async () => {
+    const s = await setup();
+    const plan = await s.service.decompose("task_01");
+    const results = await Promise.allSettled([s.service.accept(plan.id), s.service.accept(plan.id)]);
+    expect(results.map(r => r.status).sort()).toEqual(["fulfilled", "rejected"]);
+    expect(s.store.tasks.size).toBe(1 + 3);
+    expect(s.created).toHaveLength(3);
+  });
+
+  it("a failure half way cancels the tasks already made, leaves the plan proposed, and a retry works", async () => {
+    const s = await setup();
+    const plan = await s.service.decompose("task_01");
+    const put = s.store.putTask.bind(s.store);
+    let writes = 0;
+    s.store.putTask = async t => { if (t.source.kind === "plan" && t.status === "draft" && ++writes === 2) throw new Error("store down"); await put(t); };
+    await expect(s.service.accept(plan.id)).rejects.toThrow("store down");
+    const made = [...s.store.tasks.values()].filter(t => t.source.kind === "plan");
+    expect(made.map(t => t.status)).toEqual(["cancelled"]);                       // the first subtask, undone
+    expect((await s.store.getPlan(plan.id))!.status).toBe("proposed");
+    expect(s.created).toEqual([]);                                                // nothing was published
+    s.store.putTask = put;
+    expect((await s.service.accept(plan.id)).createdTaskIds).toHaveLength(3);
+  });
+
+  it("rejects a dependency that is not a subtask number instead of dropping it", () => {
+    const bad = (dependsOn: unknown) => JSON.stringify({ subtasks: [{ title: "a", brief: "b", dependsOn: [] }, { title: "c", brief: "d", dependsOn }] });
+    expect(() => parsePlan(bad(["0"]))).toThrow("not a subtask number");
+    expect(() => parsePlan(bad([0.5]))).toThrow("not a subtask number");
+    expect(() => parsePlan(bad("0"))).toThrow("not a subtask number");
+    expect(parsePlan(bad([0]))[1].dependsOn).toEqual([0]);
+  });
+
   it("accept fails if the parent task is gone", async () => {
     const s = await setup();
     const plan = await s.service.decompose("task_01");

@@ -112,7 +112,7 @@ async function start(req: Request, env: Env, f: typeof fetch, now: number, sub: 
 
 async function poll(req: Request, env: Env, f: typeof fetch, sub: string): Promise<Response> {
   const parsed = PollBody.safeParse(await req.json().catch(() => undefined));
-  if (!parsed.success) return fail(400, "bad_request", "Body must be {authReqId}.");
+  if (!parsed.success) return fail(400, "bad_request", "Body must be {authReqId, binding}.");
   const { authReqId, binding } = parsed.data;
   if (!(await verifyBinding(env.AUTH0_CLIENT_SECRET, authReqId, sub, binding))) return FORBIDDEN();   // before any Auth0 call
   const res = await f(`https://${env.AUTH0_DOMAIN}/oauth/token`, {

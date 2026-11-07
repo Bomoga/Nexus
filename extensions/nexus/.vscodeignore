@@ -1,0 +1,16 @@
+src/**
+webviews/**
+scripts/**
+contributes/**
+auth-service/**
+sql/**
+node_modules/.cache/**
+**/*.test.*
+**/*.map
+tsconfig.json
+vite.config.ts
+vitest.config.ts
+vitest.int.config.ts
+eslint.config.mjs
+.gitignore
+!media/**

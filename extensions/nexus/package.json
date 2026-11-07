@@ -1,0 +1,83 @@
+{
+  "x-generated": "scripts/merge-contributes.mjs — do not edit contributes by hand",
+  "name": "nexus",
+  "displayName": "Nexus",
+  "description": "Code, team chat, and coding agents in one place.",
+  "version": "0.0.1",
+  "publisher": "nexus",
+  "license": "MIT",
+  "private": true,
+  "engines": {
+    "vscode": "^1.145.2"
+  },
+  "main": "./out/extension.js",
+  "scripts": {
+    "build": "npm run contributes && tsc -p tsconfig.json && npm run build:webviews",
+    "build:webviews": "node scripts/build-webviews.mjs",
+    "watch": "concurrently \"tsc -w -p tsconfig.json\" \"vite build --watch\"",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p webviews/tsconfig.json",
+    "lint": "eslint src webviews --ext .ts,.tsx",
+    "test": "vitest run",
+    "test:int": "vitest run --config vitest.int.config.ts",
+    "contributes": "node scripts/merge-contributes.mjs",
+    "contributes:check": "node scripts/check-contributes.mjs",
+    "ci": "npm ci && npm run contributes:check && npm run typecheck && npm run lint && npm test && npm run build"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^1.6.0",
+    "@google/genai": "^3.0.0",
+    "@react-three/drei": "^10.7.9",
+    "@react-three/fiber": "^9.8.2",
+    "@slack/bolt": "^5.1.0",
+    "@slack/web-api": "^8.3.0",
+    "pg": "^8.23.1",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "three": "^0.187.0",
+    "ulid": "^3.0.2",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@testing-library/react": "^16.3.3",
+    "@types/node": "^24.0.0",
+    "@types/pg": "^8.23.1",
+    "@types/vscode": "~1.145.0",
+    "@vitejs/plugin-react": "^6.2.1",
+    "concurrently": "^10.0.6",
+    "eslint": "^10.14.0",
+    "jsdom": "^31.0.0",
+    "typescript": "~6.0.3",
+    "typescript-eslint": "^8.72.1",
+    "vite": "^8.3.6",
+    "vitest": "^5.1.0"
+  },
+  "activationEvents": [
+    "onCustomEditor:nexus.home",
+    "onStartupFinished",
+    "onUri"
+  ],
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "nexus",
+          "title": "Nexus",
+          "icon": "resources/nexus.svg"
+        }
+      ]
+    },
+    "customEditors": [
+      {
+        "viewType": "nexus.home",
+        "displayName": "Nexus Home",
+        "selector": [
+          {
+            "filenamePattern": "*.nexushome"
+          }
+        ],
+        "priority": "option"
+      }
+    ]
+  }
+}

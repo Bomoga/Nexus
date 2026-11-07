@@ -1,0 +1,18 @@
+{
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        { "id": "nexus", "title": "Nexus", "icon": "resources/nexus.svg" }
+      ]
+    },
+    "customEditors": [
+      {
+        "viewType": "nexus.home",
+        "displayName": "Nexus Home",
+        "selector": [{ "filenamePattern": "*.nexushome" }],
+        "priority": "option"
+      }
+    ]
+  },
+  "activationEvents": ["onStartupFinished", "onUri"]
+}

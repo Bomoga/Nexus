@@ -5,7 +5,5 @@ export default defineConfig({
   test: {
     include: ["src/**/*.test.ts", "webviews/**/*.test.{ts,tsx}"],
     exclude: ["**/node_modules/**", "**/out/**", "**/*.int.test.ts"],
-    // TODO(cp-0): drop once src/contracts/contracts.test.ts lands, so an empty suite fails CI.
-    passWithNoTests: true,
   },
 });

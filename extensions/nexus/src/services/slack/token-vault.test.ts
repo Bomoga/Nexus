@@ -108,4 +108,85 @@ describe("token vault", () => {
   it("builds the connect-account url", () => {
     expect(setup().vault.connectAccountUrl()).toBe("https://nexus.us.auth0.com/authorize?client_id=CID&response_type=code&connection=sign-in-with-slack&prompt=consent");
   });
+
+  it.each([
+    "nexus.us.auth0.com@evil.com", "user@evil.com", "evil.com/x?", "evil.com#", "evil.com?a=", "evil.com:8443", "",
+    "UPPER.auth0.com", "a..b.com", "-a.com", "a.com.", "nexus.us.auth0.com/", "localhost", "ex\u0430mple.com",
+  ])("refuses domain %j before any request", async domain => {
+    const { vault, fetch } = setup({ config: () => ({ ...CFG, domain }) });
+    const err = await vault.getUserToken().catch(e => e) as TokenVaultError;
+    expect(err).toBeInstanceOf(TokenVaultError);
+    expect(err.code).toBe("unauthorized");
+    if (domain) expect(err.message).not.toContain(domain);
+    expect(vault.connectAccountUrl()).toBeNull();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("drops error fields that look like tokens", async () => {
+    for (const error of ["xoxp-1234-5678-abcdefSECRET", "abc123SECRET", "Bad_Token"]) {
+      const { vault } = setup({}, () => res(400, { error }));
+      const err = await vault.getUserToken().catch(e => e) as TokenVaultError;
+      expect(err.code).toBe("unauthorized");
+      expect(err.message).toBe("Token Vault: unauthorized");
+    }
+  });
+
+  it("a caller after invalidate() starts a new exchange and gets its token", async () => {
+    let n = 0;
+    const { vault, fetch } = setup({}, () => res(200, { access_token: `tok${n++}`, expires_in: 3600 }));
+    const first = vault.getUserToken();
+    vault.invalidate();
+    const second = vault.getUserToken();
+    expect((await second)?.token).toBe("tok1");
+    await first;
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect((await vault.getUserToken())?.token).toBe("tok1");
+  });
+
+  it("wraps getRefreshToken failures without a cause or its message", async () => {
+    const { vault, fetch } = setup({ getRefreshToken: async () => { throw new Error(`keychain ${REFRESH}`); } });
+    const err = await vault.getUserToken().catch(e => e) as TokenVaultError;
+    expect(err.code).toBe("unavailable");
+    expect(err.message).not.toContain(REFRESH);
+    expect(err.cause).toBeUndefined();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("does not keep a failed exchange", async () => {
+    let n = 0;
+    const { vault, fetch } = setup({}, () => (n++ === 0 ? res(503, {}) : res(200, { access_token: SLACK, expires_in: 3600 })));
+    await expect(vault.getUserToken()).rejects.toMatchObject({ code: "unavailable" });
+    expect((await vault.getUserToken())?.token).toBe(SLACK);
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("gives concurrent callers the same error from one request", async () => {
+    const { vault, fetch } = setup({}, () => res(403, { error: "invalid_grant" }));
+    const [a, b] = await Promise.all([vault.getUserToken().catch(e => e), vault.getUserToken().catch(e => e)]);
+    expect(a).toBeInstanceOf(TokenVaultError);
+    expect(a).toBe(b);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("handles non-finite and huge expires_in", async () => {
+    const inf = setup({}, () => res(200, { access_token: SLACK, expires_in: Infinity }));
+    await inf.vault.getUserToken();
+    inf.advance(300_000);
+    await inf.vault.getUserToken();
+    expect(inf.fetch).toHaveBeenCalledTimes(2);
+    const big = setup({}, () => res(200, { access_token: SLACK, expires_in: 1e9 }));
+    await big.vault.getUserToken();
+    big.advance(12 * 3600_000);
+    await big.vault.getUserToken();
+    expect(big.fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("drops the cached token when the config changes", async () => {
+    let cfg = CFG;
+    const { vault, fetch } = setup({ config: () => cfg });
+    await vault.getUserToken();
+    cfg = { ...CFG, slackConnection: "other" };
+    await vault.getUserToken();
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
 });

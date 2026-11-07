@@ -31,4 +31,13 @@ describe("event search", () => {
     expect(idx.search("second", 5)).toEqual([]);
     expect(idx.search("first", 5)).toHaveLength(1);
   });
+
+  it("orders newest first by instant across UTC offsets", () => {
+    const mixed = [
+      ev("a", "t", "2026-11-07T10:00:00-05:00"),   // 15:00Z
+      ev("b", "t", "2026-11-07T20:00:00+09:00"),   // 11:00Z
+      ev("c", "t", "2026-11-07T12:00:00Z"),
+    ];
+    expect(searchEvents(mixed, "t", 10).map(h => h.event.id)).toEqual(["a", "c", "b"]);
+  });
 });

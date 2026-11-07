@@ -5,16 +5,25 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { fx } from "../../contracts/fixtures";
 import { demoScenario } from "../../contracts/fixtures/scenario";
 import { scriptedNexusEvents } from "../../contracts/fixtures/stream";
-import type { AgentEvent } from "../../contracts";
+import type { AgentEvent, ApprovalRequest, NexusEvent } from "../../contracts";
 import { LocalStore } from "./local-store";
 
 const by = { via: "app" as const, userId: "U_ADRIAN" };
-const redact = (t: string) => t.replace(/xox[bp]-[A-Za-z0-9-]+/g, "[REDACTED]");
+const SECRET = "SECRETVAL";
+const redact = (t: string) => t.replaceAll(SECRET, "[R]");
+const T1 = "2026-11-07T04:00:00Z", T2 = "2026-11-07T04:05:00Z", T3 = "2026-11-07T04:10:00Z";
+const ALL = { from: "2000-01-01T00:00:00Z", to: "2100-01-01T00:00:00Z", limit: 5000 };
 let dir: string;
 const open = () => new LocalStore({ dir, redact });
+const file = (name: string) => path.join(dir, name);
+const allFiles = () => fs.readdirSync(dir).map(f => fs.readFileSync(path.join(dir, f), "utf8")).join("\n");
+const isRoot = process.getuid?.() === 0;
 
 beforeEach(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), "nexus-store-")); });
-afterEach(() => { fs.rmSync(dir, { recursive: true, force: true }); });
+afterEach(() => {
+  for (const f of fs.readdirSync(dir)) fs.chmodSync(file(f), 0o644);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
 
 async function seed(s: LocalStore) {
   await s.putTask(fx.task);
@@ -22,22 +31,26 @@ async function seed(s: LocalStore) {
   for (const e of demoScenario.agentEvents) await s.appendAgentEvent(e);
   await s.putApproval(fx.approval);
   await s.putApproval(fx.approvalDecided);
-  await s.decideApproval("apr_01", "approved", by, "2026-11-07T04:00:00Z");
+  await s.decideApproval("apr_01", "approved", by, T1);
   await s.putReview(fx.review);
   for (const r of demoScenario.receipts) await s.putReceipt(r);
   await s.putPlan(fx.plan);
   for (const e of demoScenario.events.slice(0, 50)) await s.putNexusEvent(e);
 }
 
+/** Everything observable except the outbox status. */
 async function dump(s: LocalStore) {
   return {
     tasks: await s.listTasks(), sessions: await s.listSessions(), approvals: await s.listApprovals(),
     agent: await s.agentEvents("ses_01", 0), review: await s.getReviewForApproval("apr_02"),
     receipts: await s.listReceipts(), plan: await s.getPlan("plan_01"),
-    events: await s.queryEvents({ from: "2000-01-01T00:00:00Z", to: "2100-01-01T00:00:00Z", limit: 5000 }),
-    search: await s.searchEvents("change", 20), status: await s.status(),
+    events: await s.queryEvents(ALL), search: await s.searchEvents("change", 20),
   };
 }
+
+const ev = (id: string, at: string, title = `event ${id}`): NexusEvent => ({ ...fx.event, id, at, title });
+const ae = (seq: number, over: Record<string, unknown> = {}): AgentEvent =>
+  ({ sessionId: "ses_x", seq, at: T1, type: "message", text: "hi", ...over }) as AgentEvent;
 
 describe("LocalStore", () => {
   it("reopening from disk equals the in-memory state, including decisions", async () => {
@@ -45,61 +58,217 @@ describe("LocalStore", () => {
     await seed(a);
     const before = await dump(a);
     expect((await a.getApproval("apr_01"))?.decision).toBe("approved");
-    expect(await dump(open())).toEqual(before);
+    const b = open();
+    expect(b.skippedLines()).toBe(0);
+    expect(await dump(b)).toEqual(before);
+    expect(await b.status()).toEqual(await a.status());
   });
 
   it("conditional resolve wins once, also across reopen", async () => {
     const a = open();
     await a.putApproval(fx.approval);
-    const r1 = await a.decideApproval("apr_01", "approved", by, "t1");
-    const r2 = await a.decideApproval("apr_01", "rejected", { via: "slack", userId: "U_B" }, "t2");
+    const r1 = await a.decideApproval("apr_01", "approved", by, T1);
+    const r2 = await a.decideApproval("apr_01", "rejected", { via: "slack", userId: "U_B" }, T2);
     expect([r1.won, r2.won, r2.approval.decision, r2.approval.decidedBy?.via]).toEqual([true, false, "approved", "app"]);
-    const b = open();
-    const r3 = await b.decideApproval("apr_01", "rejected", by, "t3");
+    const r3 = await open().decideApproval("apr_01", "rejected", by, T3);
     expect([r3.won, r3.approval.decision]).toEqual([false, "approved"]);
   });
 
   it("putApproval cannot change a decision but still updates other fields", async () => {
     const a = open();
     await a.putApproval(fx.approval);
-    await a.decideApproval("apr_01", "approved", by, "t1");
+    await a.decideApproval("apr_01", "approved", by, T1);
     await a.putApproval({ ...fx.approval, decision: "rejected", reason: "new reason", slackMessage: { channelId: "C", ts: "1" } });
     const got = (await a.getApproval("apr_01"))!;
     expect([got.decision, got.reason, got.slackMessage?.ts]).toEqual(["approved", "new reason", "1"]);
-    expect((await open().getApproval("apr_01"))).toEqual(got);
+    expect(await open().getApproval("apr_01")).toEqual(got);
   });
 
-  it("passes free text through the injected redact on write, memory and disk", async () => {
-    const secret = "xoxp-1234-SECRET-token";
+  describe("redaction", () => {
+    const x = SECRET;
+    const apr = (over: Partial<ApprovalRequest>): ApprovalRequest => ({ ...fx.approval, ...over });
+    const rows: [string, (s: LocalStore) => Promise<void>][] = [
+      ["task.title", s => s.putTask({ ...fx.task, title: x })],
+      ["task.brief", s => s.putTask({ ...fx.task, brief: x })],
+      ["approval.reason", s => s.putApproval(apr({ reason: x }))],
+      ["approval.diffPreview", s => s.putApproval(apr({ diffPreview: x }))],
+      ["approval.action run_command.command", s => s.putApproval(apr({ action: { kind: "run_command", command: x } }))],
+      ["approval.action write_outside_scope.path", s => s.putApproval(apr({ action: { kind: "write_outside_scope", path: x } }))],
+      ["approval.action commit.message", s => s.putApproval(apr({ action: { kind: "commit", message: x } }))],
+      ["approval.action other.description", s => s.putApproval(apr({ action: { kind: "other", description: x } }))],
+      ["event.title", s => s.putNexusEvent(ev("e1", T1, x))],
+      ["agent message.text", s => s.appendAgentEvent(ae(0, { text: x }))],
+      ["agent tool_call.args value (nested)", s => s.appendAgentEvent(ae(0, { type: "tool_call", tool: "cmd.run", args: { env: [{ k: x }] } }))],
+      ["agent tool_call.args key (nested)", s => s.appendAgentEvent(ae(0, { type: "tool_call", tool: "cmd.run", args: { a: { [x]: 1 } } }))],
+      ["agent tool_result.summary", s => s.appendAgentEvent(ae(0, { type: "tool_result", tool: "t", ok: true, summary: x }))],
+      ["agent file_edit.diff", s => s.appendAgentEvent(ae(0, { type: "file_edit", path: "a.ts", diff: x }))],
+      ["agent file_edit.path", s => s.appendAgentEvent(ae(0, { type: "file_edit", path: x, diff: "d" }))],
+      ["agent error.message", s => s.appendAgentEvent(ae(0, { type: "error", message: x }))],
+      ["agent test_output.command", s => s.appendAgentEvent(ae(0, { type: "test_output", command: x, exitCode: 0, tail: "t" }))],
+      ["agent test_output.tail", s => s.appendAgentEvent(ae(0, { type: "test_output", command: "c", exitCode: 0, tail: x }))],
+      ["agent receipt.optimizations", s => s.appendAgentEvent(ae(0, { type: "receipt", receipt: { ...fx.receipt, optimizations: [x] } }))],
+      ["review.summary", s => s.putReview({ ...fx.review, summary: x })],
+      ["review.judges.notes", s => s.putReview({ ...fx.review, judges: [{ modelId: "j", verdict: "looks_good", notes: x }] })],
+      ["receipt.optimizations", s => s.putReceipt({ ...fx.receipt, optimizations: [x] })],
+      ["plan.subtasks.title", s => s.putPlan({ ...fx.plan, subtasks: fx.plan.subtasks.map((t, i) => (i === 0 ? { ...t, title: x } : t)) })],
+      ["plan.subtasks.brief", s => s.putPlan({ ...fx.plan, subtasks: fx.plan.subtasks.map((t, i) => (i === 0 ? { ...t, brief: x } : t)) })],
+    ];
+
+    it.each(rows)("%s never reaches memory or disk unredacted", async (_name, write) => {
+      const s = open();
+      await write(s);
+      const memory = JSON.stringify({
+        t: await s.listTasks(), a: await s.listApprovals(), g: await s.agentEvents("ses_x", 0),
+        r: await s.listReceipts(), v: await s.getReviewForApproval("apr_02"), p: await s.getPlan("plan_01"),
+        e: await s.queryEvents(ALL),
+      });
+      expect(memory).not.toContain(SECRET);
+      expect(allFiles()).not.toContain(SECRET);
+      expect(allFiles()).toContain("[R]");
+      expect(JSON.stringify(open().pendingOutbox())).not.toContain(SECRET);
+    });
+  });
+
+  describe("time", () => {
+    it("orders and windows by instant across mixed UTC offsets", async () => {
+      const a = open();
+      await a.putNexusEvent(ev("e_minus5", "2026-11-07T10:00:00-05:00"));   // 15:00Z
+      await a.putNexusEvent(ev("e_z", "2026-11-07T12:00:00Z"));
+      await a.putNexusEvent(ev("e_plus9", "2026-11-07T20:00:00+09:00"));    // 11:00Z
+      await a.putNexusEvent(ev("e_out", "2026-11-07T20:00:00-05:00"));      // 01:00Z next day
+      const window = { from: "2026-11-07T10:00:00Z", to: "2026-11-07T16:00:00Z", limit: 100 };
+      const ids = (xs: NexusEvent[]) => xs.map(e => e.id);
+      expect(ids(await a.queryEvents(window))).toEqual(["e_plus9", "e_z", "e_minus5"]);
+      expect(ids(await open().queryEvents(window))).toEqual(["e_plus9", "e_z", "e_minus5"]);
+      expect((await a.searchEvents("event", 10)).map(h => h.event.id)).toEqual(["e_out", "e_minus5", "e_z", "e_plus9"]);
+    });
+
+    it("rejects an unparseable event time without writing", async () => {
+      const a = open();
+      await expect(a.putNexusEvent(ev("bad", "zzz"))).rejects.toThrow();
+      expect(fs.existsSync(file("events.jsonl"))).toBe(false);
+    });
+  });
+
+  describe("failed writes leave memory unchanged and retries work", () => {
+    it.skipIf(isRoot)("event journal", async () => {
+      const a = open();
+      await a.putNexusEvent(ev("e1", T1));
+      fs.chmodSync(file("events.jsonl"), 0o444);
+      const seen: string[] = [];
+      a.subscribeEvents(e => seen.push(e.id));
+      await expect(a.putNexusEvent(ev("e2", T2))).rejects.toThrow();
+      expect(seen).toEqual([]);
+      expect((await a.queryEvents(ALL)).map(e => e.id)).toEqual(["e1"]);
+      fs.chmodSync(file("events.jsonl"), 0o644);
+      await a.putNexusEvent(ev("e2", T2));
+      expect(seen).toEqual(["e2"]);
+      expect(await dump(open())).toEqual(await dump(a));
+    });
+
+    it.skipIf(isRoot)("agent event journal", async () => {
+      const a = open();
+      await a.appendAgentEvent(ae(0));
+      fs.chmodSync(file("agent-events.jsonl"), 0o444);
+      await expect(a.appendAgentEvent(ae(1))).rejects.toThrow();
+      expect((await a.agentEvents("ses_x", 0)).map(e => e.seq)).toEqual([0]);
+      fs.chmodSync(file("agent-events.jsonl"), 0o644);
+      await a.appendAgentEvent(ae(1));   // not treated as a duplicate
+      expect((await a.agentEvents("ses_x", 0)).map(e => e.seq)).toEqual([0, 1]);
+      expect((await open().agentEvents("ses_x", 0)).map(e => e.seq)).toEqual([0, 1]);
+    });
+
+    it.skipIf(isRoot)("a failed rejection never flips to approved after reopen", async () => {
+      const a = open();
+      await a.putApproval(fx.approval);
+      fs.chmodSync(file("approvals.jsonl"), 0o444);
+      await expect(a.decideApproval("apr_01", "rejected", by, T1)).rejects.toThrow();
+      expect((await a.getApproval("apr_01"))?.decision).toBeUndefined();
+      expect((await open().getApproval("apr_01"))?.decision).toBeUndefined();
+      fs.chmodSync(file("approvals.jsonl"), 0o644);
+      const r = await a.decideApproval("apr_01", "approved", by, T2);
+      expect(r.won).toBe(true);
+      expect((await open().getApproval("apr_01"))?.decision).toBe("approved");
+    });
+
+    it("non-serializable values throw before anything is written", async () => {
+      const a = open();
+      await a.putNexusEvent(ev("e1", T1));
+      const sizes = () => fs.readdirSync(dir).map(f => [f, fs.statSync(file(f)).size]);
+      const before = sizes();
+      await expect(a.appendAgentEvent(ae(0, { type: "tool_call", tool: "t", args: { n: 10n } }))).rejects.toThrow();
+      expect(sizes()).toEqual(before);
+      expect(await a.agentEvents("ses_x", 0)).toEqual([]);
+      await a.appendAgentEvent(ae(0));
+      expect((await a.agentEvents("ses_x", 0)).length).toBe(1);
+    });
+  });
+
+  describe("replay validation", () => {
+    it("skips and counts bad lines without poisoning indexes", async () => {
+      const good = (r: unknown, op = "put") => JSON.stringify({ op, record: r });
+      fs.writeFileSync(file("events.jsonl"), [
+        "{}", "[]", '{"op":"put","record":null}',
+        good(fx.event),
+        good({ ...fx.event, id: "no_title", title: undefined }),
+        good({ ...fx.event, id: "bad_at", at: "zzz" }),
+        '{"op":"put","record":{"id":"torn","ki',
+      ].join("\n"));
+      fs.writeFileSync(file("approvals.jsonl"), [
+        good(fx.approval),
+        '{"op":"decide","record":null}',
+        good({ id: "ghost", decision: "approved", decidedBy: by, decidedAt: T1 }, "decide"),   // no such approval
+        good({ id: "apr_01", decision: "rejected", decidedBy: by, decidedAt: T2 }, "decide"),
+        good({ id: "apr_01", decision: "approved", decidedBy: by, decidedAt: T3 }, "decide"),   // second answer, dropped
+      ].join("\n") + "\n");
+      const s = open();
+      expect(s.skippedLines()).toBe(5 + 1 + 2 + 1);
+      expect((await s.queryEvents(ALL)).map(e => e.id)).toEqual([fx.event.id]);
+      expect((await s.searchEvents("add cart", 5)).length).toBe(1);
+      expect((await s.getApproval("apr_01"))?.decision).toBe("rejected");
+      await s.putNexusEvent(ev("after", T1));   // live append heals the torn tail
+      expect((await open().queryEvents(ALL)).length).toBe(2);
+    });
+
+    it("opens a 20k-event session quickly and in order", async () => {
+      const lines = Array.from({ length: 20000 }, (_, i) => JSON.stringify({ op: "put", record: ae(i) })).join("\n") + "\n";
+      fs.writeFileSync(file("agent-events.jsonl"), lines);
+      const t0 = performance.now();
+      const s = open();
+      const ms = performance.now() - t0;
+      const got = await s.agentEvents("ses_x", 19990);
+      expect(got.map(e => e.seq)).toEqual(Array.from({ length: 10 }, (_, i) => 19990 + i));
+      expect(ms).toBeLessThan(1500);
+    });
+  });
+
+  it("heals a torn tail on a live append", async () => {
     const a = open();
-    await a.putTask({ ...fx.task, brief: `use ${secret}` });
-    await a.putApproval({ ...fx.approval, reason: secret, action: { kind: "run_command", command: `curl -H ${secret}` }, diffPreview: secret });
-    await a.putNexusEvent({ ...fx.event, title: secret });
-    await a.appendAgentEvent({ sessionId: "ses_01", seq: 0, at: fx.task.createdAt, type: "tool_call", tool: "cmd.run", args: { env: [secret] } });
-    await a.appendAgentEvent({ sessionId: "ses_01", seq: 1, at: fx.task.createdAt, type: "file_edit", path: "a", diff: secret });
-    await a.putReview({ ...fx.review, summary: secret, judges: [{ modelId: "j", verdict: "looks_good", notes: secret }] });
-    expect((await a.getTask("task_01"))?.brief).toBe("use [REDACTED]");
-    for (const f of fs.readdirSync(dir)) expect(fs.readFileSync(path.join(dir, f), "utf8")).not.toContain("SECRET");
+    await a.putNexusEvent(ev("e1", T1));
+    fs.appendFileSync(file("events.jsonl"), '{"op":"put","record":{"id":"torn');
+    await a.putNexusEvent(ev("e2", T2));
+    const b = open();
+    expect((await b.queryEvents(ALL)).map(e => e.id)).toEqual(["e1", "e2"]);
+    expect(b.skippedLines()).toBe(1);
   });
 
-  it("skips a torn last line and keeps appending cleanly", async () => {
+  it("skips a torn last line on open and keeps appending cleanly", async () => {
     const a = open();
     await a.putNexusEvent(fx.event);
-    fs.appendFileSync(path.join(dir, "events.jsonl"), '{"op":"put","record":{"id":"torn","ki');
+    fs.appendFileSync(file("events.jsonl"), '{"op":"put","record":{"id":"torn","ki');
     const b = open();
     expect((await b.searchEvents("add cart", 5)).map(h => h.event.id)).toEqual([fx.event.id]);
-    await b.putNexusEvent({ ...fx.event, id: "second", title: "second event" });
+    await b.putNexusEvent(ev("second", T1, "second event"));
     const c = open();
-    expect((await c.searchEvents("event", 5)).map(h => h.event.id)).toEqual(["second"]);
+    expect((await c.searchEvents("second", 5)).map(h => h.event.id)).toEqual(["second"]);
     expect(await c.searchEvents("add cart", 5)).toHaveLength(1);
   });
 
   it("queries a window of 10k scripted events in under 50 ms", async () => {
     const all = scriptedNexusEvents({ hours: 36, perHour: 280, seed: 7 });
     expect(all.length).toBeGreaterThan(10000);
-    const a = open();
-    for (const e of all) await a.putNexusEvent(e);
-    const b = open();   // rebuilt from disk
+    fs.writeFileSync(file("events.jsonl"), all.map(e => JSON.stringify({ op: "put", record: e })).join("\n") + "\n");
+    const b = open();
     const query = { from: "2026-11-07T10:00:00Z", to: "2026-11-07T22:00:00Z", limit: 2000 };
     await b.queryEvents(query);   // warm up
     const t0 = performance.now();
@@ -111,10 +280,17 @@ describe("LocalStore", () => {
     expect(ms).toBeLessThan(50);
   });
 
+  it("writes 10k events through the store and reopens them", async () => {
+    const a = open();
+    const sample = scriptedNexusEvents({ hours: 36, perHour: 40, seed: 7 });
+    for (const e of sample) await a.putNexusEvent(e);
+    expect((await open().queryEvents(ALL)).length).toBe(sample.length);
+  });
+
   it("filters queries by orbit and kind", async () => {
     const a = open();
     for (const e of demoScenario.events) await a.putNexusEvent(e);
-    const got = await a.queryEvents({ from: "2000-01-01T00:00:00Z", to: "2100-01-01T00:00:00Z", orbits: ["main"], kinds: ["merge"], limit: 100 });
+    const got = await a.queryEvents({ ...ALL, orbits: ["main"], kinds: ["merge"], limit: 100 });
     expect(got.length).toBeGreaterThan(0);
     expect(got.every(e => e.orbit === "main" && e.kind === "merge")).toBe(true);
   });
@@ -132,10 +308,16 @@ describe("LocalStore", () => {
     await a.putNexusEvent(fx.event);
     await a.putNexusEvent({ ...fx.event, title: "overwrite" });
     expect(seen).toEqual([fx.event.title]);
-    const ae: AgentEvent = { sessionId: "s", seq: 0, at: fx.task.createdAt, type: "message", text: "hi" };
-    await a.appendAgentEvent(ae); await a.appendAgentEvent(ae);
+    await a.appendAgentEvent(ae(0)); await a.appendAgentEvent(ae(0));
     await a.putReceipt(fx.receipt); await a.putReceipt(fx.receipt);
-    expect([(await a.agentEvents("s", 0)).length, (await a.listReceipts()).length]).toEqual([1, 1]);
+    expect([(await a.agentEvents("ses_x", 0)).length, (await a.listReceipts()).length]).toEqual([1, 1]);
+  });
+
+  it("keeps agent events ordered when they arrive out of order", async () => {
+    const a = open();
+    for (const n of [0, 2, 1, 3]) await a.appendAgentEvent(ae(n));
+    expect((await a.agentEvents("ses_x", 0)).map(e => e.seq)).toEqual([0, 1, 2, 3]);
+    expect((await open().agentEvents("ses_x", 2)).map(e => e.seq)).toEqual([2, 3]);
   });
 
   it("isolates throwing listeners and honors unsubscribe", async () => {
@@ -154,18 +336,19 @@ describe("LocalStore", () => {
     expect([...seen].sort()).toEqual(["apr_01", "depth1", "depth2", fx.event.id].sort());
   });
 
-  it("tracks the outbox across reopen and ack", async () => {
+  it("tracks the outbox and lastSyncAt across reopen and ack", async () => {
     const a = open();
     await a.putTask(fx.task);
     await a.putApproval(fx.approval);
-    await a.decideApproval("apr_01", "approved", by, "t1");
+    await a.decideApproval("apr_01", "approved", by, T1);
     expect((await a.status()).outboxDepth).toBe(3);
     const b = open();
     const pending = b.pendingOutbox();
     expect(pending.map(e => [e.table, e.op])).toEqual([["tasks", "put"], ["approvals", "put"], ["approvals", "decide"]]);
-    b.ackOutbox(pending.slice(0, 2).map(e => e.id), "2026-11-07T05:00:00Z");
+    b.ackOutbox(pending.slice(0, 2).map(e => e.id), T2);
     const c = open();
     expect(c.pendingOutbox().map(e => e.op)).toEqual(["decide"]);
+    expect(await c.status()).toEqual({ online: true, outboxDepth: 1, lastSyncAt: T2 });
     await c.putTask({ ...fx.task, id: "t2" });
     expect(c.pendingOutbox().map(e => e.id)).toEqual([3, 4]);
   });

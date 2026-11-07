@@ -2,12 +2,25 @@
 // directory, plus outbox.jsonl of writes not yet confirmed remotely. Indexes live in memory and are
 // rebuilt on open by replaying the files through the same rules live writes use.
 // No vscode import: the directory is passed in.
+//
+// Write order for every mutation (all synchronous, so each method is atomic on the event loop):
+//   1. validate and build every line (JSON.stringify) -- a throw here writes nothing;
+//   2. append to outbox.jsonl, then to the record's journal -- a throw here leaves memory unchanged;
+//   3. apply to memory; 4. notify listeners.
+// A crash or failure between the two appends can leave an outbox entry with no journal line. That is
+// harmless: replay is idempotent and the remote store applies the same first-wins / append-only rules.
 import * as fs from "node:fs";
 import * as path from "node:path";
+import {
+  AgentEvent as AgentEventSchema, AgentSession as AgentSessionSchema, ApprovalRequest as ApprovalRequestSchema,
+  DecidedBy as DecidedBySchema, ModelCallReceipt as ReceiptSchema, NexusEvent as NexusEventSchema,
+  SwarmReview as SwarmReviewSchema, Task as TaskSchema, TaskPlan as TaskPlanSchema,
+} from "../../contracts";
 import type {
   AgentEvent, AgentSession, ApprovalRequest, DecidedBy, EventQuery, EventSearchHit, ModelCallReceipt,
   NexusEvent, SwarmReview, Task, TaskPlan,
 } from "../../contracts";
+import { z } from "zod";
 import { EventSearchIndex } from "./search";
 import type { DecideResult, EventStore, StatusEvent, StoreStatus, Unsubscribe } from "./store";
 
@@ -37,8 +50,11 @@ export interface LocalStoreOptions {
 }
 
 interface Journal { op: "put" | "decide"; record: unknown }
-
 type DecideRecord = { id: string; decision: "approved" | "rejected"; decidedBy: DecidedBy; decidedAt: string };
+
+const DecideRecordSchema = z.object({
+  id: z.string().min(1), decision: z.enum(["approved", "rejected"]), decidedBy: DecidedBySchema, decidedAt: z.string().datetime({ offset: true }),
+}).strict();
 
 const FILES: Record<Table, string> = {
   tasks: "tasks.jsonl",
@@ -51,6 +67,16 @@ const FILES: Record<Table, string> = {
   plans: "plans.jsonl",
 };
 const OUTBOX_FILE = "outbox.jsonl";
+const STATE_FILE = "state.json";
+const TABLES = new Set<string>(Object.keys(FILES));
+
+/** Replay gates: a record must match its contract schema; the original (not the parsed copy) is kept. */
+const SCHEMAS: Record<Table, z.ZodType> = {
+  tasks: TaskSchema, sessions: AgentSessionSchema, agent_events: AgentEventSchema, approvals: ApprovalRequestSchema,
+  events: NexusEventSchema, reviews: SwarmReviewSchema, receipts: ReceiptSchema, plans: TaskPlanSchema,
+};
+
+interface TimedEvent { ms: number; event: NexusEvent }
 
 export class LocalStore implements EventStore {
   private readonly dir: string;
@@ -62,7 +88,7 @@ export class LocalStore implements EventStore {
   private agentSeqs = new Map<string, Set<number>>();
   private approvals = new Map<string, ApprovalRequest>();
   private eventsById = new Map<string, NexusEvent>();
-  private eventsByTime: NexusEvent[] = [];        // ascending by `at`, stable for ties
+  private eventsByTime: TimedEvent[] = [];        // ascending by epoch ms, stable for ties
   private searchIndex = new EventSearchIndex();
   private reviews: SwarmReview[] = [];
   private receipts = new Map<string, ModelCallReceipt>();
@@ -72,6 +98,7 @@ export class LocalStore implements EventStore {
   private nextOutboxId = 1;
   private online = true;
   private lastSyncAt: string | undefined;
+  private skipped = 0;
 
   private eventListeners = new Set<(event: NexusEvent) => void>();
   private approvalListeners = new Set<(approval: ApprovalRequest) => void>();
@@ -84,11 +111,15 @@ export class LocalStore implements EventStore {
     this.replay();
   }
 
+  /** How many lines were dropped on open (torn, malformed, failing their schema, or orphaned decisions). For the caller to log. */
+  skippedLines(): number { return this.skipped; }
+
   // ---- tasks ----
   async putTask(task: Task) {
     const next = this.redactTask(clone(task));
+    this.persist("tasks", "put", next);
     this.tasks.set(next.id, next);
-    this.record("tasks", "put", next);
+    this.emitStatus();
   }
   async getTask(id: string) { const t = this.tasks.get(id); return t && clone(t); }
   async listTasks() { return cloneAll([...this.tasks.values()]); }
@@ -96,17 +127,20 @@ export class LocalStore implements EventStore {
   // ---- sessions ----
   async putSession(session: AgentSession) {
     const next = clone(session);
+    this.persist("sessions", "put", next);
     this.sessions.set(next.id, next);
-    this.record("sessions", "put", next);
+    this.emitStatus();
   }
   async getSession(id: string) { const s = this.sessions.get(id); return s && clone(s); }
   async listSessions() { return cloneAll([...this.sessions.values()]); }
 
   // ---- agent events ----
   async appendAgentEvent(event: AgentEvent) {
+    if (this.agentSeqs.get(event.sessionId)?.has(event.seq)) return;   // same event never stored twice
     const next = this.redactAgentEvent(clone(event));
-    if (!this.applyAgentEvent(next)) return;   // same event never stored twice
-    this.record("agent_events", "put", next);
+    this.persist("agent_events", "put", next);
+    this.applyAgentEvent(next);
+    this.emitStatus();
   }
   async agentEvents(sessionId: string, fromSeq: number) {
     return cloneAll((this.agentLog.get(sessionId) ?? []).filter(e => e.seq >= fromSeq));
@@ -115,10 +149,12 @@ export class LocalStore implements EventStore {
   // ---- approvals ----
   async putApproval(approval: ApprovalRequest) {
     const next = this.redactApproval(clone(approval));
-    const merged = this.applyApprovalPut(next);
+    const merged = this.mergeApproval(next);
     if (!merged) return;   // no change, no write, no notification
-    this.record("approvals", "put", stripDecision(next));
+    this.persist("approvals", "put", stripDecision(clone(next)));
+    this.approvals.set(merged.id, merged);
     this.emitApproval(merged);
+    this.emitStatus();
   }
   async getApproval(id: string) { const a = this.approvals.get(id); return a && clone(a); }
   async listApprovals() { return cloneAll([...this.approvals.values()]); }
@@ -127,9 +163,10 @@ export class LocalStore implements EventStore {
     if (!current) throw new Error(`unknown approval ${id}`);
     if (current.decision) return { approval: clone(current), won: false };   // first answer wins
     const rec: DecideRecord = { id, decision, decidedBy: clone(decidedBy), decidedAt: at };
+    this.persist("approvals", "decide", rec);
     const approval = this.applyDecide(rec)!;
-    this.record("approvals", "decide", rec);
     this.emitApproval(approval);
+    this.emitStatus();
     return { approval: clone(approval), won: true };
   }
 
@@ -138,19 +175,21 @@ export class LocalStore implements EventStore {
     if (this.eventsById.has(event.id)) return;   // append-only
     const next = clone(event);
     next.title = this.redactText(next.title);
+    if (!Number.isFinite(Date.parse(next.at))) throw new Error(`invalid event time ${next.at}`);
+    this.persist("events", "put", next);
     this.applyEvent(next);
-    this.record("events", "put", next);
     for (const l of [...this.eventListeners]) safely(() => l(clone(next)));
+    this.emitStatus();
   }
 
   // ---- reviews, receipts, plans ----
   async putReview(review: SwarmReview) {
     const next = clone(review);
     if (next.summary !== undefined) next.summary = this.redactText(next.summary);
-    next.judges = next.judges?.map(j => ({ ...j, notes: this.redactText(j.notes) }));
-    if (next.judges === undefined) delete next.judges;
+    if (next.judges) next.judges = next.judges.map(j => ({ ...j, notes: this.redactText(j.notes) }));
+    this.persist("reviews", "put", next);
     this.reviews.push(next);
-    this.record("reviews", "put", next);
+    this.emitStatus();
   }
   async getReviewForApproval(approvalId: string) {
     const mine = this.reviews.filter(r => r.approvalId === approvalId);
@@ -159,9 +198,10 @@ export class LocalStore implements EventStore {
 
   async putReceipt(receipt: ModelCallReceipt) {
     if (this.receipts.has(receipt.callId)) return;
-    const next = clone(receipt);
+    const next = this.redactReceipt(clone(receipt));
+    this.persist("receipts", "put", next);
     this.receipts.set(next.callId, next);
-    this.record("receipts", "put", next);
+    this.emitStatus();
   }
   async listReceipts(sessionId?: string) {
     return cloneAll([...this.receipts.values()].filter(r => !sessionId || r.sessionId === sessionId).sort((a, b) => a.at.localeCompare(b.at)));
@@ -170,28 +210,30 @@ export class LocalStore implements EventStore {
   async putPlan(plan: TaskPlan) {
     const next = clone(plan);
     next.subtasks = next.subtasks.map(s => ({ ...s, title: this.redactText(s.title), brief: this.redactText(s.brief) }));
+    this.persist("plans", "put", next);
     this.plans.set(next.id, next);
-    this.record("plans", "put", next);
+    this.emitStatus();
   }
   async getPlan(id: string) { const p = this.plans.get(id); return p && clone(p); }
 
   // ---- read side ----
   async queryEvents(query: EventQuery) {
     const from = Date.parse(query.from), to = Date.parse(query.to);
+    if (!Number.isFinite(from) || !Number.isFinite(to)) return [];
     const list = this.eventsByTime;
-    let lo = 0, hi = list.length;                       // first index with at >= from
+    let lo = 0, hi = list.length;                       // first index with ms >= from
     while (lo < hi) {
       const mid = (lo + hi) >>> 1;
-      if (Date.parse(list[mid].at) < from) lo = mid + 1; else hi = mid;
+      if (list[mid].ms < from) lo = mid + 1; else hi = mid;
     }
     const limit = query.limit ?? 2000;
     const out: NexusEvent[] = [];
     for (let i = lo; i < list.length && out.length < limit; i++) {
-      const e = list[i];
-      if (Date.parse(e.at) > to) break;
-      if (query.orbits && !query.orbits.includes(e.orbit)) continue;
-      if (query.kinds && !query.kinds.includes(e.kind)) continue;
-      out.push(clone(e));
+      const { ms, event } = list[i];
+      if (ms > to) break;
+      if (query.orbits && !query.orbits.includes(event.orbit)) continue;
+      if (query.kinds && !query.kinds.includes(event.kind)) continue;
+      out.push(clone(event));
     }
     return out;
   }
@@ -222,12 +264,14 @@ export class LocalStore implements EventStore {
   /** Writes not yet confirmed remotely, oldest first. */
   pendingOutbox(): OutboxEntry[] { return cloneAll(this.outboxEntries); }
 
-  /** Removes confirmed entries (by id) and records the sync time. */
+  /** Removes confirmed entries (by id) and records the sync time, which survives reopen. */
   ackOutbox(ids: number[], at: string): void {
     const done = new Set(ids);
-    this.outboxEntries = this.outboxEntries.filter(e => !done.has(e.id));
+    const remaining = this.outboxEntries.filter(e => !done.has(e.id));
+    this.rewrite(OUTBOX_FILE, remaining.map(e => JSON.stringify(e) + "\n").join(""));
+    this.rewrite(STATE_FILE, JSON.stringify({ lastSyncAt: at }));
+    this.outboxEntries = remaining;
     this.lastSyncAt = at;
-    this.rewriteOutbox();
     this.emitStatus();
   }
 
@@ -239,82 +283,133 @@ export class LocalStore implements EventStore {
   }
 
   // ---- journaling ----
-  private record(table: Table, op: "put" | "decide", record: unknown) {
-    const line = JSON.stringify({ op, record } satisfies Journal) + "\n";
-    fs.appendFileSync(path.join(this.dir, FILES[table]), line);
-    const entry: OutboxEntry = { id: this.nextOutboxId++, table, op, record: clone(record) };
-    this.outboxEntries.push(entry);
-    fs.appendFileSync(path.join(this.dir, OUTBOX_FILE), JSON.stringify(entry) + "\n");
-    this.emitStatus();
+  /** Steps 1 and 2 of the write order. Throws before touching memory. */
+  private persist(table: Table, op: "put" | "decide", record: unknown) {
+    const journalLine = JSON.stringify({ op, record } satisfies Journal) + "\n";
+    const entry: OutboxEntry = { id: this.nextOutboxId, table, op, record };
+    const outboxLine = JSON.stringify(entry) + "\n";
+    this.nextOutboxId++;   // burned even if an append below fails, so ids never repeat on disk
+    this.appendLine(OUTBOX_FILE, outboxLine);
+    this.appendLine(FILES[table], journalLine);
+    this.outboxEntries.push(clone(entry));
   }
 
-  private rewriteOutbox() {
-    const file = path.join(this.dir, OUTBOX_FILE);
-    const tmp = file + ".tmp";
-    fs.writeFileSync(tmp, this.outboxEntries.map(e => JSON.stringify(e) + "\n").join(""));
-    fs.renameSync(tmp, file);
+  /** Appends one line, first closing a torn tail (no final newline) so a good record never glues onto torn bytes. */
+  private appendLine(file: string, line: string) {
+    const fd = fs.openSync(path.join(this.dir, file), "a+");
+    try {
+      const size = fs.fstatSync(fd).size;
+      let prefix = "";
+      if (size > 0) {
+        const last = Buffer.alloc(1);
+        fs.readSync(fd, last, 0, 1, size - 1);
+        if (last[0] !== 0x0a) prefix = "\n";
+      }
+      fs.writeSync(fd, prefix + line);
+    } finally {
+      fs.closeSync(fd);
+    }
   }
 
-  /** Reads a JSONL file, skipping unparseable lines (a torn last line after a crash). Heals a missing final newline. */
-  private readLines<T>(file: string): T[] {
+  private rewrite(file: string, content: string) {
+    const full = path.join(this.dir, file);
+    const tmp = full + ".tmp";
+    fs.writeFileSync(tmp, content);
+    fs.renameSync(tmp, full);
+  }
+
+  /** Reads a JSONL file; unparseable or non-object lines (a torn tail, junk) are skipped and counted. */
+  private readLines(file: string): Record<string, unknown>[] {
     const full = path.join(this.dir, file);
     if (!fs.existsSync(full)) return [];
-    const raw = fs.readFileSync(full, "utf8");
-    if (raw.length > 0 && !raw.endsWith("\n")) fs.appendFileSync(full, "\n");   // never glue the next record onto a torn one
-    const out: T[] = [];
-    for (const line of raw.split("\n")) {
+    const out: Record<string, unknown>[] = [];
+    for (const line of fs.readFileSync(full, "utf8").split("\n")) {
       if (!line.trim()) continue;
       try {
         const parsed: unknown = JSON.parse(line);
-        if (parsed && typeof parsed === "object") out.push(parsed as T);
-      } catch { /* torn line: skip */ }
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) out.push(parsed as Record<string, unknown>);
+        else this.skipped++;
+      } catch { this.skipped++; }
     }
     return out;
   }
 
   private replay() {
-    for (const j of this.readLines<Journal>(FILES.tasks)) this.tasks.set((j.record as Task).id, j.record as Task);
-    for (const j of this.readLines<Journal>(FILES.sessions)) this.sessions.set((j.record as AgentSession).id, j.record as AgentSession);
-    for (const j of this.readLines<Journal>(FILES.agent_events)) this.applyAgentEvent(j.record as AgentEvent);
-    for (const j of this.readLines<Journal>(FILES.approvals)) {
-      if (j.op === "decide") this.applyDecide(j.record as DecideRecord);
-      else this.applyApprovalPut(j.record as ApprovalRequest);
+    const journalOf = (table: Table, accept: (j: Journal) => boolean = () => true): Journal[] =>
+      this.readLines(FILES[table]).filter((j): j is Record<string, unknown> & Journal => {
+        const ok = (j.op === "put" || j.op === "decide") && j.record !== null && typeof j.record === "object" && accept(j as unknown as Journal);
+        if (!ok) this.skipped++;
+        return ok;
+      });
+    const valid = (table: Table, record: unknown): boolean => {
+      const ok = SCHEMAS[table].safeParse(record).success;
+      if (!ok) this.skipped++;
+      return ok;
+    };
+
+    for (const j of journalOf("tasks", x => x.op === "put")) if (valid("tasks", j.record)) this.tasks.set((j.record as Task).id, j.record as Task);
+    for (const j of journalOf("sessions", x => x.op === "put")) if (valid("sessions", j.record)) this.sessions.set((j.record as AgentSession).id, j.record as AgentSession);
+    for (const j of journalOf("agent_events", x => x.op === "put")) if (valid("agent_events", j.record)) this.applyAgentEvent(j.record as AgentEvent);
+    for (const j of journalOf("approvals")) {
+      if (j.op === "decide") {
+        if (!DecideRecordSchema.safeParse(j.record).success || !this.applyDecide(j.record as DecideRecord)) this.skipped++;
+      } else if (valid("approvals", j.record)) {
+        const merged = this.mergeApproval(j.record as ApprovalRequest);
+        if (merged) this.approvals.set(merged.id, merged);
+      }
     }
-    const events = this.readLines<Journal>(FILES.events).map(j => j.record as NexusEvent);
-    for (const e of events) {
+    for (const j of journalOf("events", x => x.op === "put")) {
+      const e = j.record as NexusEvent;
+      if (!valid("events", e)) continue;
+      if (!Number.isFinite(Date.parse(e.at))) { this.skipped++; continue; }
       if (this.eventsById.has(e.id)) continue;
       this.eventsById.set(e.id, e);
-      this.eventsByTime.push(e);
+      this.eventsByTime.push({ ms: Date.parse(e.at), event: e });
       this.searchIndex.add(e);
     }
-    this.eventsByTime.sort((a, b) => a.at.localeCompare(b.at));   // stable
-    for (const j of this.readLines<Journal>(FILES.reviews)) this.reviews.push(j.record as SwarmReview);
-    for (const j of this.readLines<Journal>(FILES.receipts)) {
+    this.eventsByTime.sort((a, b) => a.ms - b.ms);   // stable
+    for (const j of journalOf("reviews", x => x.op === "put")) if (valid("reviews", j.record)) this.reviews.push(j.record as SwarmReview);
+    for (const j of journalOf("receipts", x => x.op === "put")) {
       const r = j.record as ModelCallReceipt;
-      if (!this.receipts.has(r.callId)) this.receipts.set(r.callId, r);
+      if (valid("receipts", r) && !this.receipts.has(r.callId)) this.receipts.set(r.callId, r);
     }
-    for (const j of this.readLines<Journal>(FILES.plans)) this.plans.set((j.record as TaskPlan).id, j.record as TaskPlan);
+    for (const j of journalOf("plans", x => x.op === "put")) if (valid("plans", j.record)) this.plans.set((j.record as TaskPlan).id, j.record as TaskPlan);
 
-    const outbox = this.readLines<OutboxEntry>(OUTBOX_FILE).filter(e => typeof e.id === "number");
-    this.outboxEntries = outbox;
-    this.nextOutboxId = outbox.reduce((m, e) => Math.max(m, e.id), 0) + 1;
+    for (const e of this.readLines(OUTBOX_FILE)) {
+      const ok = typeof e.id === "number" && Number.isInteger(e.id) && typeof e.table === "string" && TABLES.has(e.table)
+        && (e.op === "put" || e.op === "decide") && e.record !== null && typeof e.record === "object";
+      if (ok) this.outboxEntries.push(e as unknown as OutboxEntry); else this.skipped++;
+    }
+    this.nextOutboxId = this.outboxEntries.reduce((m, e) => Math.max(m, e.id), 0) + 1;
+    try {
+      const state: unknown = JSON.parse(fs.readFileSync(path.join(this.dir, STATE_FILE), "utf8"));
+      const at = (state as { lastSyncAt?: unknown } | null)?.lastSyncAt;
+      if (typeof at === "string") this.lastSyncAt = at;
+    } catch { /* no state yet */ }
   }
 
   // ---- apply rules, shared by live writes and replay ----
-  private applyAgentEvent(event: AgentEvent): boolean {
+  private applyAgentEvent(event: AgentEvent): void {
     const seqs = this.agentSeqs.get(event.sessionId) ?? new Set<number>();
-    if (seqs.has(event.seq)) return false;
+    if (seqs.has(event.seq)) return;
     seqs.add(event.seq);
     this.agentSeqs.set(event.sessionId, seqs);
     const log = this.agentLog.get(event.sessionId) ?? [];
-    log.push(event);
-    log.sort((a, b) => a.seq - b.seq);
+    if (log.length === 0 || log[log.length - 1].seq < event.seq) {
+      log.push(event);                                  // the usual in-order case
+    } else {
+      let lo = 0, hi = log.length;
+      while (lo < hi) {
+        const mid = (lo + hi) >>> 1;
+        if (log[mid].seq < event.seq) lo = mid + 1; else hi = mid;
+      }
+      log.splice(lo, 0, event);
+    }
     this.agentLog.set(event.sessionId, log);
-    return true;
   }
 
-  /** Stores the approval with any existing decision preserved; returns the stored value, or undefined when nothing changed. */
-  private applyApprovalPut(incoming: ApprovalRequest): ApprovalRequest | undefined {
+  /** The approval as it would be stored (existing decision preserved), or undefined when nothing would change. Pure. */
+  private mergeApproval(incoming: ApprovalRequest): ApprovalRequest | undefined {
     const existing = this.approvals.get(incoming.id);
     const next = stripDecision(clone(incoming));
     if (existing?.decision) {
@@ -323,7 +418,6 @@ export class LocalStore implements EventStore {
       if (existing.decidedAt) next.decidedAt = existing.decidedAt;
     }
     if (existing && JSON.stringify(existing) === JSON.stringify(next)) return undefined;
-    this.approvals.set(next.id, next);
     return next;
   }
 
@@ -336,14 +430,15 @@ export class LocalStore implements EventStore {
   }
 
   private applyEvent(event: NexusEvent) {
+    const ms = Date.parse(event.at);
     this.eventsById.set(event.id, event);
     const list = this.eventsByTime;
     let lo = 0, hi = list.length;                       // upper bound keeps ties in insertion order
     while (lo < hi) {
       const mid = (lo + hi) >>> 1;
-      if (list[mid].at.localeCompare(event.at) <= 0) lo = mid + 1; else hi = mid;
+      if (list[mid].ms <= ms) lo = mid + 1; else hi = mid;
     }
-    list.splice(lo, 0, event);
+    list.splice(lo, 0, { ms, event });
     this.searchIndex.add(event);
   }
 
@@ -361,24 +456,31 @@ export class LocalStore implements EventStore {
     return a;
   }
 
+  private redactReceipt(r: ModelCallReceipt): ModelCallReceipt {
+    r.optimizations = r.optimizations.map(o => this.redactText(o));
+    return r;
+  }
+
   private redactAgentEvent(e: AgentEvent): AgentEvent {
     switch (e.type) {
       case "message": e.text = this.redactText(e.text); break;
       case "tool_call": e.args = this.redactDeep(e.args); break;
       case "tool_result": e.summary = this.redactText(e.summary); break;
-      case "file_edit": e.diff = this.redactText(e.diff); break;
+      case "file_edit": e.path = this.redactText(e.path); e.diff = this.redactText(e.diff); break;
       case "error": e.message = this.redactText(e.message); break;
       case "test_output": e.command = this.redactText(e.command); e.tail = this.redactText(e.tail); break;
+      case "receipt": e.receipt = this.redactReceipt(e.receipt); break;
       default: break;
     }
     return e;
   }
 
+  /** Redacts string values and object keys, at any depth. */
   private redactDeep(value: unknown): unknown {
     if (typeof value === "string") return this.redactText(value);
     if (Array.isArray(value)) return value.map(v => this.redactDeep(v));
     if (value && typeof value === "object") {
-      return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, this.redactDeep(v)]));
+      return Object.fromEntries(Object.entries(value).map(([k, v]) => [this.redactText(k), this.redactDeep(v)]));
     }
     return value;
   }

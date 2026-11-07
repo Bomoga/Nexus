@@ -8,7 +8,7 @@ describe("FakeGit", () => {
   it("keeps agent commits on the session branch until a merge", async () => {
     const g = new FakeGit();
     const w = await g.createSessionWorktree(session);
-    const sha = await g.commitIn(w.worktreePath, "fix cart\n\nbody", "s1");
+    const sha = await g.commitIn(w.worktreePath, "fix cart\n\nbody", "s1", "");
     expect(sha).toMatch(/^[0-9a-f]{40}$/);
     expect(await g.headOf("main")).toBe(w.baseCommit);
     expect(await g.headOf(w.branch)).toBe(sha);
@@ -42,7 +42,7 @@ describe("FakeGit", () => {
 
   it("refuses a commit outside a session worktree and a session on a detached HEAD", async () => {
     const g = new FakeGit();
-    await expect(g.commitIn("/elsewhere", "x", "s1")).rejects.toThrow("unknown worktree");
+    await expect(g.commitIn("/elsewhere", "x", "s1", "")).rejects.toThrow("unknown worktree");
     g.detachedHead = true;
     await expect(g.createSessionWorktree(session)).rejects.toThrow("detached");
   });

@@ -61,8 +61,12 @@ export interface GitService {
   removeSessionWorktree(sessionId: string): Promise<void>;
   /** Unified diff of the worktree against `baseCommit`, limited to `paths` when given. Produced by git, never by a model. */
   diff(worktreePath: string, baseCommit: FullSha, paths?: string[]): Promise<string>;
-  /** Commits everything in the worktree to its session branch as the human's identity, with a `Nexus-Agent: <sessionId>` trailer. */
-  commitIn(worktreePath: string, message: string, sessionId: string): Promise<FullSha>;
+  /**
+   * Commits everything in the worktree to its session branch as the human's identity, with a `Nexus-Agent: <sessionId>` trailer.
+   * `approvedDiff` is the exact text diff() returned and the human approved; the commit is refused unless what gets staged
+   * produces the same text, so nothing written after the approval can reach the commit.
+   */
+  commitIn(worktreePath: string, message: string, sessionId: string, approvedDiff: string): Promise<FullSha>;
   /** Merges nexus/agent-<id> into the user's current branch; a conflict aborts cleanly with ok false. Never pushes. */
   mergeAgentBranch(sessionId: string): Promise<MergeResult>;
 }

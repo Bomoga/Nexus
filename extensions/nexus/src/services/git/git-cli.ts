@@ -1,10 +1,13 @@
-// The read half of GitService, over the git CLI (PLAN 5.2 L2-05). git is always run with execFile and an argv array,
+// The read half of GitService, over the git CLI (PLAN 5.2 L2-05, L2-06). git is always run with execFile and an argv array,
 // never a shell string. Everything that comes from a repository (names, paths, messages) is untrusted: SHAs are
-// validated, paths are checked and follow `--`, and output is bounded. The write half belongs to L2-06.
+// validated, paths are checked and follow `--`, and output is bounded. The write half is in worktrees.ts and merge.ts.
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { devNull } from "node:os";
 import path from "node:path";
+import { mergeAgentBranch } from "./merge";
+import * as wt from "./worktrees";
+import type { RunOptions, RunResult } from "./worktrees";
 import type { BranchInfo, CommitDetail, FullSha, GitService, LogEntry, MergeResult, RefInfo, SessionWorktree } from "./types";
 
 const MAX_OUTPUT = 16 * 1024 * 1024;
@@ -43,41 +46,54 @@ function assertIso(value: string): void {
   if (!isIso(value)) throw new Error("invalid time: expected an ISO 8601 date with an offset");
 }
 
+/** The git subcommand in an argv that may start with `-c key=value` pairs, for error messages. */
+function subcommand(args: string[]): string {
+  let i = 0;
+  while (args[i] === "-c") i += 2;
+  return args[i] ?? "command";
+}
+
 /** Optional hooks for the git service. */
 export interface GitCliOptions {
   /** Where truncation warnings go. The frozen contract shapes carry no "partial" flag, so partial results are reported here. */
   logger?: { warn(message: string): void };
   /** Ignore the user's and the system's git config (tests). */
   isolatedConfig?: boolean;
+  /** Where session worktrees live (production: the extension's global storage). Must be outside the user's checkout; required for the write half. */
+  sessionsDir?: string;
 }
 
-interface RunResult { stdout: string; code: number }
 
 export class GitCli implements GitService {
   constructor(private readonly repoRoot: string, private readonly options: GitCliOptions = {}) {}
 
   /** The child environment: every inherited GIT_* override is dropped (GIT_DIR, GIT_WORK_TREE, GIT_INDEX_FILE, GIT_CONFIG*, GIT_EXEC_PATH...), then ours is set. */
-  private env(): NodeJS.ProcessEnv {
+  private env(extra?: Record<string, string>): NodeJS.ProcessEnv {
     const env: NodeJS.ProcessEnv = {};
     for (const [k, v] of Object.entries(process.env)) if (!k.toUpperCase().startsWith("GIT_")) env[k] = v;
     Object.assign(env, { LC_ALL: "C", GIT_TERMINAL_PROMPT: "0", GIT_OPTIONAL_LOCKS: "0", GIT_LITERAL_PATHSPECS: "1" });
     if (this.options.isolatedConfig) Object.assign(env, { GIT_CONFIG_GLOBAL: devNull, GIT_CONFIG_SYSTEM: devNull, GIT_CONFIG_NOSYSTEM: "1" });
+    if (extra) Object.assign(env, extra);
     return env;
   }
 
-  private run(args: string[], options: { allowExit?: number[] } = {}): Promise<RunResult> {
+  private run(args: string[], options: RunOptions = {}): Promise<RunResult> {
+    return this.runIn(this.repoRoot, args, options);
+  }
+
+  private runIn(cwd: string, args: string[], options: RunOptions = {}): Promise<RunResult> {
     return new Promise((resolve, reject) => {
-      execFile("git", ["-c", "core.quotepath=off", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=", ...args], {
-        cwd: this.repoRoot,
+      execFile("git", ["-c", "core.quotepath=off", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=", "-c", "core.attributesFile=", ...args], {
+        cwd,
         maxBuffer: MAX_OUTPUT,
         encoding: "utf8",
-        env: this.env(),
+        env: this.env(options.env),
       }, (error, stdout, stderr) => {
-        if (!error) return resolve({ stdout, code: 0 });
+        if (!error) return resolve({ stdout, stderr: String(stderr), code: 0 });
         const code = typeof (error as { code?: unknown }).code === "number" ? (error as { code: number }).code : -1;
-        if (options.allowExit?.includes(code)) return resolve({ stdout, code });
-        const detail = String(stderr || error.message).trim().split("\n")[0].slice(0, 300);
-        reject(new Error(`git ${args[0]} failed: ${detail}`));
+        if (options.allowExit?.includes(code)) return resolve({ stdout, stderr: String(stderr), code });
+        const detail = String(stderr || error.message).trim().slice(0, 500);
+        reject(new Error(`git ${subcommand(args)} failed: ${detail}`));
       });
     });
   }
@@ -258,14 +274,13 @@ export class GitCli implements GitService {
     return stdout.length > 0;
   }
 
-  // ---- write half: L2-06 ----
-  async createSessionWorktree(_input: { sessionId: string; workspaceId: string }): Promise<SessionWorktree> { return notYet(); }
-  async removeSessionWorktree(_sessionId: string): Promise<void> { return notYet(); }
-  async diff(_worktreePath: string, _baseCommit: FullSha, _paths?: string[]): Promise<string> { return notYet(); }
-  async commitIn(_worktreePath: string, _message: string, _sessionId: string): Promise<FullSha> { return notYet(); }
-  async mergeAgentBranch(_sessionId: string): Promise<MergeResult> { return notYet(); }
-}
-
-function notYet(): never {
-  throw new Error("not implemented in L2-05: the git write half lands in L2-06");
+  // ---- write half: worktrees.ts and merge.ts ----
+  private context(): wt.GitContext {
+    return { repoRoot: this.repoRoot, sessionsDir: this.options.sessionsDir, run: (cwd, args, o) => this.runIn(cwd, args, o) };
+  }
+  createSessionWorktree(input: { sessionId: string; workspaceId: string }): Promise<SessionWorktree> { return wt.createSessionWorktree(this.context(), input); }
+  removeSessionWorktree(sessionId: string): Promise<void> { return wt.removeSessionWorktree(this.context(), sessionId); }
+  diff(worktreePath: string, baseCommit: FullSha, paths?: string[]): Promise<string> { return wt.diff(this.context(), worktreePath, baseCommit, paths); }
+  commitIn(worktreePath: string, message: string, sessionId: string, approvedDiff: string): Promise<FullSha> { return wt.commitIn(this.context(), worktreePath, message, sessionId, approvedDiff); }
+  mergeAgentBranch(sessionId: string): Promise<MergeResult> { return mergeAgentBranch(this.context(), sessionId); }
 }

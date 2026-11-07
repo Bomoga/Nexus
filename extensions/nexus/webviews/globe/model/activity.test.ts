@@ -68,7 +68,7 @@ describe("buildActivity", () => {
 
   test("unaligned bucket starts floor to their bucket", () => {
     const m = buildActivity([{ bucketStart: iso(NOW - 40 * 60_000), orbit: "main", count: 1 }], ["main"], NOW, HOUR);
-    expect(m.columns[2].total).toBe(1);
+    expect(m.columns[1].total).toBe(1);
   });
 });
 

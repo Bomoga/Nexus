@@ -7,7 +7,7 @@ import "./plan.css";
 type Subtask = TaskPlan["subtasks"][number];
 type Row = Subtask & { index: number };
 
-const STATUS_TONE: Record<TaskPlan["status"], Tone> = { proposed: "pending", accepted: "ok", rejected: "muted" };
+const STATUS_TONE: Record<TaskPlan["status"], Tone> = { proposed: "pending", accepted: "ok", rejected: "error" };
 
 export interface PlanReviewProps {
   /** Loaded with tasks.plan.get when no `plan` is given. */
@@ -57,11 +57,18 @@ export function PlanReview({ planId, plan: given, bridge }: PlanReviewProps) {
     if (busy) return;
     setBusy(true);
     setError("");
-    (bridge ?? getBridge())
-      .request(name, { planId: plan.id })
-      .then((p) => setPlan(p))
-      .catch((e) => setError(friendlyError(e, "plan")))
-      .finally(() => setBusy(false));
+    const client = bridge ?? getBridge();
+    const settle = async () => {
+      try {
+        setPlan(await client.request(name, { planId: plan.id }));
+      } catch (e) {
+        // Someone may have decided first (Lane 1 refuses a plan that is no longer proposed): show the stored decision.
+        const current = await client.request("tasks.plan.get", { planId: plan.id }).catch(() => undefined);
+        if (current && current.status !== "proposed") setPlan(current);
+        else setError(friendlyError(e, "plan"));
+      }
+    };
+    settle().finally(() => setBusy(false));
   };
 
   const toggle = (i: number) =>

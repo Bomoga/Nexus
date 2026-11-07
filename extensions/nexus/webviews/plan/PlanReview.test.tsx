@@ -130,6 +130,19 @@ describe("PlanReview", () => {
     expect((screen.getByRole("button", { name: "ACCEPT" }) as HTMLButtonElement).disabled).toBe(false);
   });
 
+  test("if a teammate decided first, a refused ACCEPT shows their decision instead of an error", async () => {
+    const { bridge, reqs } = setup({
+      "tasks.plan.accept": () => ({ ok: false, message: "That plan is already rejected." }),
+      "tasks.plan.get": () => plan({ status: "rejected" }),
+    });
+    render(<PlanReview plan={plan()} bridge={bridge} />);
+    fireEvent.click(screen.getByRole("button", { name: "ACCEPT" }));
+    await waitFor(() => expect(screen.queryByRole("button", { name: "ACCEPT" })).toBeNull());
+    expect(screen.queryByText(/already rejected/)).toBeNull();
+    expect(screen.getByText("rejected").className).toContain("nx-tone-error");
+    expect(reqs("tasks.plan.get")).toHaveLength(1);
+  });
+
   test("accepted and rejected plans show no buttons", () => {
     const { bridge } = setup();
     render(<PlanReview plan={plan({ status: "accepted", createdTaskIds: ["task_02", "task_03"] })} bridge={bridge} />);

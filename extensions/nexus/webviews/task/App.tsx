@@ -262,7 +262,7 @@ export function App({ bridge, taskId }: AppProps) {
       {!editable ? <StatusLine>{`task ${task.status}: editing and start are locked`}</StatusLine> : null}
       {error ? <StatusLine tone="error">{error}</StatusLine> : null}
       {note ? <StatusLine>{note}</StatusLine> : null}
-      {plan ? <PlanReview plan={plan} bridge={b} /> : null}
+      {plan ? <PlanReview key={plan.id} plan={plan} bridge={b} /> : null}
     </div>
   );
 }

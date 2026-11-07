@@ -39,6 +39,7 @@ export const dirs = [
 	'extensions/merge-conflict',
 	'extensions/mermaid-markdown-features',
 	'extensions/microsoft-authentication',
+	'extensions/nexus',
 	'extensions/notebook-renderers',
 	'extensions/npm',
 	'extensions/php-language-features',

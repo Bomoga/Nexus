@@ -322,6 +322,16 @@ describe("SessionsController robustness", () => {
     expect((await s.store.getTask("task_01"))!.status).toBe("draft");
   });
 
+  it("survives a worktree cleanup that throws synchronously or is not async", async () => {
+    for (const cleanup of [() => { throw new Error("boom"); }, () => undefined as unknown as Promise<void>]) {
+      const s = await setup();
+      s.git.removeSessionWorktree = cleanup;
+      s.store.putSession = async () => { throw new Error("disk full"); };
+      await expect(s.c.start("task_01", model)).rejects.toThrow("disk full");
+      expect(s.c.activeSession).toBeUndefined();
+    }
+  });
+
   it("finalizing survives failing writes: the host is still told, the controller is free", async () => {
     const logs: string[] = [];
     const store = new MemoryStore();

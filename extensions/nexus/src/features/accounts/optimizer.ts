@@ -1,4 +1,4 @@
-import { DEFAULT_OPTIMIZER, OptimizerSetting, type ModelCallReceipt, type ModelRole, type Req, type Res, type SpendSummary } from "../../contracts";
+import { DEFAULT_OPTIMIZER, ModelCallReceipt as ModelCallReceiptSchema, OptimizerSetting, type ModelCallReceipt, type ModelRole, type Req, type Res, type SpendSummary } from "../../contracts";
 import { inScope } from "../../models/prune-adapter";
 import { PRUNE_VERIFY_URL, isVerifiable, type PruneMetadata } from "../../models/prune-receipt";
 import type { StorePort, Unsubscribe } from "../ports";
@@ -84,7 +84,8 @@ export class OptimizerService {
   }
 
   /** Records one receipt (from the agent or a text-role call): shared store, local vault, subscribers. */
-  async record(receipt: ModelCallReceipt, metadata?: PruneMetadata): Promise<void> {
+  async record(input: ModelCallReceipt, metadata?: PruneMetadata): Promise<void> {
+    const receipt = ModelCallReceiptSchema.parse(input);          // a malformed receipt must not reach the shared store or the totals
     await this.deps.store.putReceipt(receipt);
     if (metadata && isVerifiable(metadata)) this.vault.set(receipt.pruneReceiptId, metadata);
     for (const cb of this.listeners) cb(receipt);

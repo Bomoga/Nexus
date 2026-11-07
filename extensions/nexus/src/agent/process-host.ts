@@ -111,7 +111,14 @@ export class ProcessHost {
   async startSession(params: HostReqIn<"session.start">): Promise<HostResOut<"session.start">> {
     this.start();
     this.activeSession = params.session.id;
-    return this.requestChild("session.start", params);
+    try {
+      return await this.requestChild("session.start", params);
+    } catch (e) {
+      // A start that was not confirmed may still run later; the controller is about to mark the session failed, so stop the child.
+      if (this.activeSession === params.session.id) this.activeSession = undefined;
+      if (e instanceof Error && e.message === "session.start timed out") this.transport?.kill();
+      throw e;
+    }
   }
 
   async cancelSession(sessionId: string): Promise<HostResOut<"session.cancel">> {

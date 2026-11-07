@@ -225,6 +225,17 @@ describe("ProcessHost host-to-agent calls", () => {
     await expect(h.host.startSession(startParams())).rejects.toThrow("session.start timed out");
   });
 
+  it("stops the child when session.start is not confirmed, and blames no session for that exit", async () => {
+    const h = track(harness({}, { hostRequestTimeoutMs: 30 }));
+    const p = h.host.startSession(startParams());
+    const raw = h.raw();
+    expect(raw.killed).toBe(false);
+    await expect(p).rejects.toThrow("session.start timed out");
+    expect(raw.killed).toBe(true);
+    raw.exit(null, "SIGTERM");
+    expect(h.errors).toEqual([]);
+  });
+
   it("rejects an invalid response from the child", async () => {
     const h = track(harness());
     const p = h.host.health();

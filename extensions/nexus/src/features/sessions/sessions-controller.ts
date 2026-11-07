@@ -118,7 +118,7 @@ export class SessionsController implements SessionEvents {
         await this.putTask(running);
       } catch (e) {
         // The agent never started: give the worktree back instead of leaking it.
-        await git.removeSessionWorktree?.(id).catch(err => this.deps.log?.(`could not remove worktree ${id}: ${err instanceof Error ? err.message : "unknown error"}`));
+        await Promise.resolve().then(() => git.removeSessionWorktree?.(id)).catch(err => this.deps.log?.(`could not remove worktree ${id}: ${err instanceof Error ? err.message : "unknown error"}`));
         throw e;
       }
       this.active = { session, task: running };

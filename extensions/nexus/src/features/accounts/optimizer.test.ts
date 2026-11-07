@@ -17,6 +17,17 @@ function setup(opts: { key?: string | undefined; verified?: boolean } = {}) {
 
 const receipt = (over: Partial<ModelCallReceipt> = {}): ModelCallReceipt => ({ ...fx.receipt, callId: "c1", pruneReceiptId: "sig1", ...over });
 
+describe("record", () => {
+  it("refuses a malformed receipt before it reaches the store or the listeners", async () => {
+    const s = setup();
+    const seen: unknown[] = [];
+    s.service.subscribe(r => seen.push(r));
+    await expect(s.service.record(receipt({ costUsd: "free" as unknown as number }))).rejects.toThrow();
+    expect(s.store.receipts).toHaveLength(0);
+    expect(seen).toHaveLength(0);
+  });
+});
+
 describe("setting", () => {
   it("is off by default, text roles only, no model routing", () => {
     expect(setup().service.get()).toEqual(DEFAULT_OPTIMIZER);

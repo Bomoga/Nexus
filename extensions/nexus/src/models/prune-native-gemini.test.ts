@@ -176,7 +176,7 @@ describe("replay and redaction", () => {
         { role: "tool", toolCallId: "c2", content: "b" },
       ],
     }), PROVIDER_KEY));
-    const calls = s.sent[0]!.body.messages[1].tool_calls;
+    const calls = s.sent[0]!.body.messages[2].tool_calls;
     expect(calls[0].extra_content).toEqual({ google: { thought_signature: "sig-1" } });
     expect(calls[1].extra_content).toBeUndefined();
   });

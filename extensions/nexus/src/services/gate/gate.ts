@@ -24,11 +24,18 @@ export interface GateDeps {
   platform?: NodeJS.Platform;
   env?: NodeJS.ProcessEnv;
   fileExists?: (file: string) => boolean;
+  /** How long to wait for taskkill before giving up on it (Windows). Default 3000. */
+  taskkillTimeoutMs?: number;
 }
 
 export const OUTPUT_TAIL_CHARS = 8000;
 const MAX_CAPTURE_CHARS = 64_000;
 const DRAIN_MS = 50;
+const TASKKILL_MS = 3000;
+/** After a timeout kill has settled, how long a child that still has not exited may keep the run open. */
+const FORCE_MS = 500;
+/** Added to stderr when a timed-out run is reported without its process ever exiting. */
+export const UNCONFIRMED_KILL_NOTE = "[nexus: the timed-out process could not be confirmed dead]";
 const WRITE_PREVIEW_CHARS = 4000;
 
 export function createGate(deps: GateDeps): Gate {
@@ -43,16 +50,27 @@ export function createGate(deps: GateDeps): Gate {
     return outcome.approvalId;
   }
 
-  /** Kills the child and everything it started: the process group on POSIX, taskkill /T on Windows. */
-  // Kills the child's whole process group (taskkill /T on Windows). Known limit: a descendant that calls setsid() leaves the
-  // group and survives; that needs an allowlisted or approved command, and the OS gives the gate no portable way to track it.
-  function killTree(child: ChildProcess): void {
-    if (child.pid === undefined) return;
+  /**
+   * Kills the child and everything it started: the process group on POSIX (synchronous), taskkill /T on Windows. The returned promise
+   * settles once taskkill has exited, or after TASKKILL_MS if it hangs, so a run is never reported while its tree is still dying.
+   * Known limit: a descendant that calls setsid() leaves the group and survives; that needs an allowlisted or approved command.
+   */
+  function killTree(child: ChildProcess): Promise<void> {
+    if (child.pid === undefined) return Promise.resolve();
     if (win) {
-      try { spawn("taskkill", ["/pid", String(child.pid), "/T", "/F"], { stdio: "ignore", windowsHide: true }).on("error", () => undefined); } catch { /* best effort */ }
-      return;
+      return new Promise<void>(resolve => {
+        let killer: ChildProcess | undefined;
+        const end = () => { clearTimeout(limit); resolve(); };
+        const limit = setTimeout(() => { try { killer?.kill(); } catch { /* best effort */ } resolve(); }, deps.taskkillTimeoutMs ?? TASKKILL_MS);
+        try {
+          killer = spawn("taskkill", ["/pid", String(child.pid), "/T", "/F"], { stdio: "ignore", windowsHide: true });
+          killer.on("error", end);
+          killer.on("exit", end);
+        } catch { end(); }
+      });
     }
     try { process.kill(-child.pid, "SIGKILL"); } catch { try { child.kill("SIGKILL"); } catch { /* already gone */ } }
+    return Promise.resolve();
   }
 
   function childEnv(): NodeJS.ProcessEnv {
@@ -66,15 +84,32 @@ export function createGate(deps: GateDeps): Gate {
     const env = childEnv();
     const plan = win ? windowsPlan(argv, env, deps.fileExists ?? existsSync) : { file: argv[0]!, args: argv.slice(1), verbatim: false };
     return new Promise(resolve => {
-      let out = "", err = "", done = false, exitCode: number | undefined, drain: NodeJS.Timeout | undefined;
-      let child: ChildProcess | undefined;
+      let out = "", err = "", done = false, exitCode: number | undefined, drain: NodeJS.Timeout | undefined, force: NodeJS.Timeout | undefined;
+      let child: ChildProcess | undefined, killing: Promise<void> = Promise.resolve();
+      const kill = (c: ChildProcess) => { killing = Promise.all([killing, killTree(c)]).then(() => undefined); };
       const finish = (code: number) => {
         if (done) return;
-        done = true; clearTimeout(timer); clearTimeout(drain);
+        done = true; clearTimeout(timer); clearTimeout(drain); clearTimeout(force);
         if (child) { child.stdout?.destroy(); child.stderr?.destroy(); }
-        resolve({ exitCode: code, stdoutTail: tail(deps.redact(out), OUTPUT_TAIL_CHARS), stderrTail: tail(deps.redact(err), OUTPUT_TAIL_CHARS) });
+        // Not reported until a kill in progress has completed.
+        void killing.then(() => resolve({ exitCode: code, stdoutTail: tail(deps.redact(out), OUTPUT_TAIL_CHARS), stderrTail: tail(deps.redact(err), OUTPUT_TAIL_CHARS) }));
       };
-      const timer = setTimeout(() => { if (child) killTree(child); }, timeoutMs);
+      // A timeout kills the tree. If the child is still not gone once the kill has settled (taskkill failed or hit its cap on
+      // Windows), stop waiting for it after a grace and report it as killed, saying so in stderr, so the agent never waits forever.
+      // finish() runs before the last kill attempt: a refused kill emits "error" synchronously, which must not turn this into 127.
+      const timer = setTimeout(() => {
+        if (!child) return;
+        const c = child;
+        kill(c);
+        void killing.then(() => {
+          if (done) return;
+          force = setTimeout(() => {
+            if (exitCode === undefined) err = keep(err, `\n${UNCONFIRMED_KILL_NOTE}`);
+            finish(exitCode ?? (win ? 1 : 137));
+            try { c.kill("SIGKILL"); } catch { /* best effort */ }
+          }, FORCE_MS);
+        });
+      }, timeoutMs);
       try {
         child = spawn(plan.file, plan.args, { cwd: session.worktreePath, env, shell: false, detached: !win, windowsHide: true, windowsVerbatimArguments: plan.verbatim, stdio: ["ignore", "pipe", "pipe"] });
       } catch (e) { err = String((e as Error).message); finish(127); return; }
@@ -93,7 +128,7 @@ export function createGate(deps: GateDeps): Gate {
         const signum = signal ? osc.signals[signal] : undefined;
         exitCode = typeof code === "number" ? code : signum ? 128 + signum : -1;
         // Streams normally close right after exit. If a grandchild still holds them, give a short drain, then kill the tree and stop waiting.
-        drain = setTimeout(() => { killTree(c); finish(exitCode!); }, DRAIN_MS);
+        drain = setTimeout(() => { kill(c); finish(exitCode!); }, DRAIN_MS);
       });
       c.on("close", () => finish(exitCode ?? -1));
     });

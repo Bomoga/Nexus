@@ -23,6 +23,21 @@ export function normalizeNexusUri(uri: string): string | null {
   return prefix + (rest.toLowerCase().startsWith(`${EXTENSION_ID}/`) ? rest.slice(EXTENSION_ID.length + 1) : rest);
 }
 
+/** The parts of a vscode.Uri the router reads. VS Code hands the extension an already-decoded path and query. */
+export interface UriLike { scheme: string; authority: string; path: string; query: string }
+
+/**
+ * Rebuilds the nexus://<route>/<path>?<query> string from a vscode.Uri's decoded parts, so a handler can read the query with
+ * new URL(...).searchParams (Uri.toString() would percent-encode "=" and "&"). The path is decoded: the coderef route must
+ * take its fields from it, not percent-decode again.
+ */
+export function fromUri(uri: UriLike): string | null {
+  if (uri.scheme !== CODEREF_SCHEME || uri.authority.toLowerCase() !== EXTENSION_ID) return null;
+  const path = uri.path.replace(/^\/+/, "");
+  if (!path) return null;
+  return `${CODEREF_SCHEME}://${path}${uri.query ? `?${uri.query}` : ""}`;
+}
+
 export class UriRouter {
   private readonly routes = new Map<string, UriRouteHandler>();
 
@@ -35,8 +50,8 @@ export class UriRouter {
   }
 
   /** Runs the matching route. Unknown or malformed URIs and handler failures are ignored: returns false, never throws. */
-  async handle(uri: string): Promise<boolean> {
-    const normalized = normalizeNexusUri(uri);
+  async handle(uri: string | UriLike): Promise<boolean> {
+    const normalized = typeof uri === "string" ? normalizeNexusUri(uri) : fromUri(uri);
     if (normalized === null) return false;
     const route = /^[a-z]+:\/\/([a-z0-9-]+)(?:[/?#]|$)/.exec(normalized)?.[1];
     const handler = route === undefined ? undefined : this.routes.get(route);

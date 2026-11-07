@@ -34,12 +34,13 @@ export function makeNonce(): string { return randomBytes(16).toString("base64");
 
 /**
  * Strict CSP: nothing remote, entry scripts only by nonce, and local files only from the webview's own resource origin.
- * 'strict-dynamic' lets a nonced module load its own split chunks (Vite's import()), which a nonce alone would block.
+ * Split chunks loaded by import() inherit the nonce; cspSource in script-src also lets Vite's modulepreload links load.
+ * No 'strict-dynamic': it would let a script-creating gadget in a dependency load remote code.
  */
 export function buildCsp(nonce: string, cspSource: string): string {
   return [
     "default-src 'none'",
-    `script-src 'nonce-${nonce}' 'strict-dynamic'`,
+    `script-src 'nonce-${nonce}' ${cspSource}`,
     `style-src 'nonce-${nonce}' ${cspSource}`,
     `img-src ${cspSource} data:`,
     `font-src ${cspSource}`,

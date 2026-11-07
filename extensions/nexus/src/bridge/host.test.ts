@@ -56,7 +56,8 @@ const VITE_PAGE = `<!doctype html>
   </body>
 </html>`;
 
-function fakeApi(t0?: string, missing = false) {
+function fakeApi(t0?: string, missing = false, page?: string) {
+  const reads: string[] = [];
   const providers = new Map<string, vscode.WebviewViewProvider>();
   const panels: ReturnType<typeof fakePanel>[] = [];
   const panelArgs: { viewType: string; title: string; options: unknown }[] = [];
@@ -68,9 +69,9 @@ function fakeApi(t0?: string, missing = false) {
     },
     workspace: { getConfiguration: () => ({ get: <T,>() => t0 as T | undefined }) },
     ViewColumn: { Active: -1 as vscode.ViewColumn },
-    readTextFile: uri => missing ? undefined : uri.toString().endsWith("/index.html") ? VITE_PAGE : undefined,
+    readTextFile: uri => { reads.push(uri.toString()); return missing ? undefined : page ?? (uri.toString().endsWith("/index.html") ? VITE_PAGE : undefined); },
   };
-  return { api, providers, panels, panelArgs };
+  return { api, providers, panels, panelArgs, reads };
 }
 
 const ctx = () => ({ extensionUri: { toString: () => "ext", path: "ext" }, subscriptions: [] as { dispose(): void }[] }) as unknown as vscode.ExtensionContext;
@@ -82,7 +83,8 @@ const resolveView = (providers: Map<string, vscode.WebviewViewProvider>, id: str
 describe("webview host", () => {
   it("CSP carries the nonce, blocks connect, and has no remote source", () => {
     const csp = buildCsp("NONCE123", "https://file+.vscode-resource.test");
-    expect(csp).toContain("script-src 'nonce-NONCE123' 'strict-dynamic'");
+    expect(csp).toContain("script-src 'nonce-NONCE123' https://file+.vscode-resource.test;");
+    expect(csp).not.toContain("strict-dynamic");
     expect(csp).toContain("style-src 'nonce-NONCE123'");
     expect(csp).toContain("default-src 'none'");
     expect(csp).toContain("connect-src 'none'");
@@ -103,6 +105,23 @@ describe("webview host", () => {
     const hostile = `<script src="https://evil.test/a.js"></script><script src="../../x.js"></script><script src="./assets/a b.js"></script>
       <script>alert(1)</script><link rel="stylesheet" href="https://evil.test/a.css"><link rel="stylesheet" href="./assets/../../a.css">`;
     expect(parseBuiltPage(hostile)).toEqual({ scripts: [], styles: [] });
+  });
+
+  it("reads the entry's own build and escapes stylesheet urls", () => {
+    const { api, providers, reads } = fakeApi();
+    createWebviewHost(ctx(), "nexus.chat", "chat", router(), api).register();
+    const view = fakeView();
+    resolveView(providers, "nexus.chat", view);
+    expect(reads).toEqual(["ext/media/chat/index.html"]);
+    expect(buildHtml({ nonce: "N", cspSource: "s", scripts: [], styles: ['a.css"><x'], title: "t" })).toContain('href="a.css&quot;&gt;&lt;x"');
+  });
+
+  it("treats a built page with no usable script as not built", () => {
+    const { api, providers } = fakeApi(undefined, false, '<link rel="stylesheet" href="./assets/a.css">');
+    createWebviewHost(ctx(), "nexus.chat", "chat", router(), api).register();
+    const view = fakeView();
+    resolveView(providers, "nexus.chat", view);
+    expect(view.webview.html).toContain("is not built");
   });
 
   it("explains a missing build instead of a blank page, and runs no script", () => {

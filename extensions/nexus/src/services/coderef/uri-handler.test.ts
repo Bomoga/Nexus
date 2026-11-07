@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { normalizeNexusUri, UriRouter } from "./uri-handler";
+import { fromUri, normalizeNexusUri, UriRouter } from "./uri-handler";
 
 describe("UriRouter", () => {
   it("routes the frozen spelling and the extension-id spelling to the same handler, with the same uri", async () => {
@@ -51,6 +51,25 @@ describe("UriRouter", () => {
     d.dispose();
     expect(await r.handle("nexus://auth/x")).toBe(false);
     r.registerRoute("auth", () => true);
+  });
+
+  it("routes a decoded vscode.Uri so the auth query survives", async () => {
+    const r = new UriRouter();
+    const seen: string[] = [];
+    r.registerRoute("auth", u => { seen.push(u); return true; });
+    // what URI.parse("nexus://nexus.nexus/auth/callback?code=abc&state=xy+z%2F1") exposes
+    expect(await r.handle({ scheme: "nexus", authority: "nexus.nexus", path: "/auth/callback", query: "code=abc&state=xy+z/1" })).toBe(true);
+    expect(new URL(seen[0]).searchParams.get("state")).toBe("xy z/1");
+    expect(new URL(seen[0]).searchParams.get("code")).toBe("abc");
+    expect(fromUri({ scheme: "nexus", authority: "other.ext", path: "/auth/x", query: "" })).toBeNull();
+    expect(fromUri({ scheme: "nexus", authority: "nexus.nexus", path: "/", query: "" })).toBeNull();
+  });
+
+  it("does not let a look-alike route reach a registered one", async () => {
+    const r = new UriRouter();
+    r.registerRoute("auth", () => true);
+    expect(await r.handle("nexus://auth.evil/x")).toBe(false);
+    expect(await r.handle({ scheme: "nexus", authority: "nexus.nexus", path: "/auth.evil/x", query: "" })).toBe(false);
   });
 
   it("normalizes only the exact extension authority", () => {

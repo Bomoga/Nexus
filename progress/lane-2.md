@@ -1,4 +1,5 @@
 ## Done
+- Wave 3 merged to lane-2 and wired: L2-06 session worktrees + commits bound to the approved diff + merge agent branch, L2-07 git watcher (globe events), L2-04 Slack cache. Launch check: on the Nexus repo the watcher wrote 313 events (lane-1 109, lane-2 76, lane-3 91, main 28), no extension host errors.
 - Wiring: register/lane-2.ts now provides the Slack service, git service and gate to Lane 1, and serves app.ping, store.*, events.query/search/subscribe, slack.*, git.commit.show, git.branches and ui.openExternal. Launch check: nexus.nexus activates, no extension host errors.
 - Wave 2 merged to lane-2: L2-13 gate, L2-05 git read side, L2-03 live Slack (each disputed twice; lead applied the last fixes, each pinned by a mutant)
 - L2-08 LocalStore + search merged to lane-2 (three disputes; lead applied the last fix). Adrian's controllers shadowed into it: 1,069 writes, 0 refused
@@ -39,6 +40,9 @@ T+0 = 22:00 ET, 2026-11-06
 - 2026-11-07 Slack: the SDK's delayReconnectAttempt is replaced on our client (hardenReconnect) because the SDK drops a rejection and retries forever. Unpinned: no test catches createBoltApp dropping that call. The host must store ApprovalRequest.slackMessage before a card can be clicked. L2-S1 (live) not run yet.
 - 2026-11-07 For Adrian: a Slack APPROVE click needs Lane 1's approvals controller. registerLane2 returns setSlackApprovalResolver; Lane 1 must call it with approvals.resolve after composing (until then a Slack click is refused, app and notification approvals work). The Slack approval card posts only for tasks whose source is a thread.
 - 2026-11-07 Slack tokens: SecretStorage (Nexus: Connect Slack) first, then SLACK_USER_TOKEN / SLACK_BOT_TOKEN / SLACK_APP_TOKEN from the environment in development.
+- 2026-11-07 Slack cache known limit: re-paging the same channel past the cache cap a second time skips some middle history (SlackService.history has no "older than" parameter). The first walk is complete.
+- 2026-11-07 Commits are bound to the approved diff (temporary index, --full-index --binary, submodules always shown); a merge refuses to overwrite ignored files, compared case-folded. The agent's commit message may not contain a scissors line.
+- 2026-11-07 L2-09 (Tiger schema) is waiting on the Tiger connection string; wave 3 ran L2-07 in its place.
 
 ## Next
-- L2-S1 live Slack check (Brandon), then wave 3 (L2-06 worktrees, L2-09 Tiger schema, L2-04 cache), then L2-07 watcher
+- L2-S1 live Slack check (Brandon); L2-09 Tiger schema once the connection string is in; then L2-10 Tiger store, L2-14 code refs, L2-16 ui.openTarget

@@ -140,6 +140,10 @@
         "title": "Nexus: Show Slack posting identity"
       },
       {
+        "command": "nexus.openCodeRef",
+        "title": "Nexus: Open code reference"
+      },
+      {
         "command": "nexus.shareSelectionToSlack",
         "title": "Nexus: Share to Slack"
       },

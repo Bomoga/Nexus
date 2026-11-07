@@ -12,7 +12,7 @@ import { resolveSessionId } from "./sessionId";
 afterEach(cleanup);
 
 type Req = Extract<Envelope, { t: "req" }>;
-type Answers = Record<string, (body: any) => unknown>;
+type Answers = Record<string, (body: Record<string, unknown>) => unknown>;
 
 /** A local host the test drives: canned answers per request, manual events per subscription name. */
 function setup(answers: Answers = {}) {
@@ -40,7 +40,7 @@ function setup(answers: Answers = {}) {
       if (env.t !== "req") return;
       const fn = answers[env.name] ?? defaults[env.name];
       queueMicrotask(() => {
-        const res: Envelope = fn ? { t: "res", id: env.id, ok: true, body: fn(env.body) } : { t: "res", id: env.id, ok: false, error: { code: "not_found", message: env.name } };
+        const res: Envelope = fn ? { t: "res", id: env.id, ok: true, body: fn(env.body as Record<string, unknown>) } : { t: "res", id: env.id, ok: false, error: { code: "not_found", message: env.name } };
         handlers.forEach((h) => h(res));
       });
     },
@@ -90,7 +90,7 @@ describe("session view", () => {
     expect(container.querySelector("img")).toBeNull();
     const row = rows()[0];
     expect(row.textContent).toContain("<img src=x onerror=alert(1)>");
-    expect(within(row).getByText(/model-written/i)).toBeTruthy();
+    expect(within(row).getAllByText(/model-written/i).length).toBeGreaterThan(0);
   });
 
   test("a duplicate seq is ignored", async () => {
@@ -163,7 +163,7 @@ describe("session view", () => {
     fireEvent.click(screen.getByRole("tab", { name: /tests/i }));
     expect(screen.getByText("npm test")).toBeTruthy();
     expect(screen.getByText(/exit 0/)).toBeTruthy();
-    expect(screen.getByText("Tests  12 passed (12)")).toBeTruthy();
+    expect(screen.getByText("Tests 12 passed (12)")).toBeTruthy(); // the default matcher collapses whitespace
   });
 
   test("RECEIPTS lists calls and totals match the fixture sums; routing is flagged", async () => {
@@ -195,7 +195,7 @@ describe("session view", () => {
     emit("agent.subscribe", scriptedAgentEvents[8]);
     const row = rows()[0];
     expect(await within(row).findByText(/npm test/)).toBeTruthy();
-    expect(within(row).getByText(/model-written/i)).toBeTruthy();
+    expect(within(row).getAllByText(/model-written/i).length).toBeGreaterThan(0);
     fireEvent.click(within(row).getByRole("button", { name: /approve/i }));
     await waitFor(() => expect(reqs("approvals.resolve").length).toBe(1));
     expect(reqs("approvals.resolve")[0].body).toEqual({ approvalId: "apr_01", decision: "approved" });

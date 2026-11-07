@@ -30,6 +30,8 @@ export interface RuntimeDeps {
   gate: Gate;
   maxTurns?: number;
   newCallId?: () => string;
+  /** Test hook: the fetch used for calls routed through Prune. */
+  fetch?: typeof fetch;
   /** Called once per session when the loop ends, however it ends. The host controller maps it to a status. */
   onFinished?: (outcome: SessionOutcome) => void;
 }
@@ -168,7 +170,7 @@ export class AgentRuntime {
         const notes: string[] = [];
         const callProvider = cred.prune?.enabled && cred.prune.apiKey
           ? wrapProvider(provider, {
-              apiKey: cred.prune.apiKey, scope: "all_roles", allowModelRouting: false, sessionId, newCallId: () => callId,
+              apiKey: cred.prune.apiKey, scope: "all_roles", allowModelRouting: false, sessionId, newCallId: () => callId, fetch: this.deps.fetch,
               now: () => new Date().toISOString(), onReceipt: r => receipts.push(r), onNote: n => notes.push(n),
             })
           : provider;

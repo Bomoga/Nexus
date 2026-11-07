@@ -19,6 +19,8 @@ export interface FakeGateOptions {
   /** "auto": approvals resolve immediately as approved. "manual": they wait for resolveApproval(). */
   approvals?: "auto" | "manual";
   commitSha?: string;
+  /** When set, credentials.get also tells the agent to route this call through Prune. */
+  prune?: { apiKey: string };
 }
 
 export class FakeGate implements Gate {
@@ -36,7 +38,9 @@ export class FakeGate implements Gate {
     for (const [p, c] of Object.entries(opts.files ?? {})) this.files.set(p, c);
     this.mode = opts.approvals ?? "auto";
     this.commitSha = opts.commitSha ?? "9d4e1b7c2a5f8e3d6c0b9a8f7e6d5c4b3a2f1e0d";
+    this.pruneKey = opts.prune?.apiKey;
   }
+  private readonly pruneKey?: string;
 
   get pendingApprovals(): string[] {
     return [...this.pending.keys()];
@@ -97,7 +101,7 @@ export class FakeGate implements Gate {
       case "slack.progress": this.progress.push(String(b.text)); return { ok: true };
       case "credentials.get": {
         this.credentialCalls.push({ provider: String(b.provider), callId: String(b.callId) });
-        return { apiKey: `fake-key-${String(b.callId)}` };
+        return { apiKey: `fake-key-${String(b.callId)}`, ...(this.pruneKey ? { prune: { enabled: true, apiKey: this.pruneKey, allowModelRouting: false as const } } : {}) };
       }
       case "event.emit": {
         this.emitted.push({ type: String(b.type), payload: b.payload });

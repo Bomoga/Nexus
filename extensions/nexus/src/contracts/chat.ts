@@ -24,6 +24,7 @@ export const ChatMessage = z.object({
   replyCount: z.number().int().nonnegative().optional(),
   sentVia: z.enum(["user", "bot"]),
   pending: z.boolean().optional(),
+  clientId: z.string().optional(),         // the sender's id for a post; the host echoes it so the UI can match its pending echo
   failed: z.boolean().optional(),          // a pending send Slack rejected; UI offers retry
   blocks: z.unknown().optional(),          // raw Block Kit for agent/approval messages (rendered by Lane 3, never executed)
 }).strict();

@@ -136,7 +136,7 @@ describe("the protocol surface of Lane 1", () => {
     expect(notLane1).toEqual([
       "app.ping", "auth.status", "coderef.create", "coderef.open", "events.activity", "events.query", "events.search", "git.branches",
       "git.commit.show", "git.mergeAgentBranch", "slack.channels", "slack.history", "slack.post", "slack.status", "slack.thread", "slack.users",
-      "store.status", "ui.openTarget", "ui.setTimeWindow",
+      "store.status", "ui.openExternal", "ui.openTarget", "ui.setTimeWindow",
     ]);
     const subs = Object.keys(t.lane.subscriptions).sort();
     expect(subs.every(n => n in Subscriptions)).toBe(true);

@@ -20,5 +20,4 @@ export type { ToolbarProps } from "./Toolbar";
 export { EmptyState } from "./EmptyState";
 export type { EmptyStateProps } from "./EmptyState";
 export { request, subscribe, createBridgeClient, getBridge, isFakeMode, BridgeError } from "./bridgeClient";
-export type { BridgeClient, Transport, ReqIn, SubIn } from "./bridgeClient";
-export { createFakeTransport } from "./fakeBridge";
+export type { BridgeClient, Transport, ReqIn, SubIn, RequestOptions } from "./bridgeClient";

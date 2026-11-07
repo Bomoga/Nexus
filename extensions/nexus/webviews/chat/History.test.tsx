@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { createBridgeClient, createFakeTransport } from "../shared";
+import { createBridgeClient } from "../shared";
+import { createFakeTransport } from "../shared/fakeBridge";
 import type { BridgeClient } from "../shared";
 import type { ChatMessage } from "../../src/contracts";
 import { History } from "./History";

@@ -232,7 +232,7 @@ body {
   height: 100%;
   padding: 0 var(--nx-pad-x);
   border: 0;
-  border-bottom: 2px solid transparent;
+  border-bottom: var(--nx-border-w) solid transparent;
   background: transparent;
   color: var(--nx-muted);
   font-family: var(--nx-font-ui-family);
@@ -253,7 +253,7 @@ body {
 }
 
 .nx-tab--active {
-  color: var(--nx-fg);
+  color: var(--nx-accent-hi);
   border-bottom-color: var(--nx-accent);
 }
 
@@ -266,4 +266,14 @@ body {
   padding: var(--nx-gap-2);
   color: var(--nx-muted);
   font-size: var(--nx-font-ui);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.nx-empty-message {
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }

@@ -15,11 +15,13 @@ export interface HomeKeeperDeps {
 }
 
 export const HOME_DEBOUNCE_MS = 150;
+const RETRY_DELAYS_MS = [2000, 5000, 10000];
 
 export class HomeKeeper {
   private timer: unknown;
   private opening = false;
   private disposed = false;
+  private failures = 0;
 
   constructor(private readonly deps: HomeKeeperDeps) {}
 
@@ -32,7 +34,7 @@ export class HomeKeeper {
   tabsChanged(): void {
     if (this.disposed) return;
     if (this.timer !== undefined) this.deps.cancel(this.timer);
-    if (this.deps.tabCount() > 0) { this.timer = undefined; return; }
+    if (this.deps.tabCount() > 0) { this.timer = undefined; this.failures = 0; return; }
     this.timer = this.deps.schedule(() => { this.timer = undefined; void this.reopen(); }, this.deps.debounceMs ?? HOME_DEBOUNCE_MS);
   }
 
@@ -47,8 +49,12 @@ export class HomeKeeper {
     this.opening = true;
     try {
       await this.deps.openHome();
+      this.failures = 0;
     } catch (e) {
       this.deps.onError?.(e);
+      // The home command may simply not be registered yet at startup: try again a few times, then wait for a tab change.
+      const delay = RETRY_DELAYS_MS[this.failures++];
+      if (delay !== undefined && !this.disposed) this.timer = this.deps.schedule(() => { this.timer = undefined; void this.reopen(); }, delay);
     } finally {
       this.opening = false;
     }

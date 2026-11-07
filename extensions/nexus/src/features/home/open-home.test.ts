@@ -76,13 +76,35 @@ describe("HomeKeeper", () => {
     expect(s.openHome).toHaveBeenCalledTimes(2);                      // a later empty state opens it again
   });
 
-  it("reports a failing open without crashing or retrying in a loop", async () => {
+  it("retries a failing open a few times with growing delays, then stops until the next tab change", async () => {
     const s = setup({ openHome: async () => { throw new Error("command 'nexus.openHome' not found"); } });
     s.keeper.start();
     await vi.advanceTimersByTimeAsync(HOME_DEBOUNCE_MS);
-    expect(s.errors).toHaveLength(1);
+    expect(s.openHome).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(s.openHome).toHaveBeenCalledTimes(2);
     await vi.advanceTimersByTimeAsync(5000);
-    expect(s.openHome).toHaveBeenCalledTimes(1);                       // retries only on the next tab change
+    expect(s.openHome).toHaveBeenCalledTimes(3);
+    await vi.advanceTimersByTimeAsync(10000);
+    expect(s.openHome).toHaveBeenCalledTimes(4);
+    await vi.advanceTimersByTimeAsync(60000);
+    expect(s.openHome).toHaveBeenCalledTimes(4);                       // gave up: no endless loop
+    expect(s.errors).toHaveLength(4);
+    s.keeper.tabsChanged();                                            // a tab change starts over
+    await vi.advanceTimersByTimeAsync(HOME_DEBOUNCE_MS);
+    expect(s.openHome).toHaveBeenCalledTimes(5);
+  });
+
+  it("a late-registered home command is picked up by the retry", async () => {
+    let ready = false;
+    const s = setup({ openHome: async () => { if (!ready) throw new Error("not yet"); } });
+    s.keeper.start();
+    await vi.advanceTimersByTimeAsync(HOME_DEBOUNCE_MS);
+    ready = true;
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(s.openHome).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(60000);
+    expect(s.openHome).toHaveBeenCalledTimes(2);                       // success ends the retries
   });
 
   it("stops after dispose", async () => {

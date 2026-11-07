@@ -43,3 +43,6 @@ export function mockFetch(routes: Record<string, Responder>) {
 
 export const json = (body: unknown, status = 200, headers: Record<string, string> = {}) =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", ...headers } });
+
+/** A token with an arbitrary header and signature segment, for malformed-token tests. */
+export const rawToken = (header: unknown, claims: Record<string, unknown>, sig = "c2ln") => `${enc(header)}.${enc(claims)}.${sig}`;

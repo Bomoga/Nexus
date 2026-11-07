@@ -22,8 +22,11 @@ const PollBody = z.object({ authReqId: z.string().min(1).max(500) }).strict();
 const DEFAULT_INTERVAL = 5;
 const MAX_ENTRIES = 1000;
 
-// Per Worker instance only (best effort guard; Auth0 allows 5 CIBA requests per minute per user).
-const started = new Map<string, { authReqId: string; interval: number; expiresAt: number }>();
+// Per Worker isolate only, best effort: another isolate (or a restart) can start a second CIBA request for one approval.
+// The in-flight promise is stored immediately so simultaneous starts for one approval share one Auth0 call.
+// Auth0 allows 5 CIBA requests per minute per user.
+type StartResult = { ok: true; authReqId: string; interval: number; expiresIn: number; expiresAt: number } | { ok: false; status: number; error: string; message: string };
+const started = new Map<string, Promise<StartResult>>();
 const intervals = new Map<string, number>();
 
 export function resetState(): void { started.clear(); intervals.clear(); resetJwtState(); }
@@ -46,15 +49,12 @@ async function readJson(res: Response): Promise<Record<string, unknown>> {
 
 const RATE_MSG = "Auth0 allows 5 CIBA requests per minute per user; try again shortly.";
 
-async function start(req: Request, env: Env, f: typeof fetch, now: number): Promise<Response> {
-  const parsed = StartBody.safeParse(await req.json().catch(() => undefined));
-  if (!parsed.success) return fail(400, "bad_request", "Body must be {approvalId, sessionId, actionLabel, approverAuth0UserId}.");
-  const b = parsed.data;
-  const existing = started.get(b.approvalId);
-  if (existing && existing.expiresAt > now) {
-    return reply({ authReqId: existing.authReqId, expiresIn: Math.max(1, Math.round((existing.expiresAt - now) / 1000)), interval: existing.interval });
-  }
-  started.delete(b.approvalId);
+const startReply = (r: StartResult, now: number): Response =>
+  r.ok
+    ? reply({ authReqId: r.authReqId, expiresIn: Math.max(1, Math.round((r.expiresAt - now) / 1000)), interval: r.interval })
+    : fail(r.status, r.error, r.message);
+
+async function callAuth0Start(b: z.infer<typeof StartBody>, env: Env, f: typeof fetch, now: number): Promise<StartResult> {
   const res = await f(`https://${env.AUTH0_DOMAIN}/bc-authorize`, {
     method: "POST",
     headers: FORM_HEADERS,
@@ -67,14 +67,35 @@ async function start(req: Request, env: Env, f: typeof fetch, now: number): Prom
       request_expiry: "300",
     }),
   });
-  if (res.status === 429) return fail(429, "rate_limited", RATE_MSG);
+  if (res.status === 429) return { ok: false, status: 429, error: "rate_limited", message: RATE_MSG };
   const data = await readJson(res);
-  if (!res.ok || typeof data.auth_req_id !== "string") return fail(502, "auth0_error", "Auth0 did not start the approval request.");
+  if (!res.ok || typeof data.auth_req_id !== "string") return { ok: false, status: 502, error: "auth0_error", message: "Auth0 did not start the approval request." };
   const expiresIn = typeof data.expires_in === "number" ? data.expires_in : 300;
   const interval = typeof data.interval === "number" ? data.interval : DEFAULT_INTERVAL;
+  return { ok: true, authReqId: data.auth_req_id, interval, expiresIn, expiresAt: now + expiresIn * 1000 };
+}
+
+async function start(req: Request, env: Env, f: typeof fetch, now: number): Promise<Response> {
+  const parsed = StartBody.safeParse(await req.json().catch(() => undefined));
+  if (!parsed.success) return fail(400, "bad_request", "Body must be {approvalId, sessionId, actionLabel, approverAuth0UserId}.");
+  const b = parsed.data;
+  const existing = started.get(b.approvalId);
+  if (existing) {
+    const r = await existing;   // an in-flight or finished start for this approval
+    if (!r.ok || r.expiresAt > now) return startReply(r, now);
+    if (started.get(b.approvalId) === existing) started.delete(b.approvalId);   // expired: allow a new start
+  }
   if (started.size >= MAX_ENTRIES) started.delete(started.keys().next().value as string);
-  started.set(b.approvalId, { authReqId: data.auth_req_id, interval, expiresAt: now + expiresIn * 1000 });
-  return reply({ authReqId: data.auth_req_id, expiresIn, interval });
+  const p = callAuth0Start(b, env, f, now);
+  started.set(b.approvalId, p);
+  try {
+    const r = await p;
+    if (!r.ok && started.get(b.approvalId) === p) started.delete(b.approvalId);   // failed: a retry may start again
+    return startReply(r, now);
+  } catch (e) {
+    if (started.get(b.approvalId) === p) started.delete(b.approvalId);
+    throw e;
+  }
 }
 
 async function poll(req: Request, env: Env, f: typeof fetch): Promise<Response> {

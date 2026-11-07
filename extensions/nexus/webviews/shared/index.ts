@@ -24,3 +24,4 @@ export type { BridgeClient, Transport, ReqIn, SubIn, RequestOptions } from "./br
 export { StoreStatusLine } from "./StoreStatusLine";
 export { friendlyError } from "./friendlyError";
 export { ErrorBoundary } from "./ErrorBoundary";
+export { PendingNote, useNow, waitingLabel } from "./waiting";

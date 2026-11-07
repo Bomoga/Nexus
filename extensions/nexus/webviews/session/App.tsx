@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { AgentEvent, AgentSession, ApprovalRequest, ModelCallReceipt, SpendSummary } from "../../src/contracts";
-import { BridgeError, Button, EmptyState, StatusLine, Tabs, getBridge } from "../shared";
+import { BridgeError, Button, EmptyState, PendingNote, StatusLine, StoreStatusLine, Tabs, friendlyError, getBridge, useNow } from "../shared";
 import type { BridgeClient, Tone } from "../shared";
 
 type Status = AgentSession["status"];
@@ -13,7 +13,6 @@ const TABS = [
 const OPEN_RECEIPT_HINT = "opening receipts needs a bridge command (pending Lane 1)";
 
 const STATUS_TONE: Record<Status, Tone> = { running: "muted", awaiting_approval: "pending", done: "ok", failed: "error", cancelled: "muted" };
-const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 /** A decided approval is final: a late undecided copy (stale list, delayed event) never reopens it. */
 function putApproval(cur: ReadonlyMap<string, ApprovalRequest>, a: ApprovalRequest): ReadonlyMap<string, ApprovalRequest> {
@@ -73,8 +72,9 @@ function actionText(a: ApprovalRequest["action"]): string {
   }
 }
 
-function Approval({ approval, fallback, busy, onResolve }: {
+function Approval({ approval, fallback, busy, now, onResolve }: {
   approval: ApprovalRequest | undefined;
+  now: number;
   fallback: string;
   busy: boolean;
   onResolve: (decision: "approved" | "rejected") => void;
@@ -95,10 +95,13 @@ function Approval({ approval, fallback, busy, onResolve }: {
           {decided}, decided by {approval.decidedBy ? `${approval.decidedBy.via} ${approval.decidedBy.userId}` : "unknown"}
         </StatusLine>
       ) : (
-        <div className="log-actions">
-          <Button variant="primary" disabled={busy} onClick={() => onResolve("approved")}>APPROVE</Button>
-          <Button disabled={busy} onClick={() => onResolve("rejected")}>REJECT</Button>
-        </div>
+        <>
+          <PendingNote requestedAt={approval.requestedAt} now={now} />
+          <div className="log-actions">
+            <Button variant="primary" disabled={busy} onClick={() => onResolve("approved")}>APPROVE</Button>
+            <Button disabled={busy} onClick={() => onResolve("rejected")}>REJECT</Button>
+          </div>
+        </>
       )}
     </div>
   );
@@ -130,6 +133,12 @@ export function App({ bridge, sessionId }: AppProps) {
   const [cancelled, setCancelled] = useState<{ atSeq: number } | undefined>();
   const [tab, setTab] = useState<string>("log");
   const [error, setError] = useState("");
+  // A failed load: the only errors with a RETRY (an action error is retried by clicking the action again).
+  const [loadError, setLoadError] = useState("");
+  const [receiptsError, setReceiptsError] = useState("");
+  const [attempt, setAttempt] = useState(0);
+  // One clock for every pending approval in the view.
+  const now = useNow();
   const [busyApproval, setBusyApproval] = useState("");
   const [cancelling, setCancelling] = useState(false);
 
@@ -141,6 +150,8 @@ export function App({ bridge, sessionId }: AppProps) {
   useEffect(() => {
     if (!sessionId) return;
     let live = true;
+    setLoadError("");
+    setReceiptsError("");
     const b = bridge ?? getBridge();
     b.request("sessions.get", { sessionId })
       .then((s) => {
@@ -150,17 +161,17 @@ export function App({ bridge, sessionId }: AppProps) {
           .then((t) => live && setTitle(t.title))
           .catch(() => undefined);
       })
-      .catch((e) => live && setError(message(e)));
+      .catch((e) => live && setLoadError(friendlyError(e, "session")));
     b.request("receipts.list", { sessionId })
       .then((r) => {
         if (!live) return;
         setReceipts((cur) => [...cur, ...r.receipts.filter((x) => !cur.some((c) => c.callId === x.callId))]);
         setSummary((cur) => cur ?? r.summary);
       })
-      .catch(() => undefined);
+      .catch((e) => live && setReceiptsError(friendlyError(e, "receipts")));
     b.request("approvals.list", { sessionId })
       .then((list) => live && setApprovals((cur) => list.reduce(putApproval, cur)))
-      .catch(() => undefined);
+      .catch((e) => live && setLoadError((cur) => cur || friendlyError(e, "approvals")));
 
     const unsubs = [
       b.subscribe("agent.subscribe", { sessionId, fromSeq: 0 }, (e) => {
@@ -181,14 +192,22 @@ export function App({ bridge, sessionId }: AppProps) {
       live = false;
       unsubs.forEach((u) => u());
     };
-  }, [bridge, sessionId, addReceipt]);
+  }, [bridge, sessionId, addReceipt, attempt]);
 
   const ordered = useMemo(() => [...events.values()].sort((a, b) => a.seq - b.seq), [events]);
   const gaps = useMemo(() => missingRanges(new Set(events.keys())), [events]);
   const totals = useMemo(() => computeTotals(receipts), [receipts]);
 
+  const retry = <Button onClick={() => setAttempt((n) => n + 1)}>RETRY</Button>;
   if (!sessionId) return <EmptyState message="no session id" />;
-  if (error && !session) return <StatusLine tone="error">{error}</StatusLine>;
+  if (loadError && !session) {
+    return (
+      <div className="session-app">
+        <StoreStatusLine bridge={bridge} />
+        <StatusLine tone="error">{loadError} {retry}</StatusLine>
+      </div>
+    );
+  }
 
   // Newest status event wins; a cancel answer stands until a later status event arrives.
   let status: Status | undefined = session?.status;
@@ -208,7 +227,7 @@ export function App({ bridge, sessionId }: AppProps) {
     setCancelling(true);
     b.request("agent.cancel", { sessionId })
       .then(() => setCancelled({ atSeq }))
-      .catch((e) => setError(message(e)))
+      .catch((e) => setError(friendlyError(e, "session")))
       .finally(() => setCancelling(false));
   };
   const resolve = (approvalId: string, decision: "approved" | "rejected") => {
@@ -226,7 +245,7 @@ export function App({ bridge, sessionId }: AppProps) {
       }
     };
     settle()
-      .catch((e) => setError(message(e)))
+      .catch((e) => setError(friendlyError(e, "approvals")))
       .finally(() => setBusyApproval(""));
   };
 
@@ -237,6 +256,7 @@ export function App({ bridge, sessionId }: AppProps) {
 
   return (
     <div className="session-app">
+      <StoreStatusLine bridge={bridge} />
       <div className="session-head">
         <span className="session-title">{title || sessionId}</span>
         <span className="session-sep">·</span>
@@ -250,6 +270,7 @@ export function App({ bridge, sessionId }: AppProps) {
         <span className="session-spacer" />
         <Button disabled={!canCancel} onClick={cancel}>CANCEL</Button>
       </div>
+      {loadError ? <StatusLine tone="error">{loadError} {retry}</StatusLine> : null}
       {error ? <StatusLine tone="error">{error}</StatusLine> : null}
       {gaps.length ? <StatusLine tone="pending">missing events {gaps.join(", ")}</StatusLine> : null}
       <Tabs tabs={TABS} active={tab} onChange={setTab} />
@@ -267,6 +288,7 @@ export function App({ bridge, sessionId }: AppProps) {
                       approval={approvals.get(e.approvalId)}
                       fallback={e.approvalId}
                       busy={busyApproval === e.approvalId}
+                      now={now}
                       onResolve={(d) => resolve(e.approvalId, d)}
                     />
                   ) : (
@@ -292,7 +314,7 @@ export function App({ bridge, sessionId }: AppProps) {
               </div>
             ))
           ) : (
-            <EmptyState message="no file edits yet" />
+            <EmptyState message="no diffs yet" />
           )
         ) : null}
         {tab === "tests" ? (
@@ -310,7 +332,12 @@ export function App({ bridge, sessionId }: AppProps) {
             <EmptyState message="no test output yet" />
           )
         ) : null}
-        {tab === "receipts" ? <Receipts receipts={receipts} totals={totals} summary={summary} /> : null}
+        {tab === "receipts" ? (
+          <>
+            {receiptsError ? <StatusLine tone="error">{receiptsError} {retry}</StatusLine> : null}
+            <Receipts receipts={receipts} totals={totals} summary={summary} />
+          </>
+        ) : null}
       </div>
     </div>
   );
@@ -341,7 +368,7 @@ function LogBody({ e }: { e: AgentEvent }) {
 }
 
 function Receipts({ receipts, totals, summary }: { receipts: readonly ModelCallReceipt[]; totals: Totals; summary: SpendSummary | undefined }) {
-  if (!receipts.length) return <EmptyState message="no model-call receipts" />;
+  if (!receipts.length) return <EmptyState message="no receipts yet" />;
   // The host's summary is authoritative while no live receipt has arrived; otherwise the rows are summed.
   const useSummary = summary !== undefined && summary.calls === receipts.length;
   const cost = useSummary ? summary.costUsd : totals.costUsd;

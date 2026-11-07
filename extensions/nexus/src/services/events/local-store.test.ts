@@ -310,18 +310,27 @@ describe("LocalStore", () => {
     expect(await b.searchEvents("change", 3)).toHaveLength(3);
   });
 
-  it("opens a reversed journal of 100k events in under 1 s", { timeout: 60000 }, async () => {
+  it("opens a reversed journal in near-linear time (100k events vs 25k)", { timeout: 120000 }, async () => {
+    // Scaling, not wall-clock: CI runners are slower than laptops. Linear or n log n is about 4x for 4x the events; the
+    // quadratic splice this guards against was about 16x.
     const all = scriptedNexusEvents({ hours: 36, perHour: 280, seed: 7 });
-    const many: NexusEvent[] = Array.from({ length: 100000 }, (_, i) => ({ ...all[i % all.length], id: `ws:e:${i}`, at: new Date(Date.parse(T1) + i * 1000).toISOString() }));
-    fs.writeFileSync(file("events.jsonl"), many.reverse().map(e => JSON.stringify({ op: "put", record: e })).join("\n") + "\n");
-    const t0 = performance.now();
-    const s = open();
-    const ms = performance.now() - t0;
-    console.log(`opened 100k reversed events in ${Math.round(ms)} ms`);
+    const openReversed = (n: number) => {
+      fs.rmSync(dir, { recursive: true, force: true });
+      fs.mkdirSync(dir);
+      const many: NexusEvent[] = Array.from({ length: n }, (_, i) => ({ ...all[i % all.length], id: `ws:e:${i}`, at: new Date(Date.parse(T1) + i * 1000).toISOString() }));
+      fs.writeFileSync(file("events.jsonl"), many.reverse().map(e => JSON.stringify({ op: "put", record: e })).join("\n") + "\n");
+      const t0 = performance.now();
+      const s = open();
+      return { s, ms: performance.now() - t0 };
+    };
+    openReversed(25000);   // warm up the JIT so the first measurement is not inflated
+    const small = Math.min(openReversed(25000).ms, openReversed(25000).ms);
+    const { s, ms: large } = openReversed(100000);
+    console.log(`opened 25k in ${Math.round(small)} ms, 100k in ${Math.round(large)} ms`);
     expect(s.skippedLines()).toBe(0);
     const got = await s.queryEvents({ ...ALL, limit: 3 });
     expect(got.map(e => e.id)).toEqual(["ws:e:0", "ws:e:1", "ws:e:2"]);
-    expect(ms).toBeLessThan(1000);
+    expect(large / small).toBeLessThan(9);
   });
 
   it("opens a reversed 20k-event agent session quickly", async () => {

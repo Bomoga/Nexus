@@ -3,7 +3,7 @@ import { SwarmReview, type ApprovalRequest, type Req, type Res } from "../../con
 import { redact } from "../../shared/redact";
 import type { ApprovalHook } from "../approvals/approvals-controller";
 import type { Clock, StorePort, Unsubscribe } from "../ports";
-import { SwarmsUnavailable, lastTurnText, type SwarmRun, type SwarmRunInput } from "./swarms-client";
+import { SwarmsUnavailable, lastTurnText, outputText, type SwarmRun, type SwarmRunInput } from "./swarms-client";
 
 // Swarm review (PLAN L1-18): a CouncilAsAJudge swarm reads the diff, the task brief and the last test output when the
 // agent asks to commit, and its verdict appears on the approval card. It is ADVISORY: it never sets, nudges or times
@@ -67,6 +67,41 @@ export function parseVerdict(text: string): { verdict: Verdict; summary: string;
   return { verdict: "concerns", summary: clip(redact(`Unstructured reply: ${text.trim().replace(/\s+/g, " ")}`), NOTE_CHARS) };
 }
 
+type Parsed = ReturnType<typeof parseVerdict>;
+
+/**
+ * Reads a CouncilAsAJudge `output`: a list of turns, one `<dimension>_judge` per judge and a final `aggregator_agent`
+ * (recorded from the live API, 2026-11-07). Each judge turn becomes a judge entry; the aggregator's JSON verdict is used when
+ * it parses, otherwise the verdict is derived from the judges (all good = looks_good, most do_not_merge = do_not_merge,
+ * else concerns). Returns undefined for any other shape, so the caller falls back to parsing the last turn's text.
+ */
+export function parseCouncil(output: unknown): Parsed | undefined {
+  if (!Array.isArray(output)) return undefined;
+  const turns = output.filter((t): t is { role: string; content?: unknown } => !!t && typeof t === "object" && typeof (t as { role?: unknown }).role === "string");
+  const judgeTurns = turns.filter(t => /_judge$/i.test(t.role));
+  if (judgeTurns.length === 0) return undefined;
+  const judges = judgeTurns.slice(0, MAX_JUDGES).map(t => {
+    const text = outputText(t.content);
+    const j = extractJson(text);
+    const o = j && typeof j === "object" ? j as Record<string, unknown> : undefined;
+    return {
+      modelId: clip(redact(t.role.replace(/_judge$/i, " judge").replace(/_/g, " ")), 60),
+      verdict: asVerdict(o?.verdict),
+      notes: clip(redact(String(o?.summary ?? o?.notes ?? text).trim().replace(/\s+/g, " ")), NOTE_CHARS),
+    };
+  });
+  const aggregator = [...turns].reverse().find(t => /aggregator/i.test(t.role));
+  const agg = aggregator ? parseVerdict(outputText(aggregator.content)) : undefined;
+  const aggregatorParsed = agg !== undefined && !agg.summary.startsWith("Unstructured reply:");
+  const bad = judges.filter(j => j.verdict === "do_not_merge").length;
+  const derived: Verdict = judges.every(j => j.verdict === "looks_good") ? "looks_good" : bad * 2 > judges.length ? "do_not_merge" : "concerns";
+  return {
+    verdict: aggregatorParsed ? agg.verdict : derived,
+    summary: aggregatorParsed ? agg.summary : clip(redact(agg?.summary.replace(/^Unstructured reply:\s*/, "") || `${judges.length} judges reviewed the change.`), NOTE_CHARS),
+    judges,
+  };
+}
+
 export class SwarmReviewService implements ApprovalHook {
   readonly name = "swarm-review";
   private readonly listeners = new Set<(r: SwarmReview) => void>();
@@ -94,7 +129,7 @@ export class SwarmReviewService implements ApprovalHook {
       });
       const text = lastTurnText(run.output) || run.text;
       if (text.trim().length === 0) throw new SwarmsUnavailable("bad_response", "The council returned no text.");
-      review = SwarmReview.parse({ ...review, status: "done", ...parseVerdict(text), durationMs: Date.now() - started });
+      review = SwarmReview.parse({ ...review, status: "done", ...(parseCouncil(run.output) ?? parseVerdict(text)), durationMs: Date.now() - started });
     } catch (e) {
       const why = e instanceof SwarmsUnavailable ? e.message : redact(e instanceof Error ? e.message : "unknown error");
       this.deps.log?.(`swarm review unavailable: ${why}`);

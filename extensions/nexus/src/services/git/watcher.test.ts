@@ -169,7 +169,8 @@ describe("GitWatcher", () => {
 
   it("uses main first, then lane-N, then others, and the committer date for at", async () => {
     const log = [entry(1, [])];
-    const refs: RefInfo[] = [{ name: "zeta", kind: "branch", sha: sha(1) }, { name: "lane-3", kind: "branch", sha: sha(1) }];
+    // "alpha" sorts before "lane-3", so only the lane-N rank (not alphabetical order) can put the commit on lane-3.
+    const refs: RefInfo[] = [{ name: "alpha", kind: "branch", sha: sha(1) }, { name: "lane-3", kind: "branch", sha: sha(1) }];
     const t = fakeGit(refs, log);
     const a = make({ git: t.git }); await a.w.scan();
     expect(events.find(e => e.kind === "commit")!.orbit).toBe("lane-3");
@@ -240,5 +241,20 @@ describe("GitWatcher", () => {
     const t = fakeGit([{ name: "main", kind: "branch", sha: sha(5) }], log);
     const { w } = make({ git: t.git }); await w.scan();
     expect(events.find(e => e.kind === "merge")!.fromOrbit).toBe("merged");
+  });
+
+  it("refuses dot, dot-dot, absolute and doubled-slash names from a merge subject", async () => {
+    for (const [subject, expected] of [
+      ["Merge branch '../../etc'", "merged"], ["Merge branch '.hidden'", "merged"], ["Merge branch 'a/../b'", "merged"],
+      ["Merge branch '/abs'", "merged"], ["Merge branch 'a//b'", "merged"], ["Merge branch 'feature/./x'", "merged"],
+      [`Merge branch '${"a".repeat(101)}'`, "merged"],
+      ["Merge branch 'lane-5'", "lane-5"], ["Merge branch 'feature/cart/v2'", "feature/cart"], ["Merge branch 'release-1.2'", "release-1.2"],
+    ] as const) {
+      events.length = 0;
+      const log = [entry(5, [2, 4], subject), entry(4, [3]), entry(3, []), entry(2, [1]), entry(1, [])];
+      const t = fakeGit([{ name: "main", kind: "branch", sha: sha(5) }], log);
+      const { w } = make({ git: t.git }); await w.scan();
+      expect([subject, events.find(e => e.kind === "merge")!.fromOrbit]).toEqual([subject, expected]);
+    }
   });
 });

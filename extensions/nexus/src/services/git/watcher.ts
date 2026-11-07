@@ -167,7 +167,10 @@ export class GitWatcher {
   }
 }
 
-const NAME_RE = /^[A-Za-z0-9._/-]{1,100}$/;
+// A branch name from a merge subject (untrusted text). It may only pick an orbit name: plain segments, no "." or ".."
+// segment, no leading dot or slash, no doubled slash.
+const NAME_RE = /^(?!.*(?:^|\/)\.)(?!.*\/\/)(?!\/)[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)*$/;
+const MAX_NAME = 100;
 const MERGED = "merged";
 
 /** The source branch names a merge subject claims, one per secondary parent. Untrusted text: it can only pick an orbit name. */
@@ -179,7 +182,7 @@ function sourceFamilies(subject: string, count: number): string[] {
     const pr = /^Merge pull request #\d+ from [^/\s]+\/(\S+)$/.exec(subject);
     if (pr) names.push(pr[1]);
   }
-  return Array.from({ length: count }, (_, i) => (names.length === count && NAME_RE.test(names[i]) ? orbitOf(names[i]) : MERGED));
+  return Array.from({ length: count }, (_, i) => (names.length === count && names[i].length <= MAX_NAME && NAME_RE.test(names[i]) ? orbitOf(names[i]) : MERGED));
 }
 
 /**

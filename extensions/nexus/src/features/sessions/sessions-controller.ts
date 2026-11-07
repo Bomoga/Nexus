@@ -69,6 +69,9 @@ export class SessionsController implements SessionEvents {
 
   constructor(private readonly deps: SessionsDeps) {}
 
+  /** Sessions this controller can host at once: one agent process runs one session (the scheduler never asks for more). */
+  readonly capacity = 1;
+
   get activeSession(): AgentSession | undefined {
     return this.active?.session;
   }

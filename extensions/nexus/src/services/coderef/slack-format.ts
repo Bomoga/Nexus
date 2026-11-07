@@ -8,13 +8,19 @@ const MAX_LABEL_CHARS = 200;
 const ESC: Record<string, string> = { "&": "&amp;", "<": "&lt;", ">": "&gt;" };
 const escapeMrkdwn = (s: string) => s.replace(/[&<>]/g, c => ESC[c]!);
 
-/** `<link|path:start-end>` then the snippet in a code block that the snippet cannot close early. Never longer than MAX_MESSAGE_CHARS. */
+/**
+ * `<link|path:start-end>` then the snippet in a code block that the snippet cannot close early. Never longer than
+ * MAX_MESSAGE_CHARS: throws when the link alone leaves no room (createCodeRef already refuses such paths).
+ */
 export function formatCodeRefForSlack(ref: CodeRef, snippet: string): string {
-  const rawLabel = `${ref.path}:${ref.startLine}-${ref.endLine}`;
-  const label = escapeMrkdwn(rawLabel.length > MAX_LABEL_CHARS ? `…${rawLabel.slice(-MAX_LABEL_CHARS)}` : rawLabel).replace(/\|/g, "¦");
+  // Control characters (a newline in a file name) would break the link label; cut on code points, never inside a pair.
+  const points = Array.from(`${ref.path}:${ref.startLine}-${ref.endLine}`.replace(/\p{Cc}/gu, " "));
+  const rawLabel = points.length > MAX_LABEL_CHARS ? `…${points.slice(-MAX_LABEL_CHARS).join("")}` : points.join("");
+  const label = escapeMrkdwn(rawLabel).replace(/\|/g, "¦");
   const head = `<${encodeCodeRef(ref)}|${label}>\n\`\`\`\n`;
   const tail = "\n```";
   const ellipsis = "\n…";
+  if (head.length + tail.length + ellipsis.length > MAX_MESSAGE_CHARS) throw new Error("this code reference's link is too long for a Slack message");
   // Break every run of backticks first (zero-width spaces survive escaping), then escape and count per character.
   const safe = Array.from(snippet.replace(/`{2,}/g, m => m.split("").join("​")));
   const budget = MAX_MESSAGE_CHARS - head.length - tail.length;

@@ -7,7 +7,7 @@ import { decodeCodeRef, Requests, type CodeRef } from "../../contracts";
 import { FakeGit } from "../git/fake-git";
 import { GitCli } from "../git/git-cli";
 import { coderefRoute } from "./coderef-route";
-import { CodeRefError, createCodeRef, linesOf, MAX_SNIPPET_CHARS } from "./create";
+import { CodeRefError, createCodeRef, linesOf, MAX_LINK_PATH_CHARS, MAX_SNIPPET_CHARS } from "./create";
 import { openCodeRef, type ResolveDeps } from "./resolve";
 import { formatCodeRefForSlack, MAX_MESSAGE_CHARS } from "./slack-format";
 
@@ -222,5 +222,41 @@ describe("slack text limits", () => {
     const head = t.slice(0, t.indexOf("\n"));
     expect(head).toMatch(/\|a¦&lt;!channel&gt;¦b&gt;\.ts:1-2>$/);
     expect(head.match(/[<>|]/g)).toHaveLength(3);
+  });
+});
+
+const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+
+describe("link and code point limits", () => {
+  const r: CodeRef = { workspaceId: "w", commit: "b".repeat(40), path: "src/a.ts", startLine: 1, endLine: 2 };
+  it("refuses a path whose link would not fit, before git is touched", async () => {
+    const rec = recording(new FakeGit());
+    const longest = "文".repeat(Math.floor(MAX_LINK_PATH_CHARS / 9));
+    await expect(createCodeRef({ git: rec.git }, `${longest}x`, 1, 1)).rejects.toMatchObject({ code: "invalid_path" });
+    expect(rec.calls).toEqual([]);
+  });
+  it("always fits the cap for the longest path createCodeRef accepts", () => {
+    const longest = "文".repeat(Math.floor(MAX_LINK_PATH_CHARS / 9));
+    const t = formatCodeRefForSlack({ ...r, path: longest }, "<".repeat(5000));
+    expect(t.length).toBeLessThanOrEqual(MAX_MESSAGE_CHARS);
+    expect(t.endsWith("\n```")).toBe(true);
+  });
+  it("throws rather than exceed the cap when the link alone is too long", () => {
+    expect(() => formatCodeRefForSlack({ ...r, path: "文".repeat(400) }, "x")).toThrow(/too long/);
+  });
+  it("never splits a surrogate pair in the label, and keeps control characters out of it", () => {
+    const head = (p: string) => { const t = formatCodeRefForSlack({ ...r, path: p }, "x"); return t.slice(0, t.indexOf("\n```")); };
+    // 211 UTF-16 units of label, so a cut 200 units from the end lands inside the emoji's pair
+    const label = head(`${"a".repeat(10)}😀${"b".repeat(195)}`);
+    expect(label).not.toMatch(LONE_SURROGATE);
+    expect(label).toContain("…😀b");
+    expect(head("a\nb\tc.ts")).toMatch(/\|a b c\.ts:1-2>$/);
+  });
+  it("never splits a surrogate pair in the snippet", async () => {
+    write("emoji.txt", `${"😀".repeat(MAX_SNIPPET_CHARS + 50)}\n`);
+    commit("emoji");
+    const c = await createCodeRef({ git }, "emoji.txt", 1, 1);
+    expect(c.snippet).not.toMatch(LONE_SURROGATE);
+    expect(Array.from(c.snippet).length).toBe(MAX_SNIPPET_CHARS + 2);
   });
 });

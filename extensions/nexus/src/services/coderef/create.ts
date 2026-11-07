@@ -20,6 +20,9 @@ export const MAX_SNIPPET_LINES = 12;
 /** The most characters a snippet carries, so a minified file cannot send a huge one. */
 export const MAX_SNIPPET_CHARS = 2000;
 
+/** The longest encoded path a link may carry, so a shared link always fits in one Slack message with its snippet. */
+export const MAX_LINK_PATH_CHARS = 900;
+
 /** Throws unless `p` is a plain repo-relative path: not empty, no NUL, no leading slash or backslash, no drive prefix, and no empty, '.' or '..' segment (either separator). */
 export function checkRelativePath(p: string): void {
   const bad = typeof p !== "string" || p.length === 0 || p.includes("\0") || p.startsWith("/") || p.startsWith("\\") || /^[A-Za-z]:/.test(p)
@@ -36,6 +39,7 @@ export function linesOf(text: string): string[] {
 
 export async function createCodeRef(deps: CreateDeps, path: string, startLine: number, endLine: number): Promise<CreatedCodeRef> {
   checkRelativePath(path);
+  if (encodeURIComponent(path).length > MAX_LINK_PATH_CHARS) throw new CodeRefError("invalid_path", "this file's path is too long to share as a link");
   if (!Number.isInteger(startLine) || !Number.isInteger(endLine) || startLine < 1 || endLine < startLine) {
     throw new CodeRefError("invalid_range", "invalid line range");
   }
@@ -50,6 +54,7 @@ export async function createCodeRef(deps: CreateDeps, path: string, startLine: n
   const parsed = CodeRef.safeParse(ref);
   if (!parsed.success) throw new CodeRefError("invalid_path", `${path} cannot be shared as a code reference`);
   let snippet = lines.slice(startLine - 1, Math.min(endLine, startLine - 1 + MAX_SNIPPET_LINES)).join("\n");
-  if (snippet.length > MAX_SNIPPET_CHARS) snippet = `${snippet.slice(0, MAX_SNIPPET_CHARS)}\n…`;
+  const points = Array.from(snippet);   // cut on code points, never inside a surrogate pair
+  if (points.length > MAX_SNIPPET_CHARS) snippet = `${points.slice(0, MAX_SNIPPET_CHARS).join("")}\n…`;
   return { ref: parsed.data, link: encodeCodeRef(parsed.data), snippet };
 }

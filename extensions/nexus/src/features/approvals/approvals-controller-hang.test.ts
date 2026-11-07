@@ -21,6 +21,9 @@ async function setup() {
   const clock = fakeClock();
   const shown: Array<{ approval: ApprovalRequest; choose(d: "approved" | "rejected"): void }> = [];
   const logs: string[] = [];
+  const updates: Array<{ id: string; text: string }> = [];
+  const hostEvents: Array<{ approvalId: string; decision: string }> = [];
+  const flags = { updateThrows: false };
   // eslint-disable-next-line prefer-const
   let approvalsRef!: ApprovalsController;
   const requester = { request: (i: Parameters<ApprovalsController["request"]>[0]) => approvalsRef.request(i), sessionEnded: (id: string, how: "cancelled" | "failed" | "done") => approvalsRef.sessionEnded(id, how) };
@@ -32,13 +35,13 @@ async function setup() {
   });
   const approvals = new ApprovalsController({
     store, clock, sessions, log: m => logs.push(m), identity: () => "adrian",
-    host: { sendEvent: () => true },
-    notify: { show: (approval, _t, onChoice) => shown.push({ approval, choose: onChoice }), update: () => {} },
+    host: { sendEvent: (_n, body) => { hostEvents.push(body); return true; } },
+    notify: { show: (approval, _t, onChoice) => shown.push({ approval, choose: onChoice }), update: (id, text) => { updates.push({ id, text }); if (flags.updateThrows) throw new Error("ui exploded"); } },
   });
   approvalsRef = approvals;
   const session = await sessions.start("task_01", model);
   const runCommand = () => gate.request(session, "cmd.run", { command: "npm test", timeoutMs: 1000 }).then(() => "ran", (e: Error) => e.message);
-  return { store, sessions, approvals, session, shown, logs, runCommand };
+  return { store, sessions, approvals, session, shown, logs, updates, hostEvents, flags, runCommand };
 }
 
 afterEach(() => { vi.restoreAllMocks(); });
@@ -76,16 +79,70 @@ describe("approvals: store failures never leave the agent waiting", () => {
     expect((await bounded(p)).decision).toBe("approved");
   });
 
-  it("create: a store failure after the request was written rejects (the agent gets an error) and leaves nothing parked", async () => {
+  const create = (s: Awaited<ReturnType<typeof setup>>) => s.approvals.create({ sessionId: s.session.id, action: { kind: "run_command", command: "npm test" }, reason: "r" });
+  const internals = (s: Awaited<ReturnType<typeof setup>>) => s.approvals as unknown as { creating: Map<string, unknown>; pending: Map<string, string> };
+
+  it("create: a failure after the request was announced kills it: the notification is cleared and every later decision is refused, nothing written", async () => {
     const s = await setup();
     vi.spyOn(s.store, "getApproval").mockImplementationOnce(boom);
-    await expect(bounded(s.approvals.create({ sessionId: s.session.id, action: { kind: "run_command", command: "npm test" }, reason: "r" }))).rejects.toThrow("store I/O failed");
-    // The approval is on screen: a human deciding it must still be recorded and announced, not parked forever.
+    await expect(bounded(create(s))).rejects.toThrow("store I/O failed");
     const [stored] = await s.store.listApprovals();
+    expect(s.updates.at(-1)).toMatchObject({ id: stored.id, text: expect.stringContaining("nothing to approve") });
     const res = await bounded(s.approvals.resolve(stored.id, "approved", { via: "slack", userId: "brandon" }));
-    expect(res.won).toBe(true);
-    expect(s.logs.join("\n")).not.toMatch(/HUNG/);
-    expect((s.approvals as unknown as { creating: Map<string, unknown> }).creating.size).toBe(0);
+    expect(res.won).toBe(false);
+    s.shown[0].choose("approved");                                   // the on-screen button, too
+    await new Promise(r => setTimeout(r, 20));
+    expect((await s.store.getApproval(stored.id))!.decision).toBeUndefined();
+    expect(await s.approvals.list({ pendingOnly: true })).toEqual([]);
+    expect(internals(s).creating.size).toBe(0);
+    expect(internals(s).pending.size).toBe(0);
+  });
+
+  it("create: after that failure the session is not left showing awaiting_approval", async () => {
+    const s = await setup();
+    vi.spyOn(s.store, "getApproval").mockImplementationOnce(boom);
+    await expect(bounded(create(s))).rejects.toThrow("store I/O failed");
+    expect((await s.store.getSession(s.session.id))!.status).toBe("running");
+    expect((await s.store.getTask("task_01"))!.status).toBe("running");
+  });
+
+  it("create: if restoring the status also fails, the original error still surfaces and the failure is logged", async () => {
+    const s = await setup();
+    vi.spyOn(s.store, "getApproval").mockImplementationOnce(() => { vi.spyOn(s.store, "putSession").mockImplementation(boom); return boom(); });
+    await expect(bounded(create(s))).rejects.toThrow("store I/O failed");
+    expect(s.logs.some(l => l.includes("could not restore the session status"))).toBe(true);
+  });
+
+  it("create: a human decision parked during the failing read is still recorded and delivered", async () => {
+    const s = await setup();
+    const real = s.store.getApproval.bind(s.store);
+    let reads = 0;
+    vi.spyOn(s.store, "getApproval").mockImplementation(async id => {
+      if (++reads > 1) return real(id);
+      await s.approvals.resolve(id, "approved", { via: "slack", userId: "brandon" });   // lands while create() is reading
+      throw new Error("store I/O failed");
+    });
+    await expect(bounded(create(s))).rejects.toThrow("store I/O failed");
+    const [stored] = await s.store.listApprovals();
+    expect(stored.decision).toBe("approved");
+    expect(s.hostEvents).toEqual([{ approvalId: stored.id, decision: "approved" }]);
+    const types = (await s.store.agentEvents(s.session.id, 0)).map(e => e.type);
+    expect(types).toContain("approval_resolved");
+    expect((await s.store.getSession(s.session.id))!.status).toBe("running");
+    expect(internals(s).creating.size).toBe(0);
+    expect(internals(s).pending.size).toBe(0);
+  });
+
+  it("settle: a throwing notification update or subscriber cannot skip waking the agent", async () => {
+    const s = await setup();
+    const result = s.runCommand();
+    await vi.waitFor(() => expect(s.shown).toHaveLength(1));
+    s.flags.updateThrows = true;
+    s.approvals.subscribe(() => { throw new Error("subscriber exploded"); });
+    s.shown[0].choose("approved");
+    expect(await bounded(result)).toBe("ran");
+    expect(s.hostEvents).toHaveLength(1);
+    expect((await s.store.getSession(s.session.id))!.status).toBe("running");
   });
 
   it("create: putApproval failing rejects and leaves no pending entry", async () => {

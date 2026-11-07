@@ -69,6 +69,8 @@ export class ApprovalsController implements ApprovalRequester {
   private readonly creating = new Map<string, ApprovalRequest | undefined>();
   /** Sessions that are over: their approvals can no longer be decided (an APPROVE must not run a command in a dead worktree). */
   private readonly ended = new Set<string>();
+  /** Approvals whose creation failed after they were announced: nobody waits on them, so no decision may ever be written. */
+  private readonly dead = new Map<string, ApprovalRequest>();
   private readonly listeners = new Set<(a: ApprovalRequest) => void>();
 
   constructor(private readonly deps: ApprovalsDeps) {}
@@ -106,9 +108,21 @@ export class ApprovalsController implements ApprovalRequester {
     try {
       stored = await store.getApproval(approval.id);
     } catch (e) {
-      // The caller gets this error and no agent waits on it, so nothing may stay parked: a later decision must settle normally.
-      this.pending.delete(approval.id);
+      // The caller gets this error and no agent waits on this approval.
+      const parked = this.creating.get(approval.id);
       this.creating.delete(approval.id);
+      if (parked?.decision) {
+        // A human already decided it while we were reading: that decision is real, so record and deliver it.
+        await this.settle(parked);
+      } else {
+        // Nobody decided and nobody is waiting: the approval is dead. No decision is ever written for it.
+        this.pending.delete(approval.id);
+        this.dead.set(approval.id, approval);
+        this.deps.notify.update(approval.id, "The request could not be completed; there is nothing to approve.");
+        if (![...this.pending.values()].includes(approval.sessionId)) {
+          await sessions.setStatus(approval.sessionId, "running").catch(err => this.deps.log?.(`could not restore the session status: ${err instanceof Error ? err.message : "unknown error"}`));
+        }
+      }
       throw e;
     }
     const early = this.creating.get(approval.id) ?? stored;          // read the parked decision AFTER the await: one may land during it
@@ -154,6 +168,8 @@ export class ApprovalsController implements ApprovalRequester {
   async resolve(approvalId: string, decision: Decision, decidedBy: DecidedBy): Promise<{ approval: ApprovalRequest; won: boolean }> {
     const by = DecidedBy.parse(decidedBy);
     if (by.userId.trim().length === 0) throw new Error("A decision needs the name of the person who made it.");
+    const gone = this.dead.get(approvalId);
+    if (gone) return { approval: gone, won: false };                  // refused: nothing is written
     const existing = await this.deps.store.getApproval(approvalId);
     if (!existing) throw new Error(`No approval ${approvalId}.`);
     if (this.ended.has(existing.sessionId) && !existing.decision) throw new Error("That session has ended; there is nothing to approve.");
@@ -189,7 +205,7 @@ export class ApprovalsController implements ApprovalRequester {
 
   async list(filter: { sessionId?: string; pendingOnly?: boolean } = {}): Promise<ApprovalRequest[]> {
     const all = (await this.deps.store.listApprovals())
-      .filter(a => (!filter.sessionId || a.sessionId === filter.sessionId) && (!filter.pendingOnly || !a.decision));
+      .filter(a => (!filter.sessionId || a.sessionId === filter.sessionId) && (!filter.pendingOnly || (!a.decision && !this.dead.has(a.id))));
     let shown = all;
     if (filter.pendingOnly) {
       // An undecided approval of a session that already ended can never be decided (decisions are refused), so it is not "waiting".
@@ -230,13 +246,14 @@ export class ApprovalsController implements ApprovalRequester {
     const decision = approval.decision;
     if (!decision) return;
     if (this.creating.has(approval.id)) { this.creating.set(approval.id, approval); return; }
-    const who = approval.decidedBy ? `${approval.decidedBy.userId} via ${approval.decidedBy.via.replace("_", " ")}` : "a teammate";
-    this.deps.notify.update(approval.id, `Decided by ${who}: ${decision}`);
-    this.emitChange(approval);
     const sessionId = this.pending.get(approval.id);
-    if (sessionId === undefined) return;                              // not ours: nothing to wake
-    this.pending.delete(approval.id);
+    if (sessionId !== undefined) this.pending.delete(approval.id);
     try {
+      // A throwing UI surface must neither skip the agent's wake-up nor the rest of the bookkeeping.
+      const who = approval.decidedBy ? `${approval.decidedBy.userId} via ${approval.decidedBy.via.replace("_", " ")}` : "a teammate";
+      try { this.deps.notify.update(approval.id, `Decided by ${who}: ${decision}`); } catch (e) { this.deps.log?.(`could not update the notification: ${e instanceof Error ? e.message : "unknown error"}`); }
+      try { this.emitChange(approval); } catch (e) { this.deps.log?.(`an approval subscriber failed: ${e instanceof Error ? e.message : "unknown error"}`); }
+      if (sessionId === undefined) return;                            // not ours: nothing to wake
       await this.deps.sessions.emit(sessionId, { type: "approval_resolved", approvalId: approval.id, decision });
       // The session reads "running" again before the agent is woken, so no surface shows a working agent as waiting.
       if (![...this.pending.values()].includes(sessionId)) await this.deps.sessions.setStatus(sessionId, "running");
@@ -245,7 +262,7 @@ export class ApprovalsController implements ApprovalRequester {
       // A store hiccup must never leave the agent waiting on a decision a human already made.
       this.deps.log?.(`could not record the approval decision: ${e instanceof Error ? e.message : "unknown error"}`);
     } finally {
-      this.wake(approval.id, decision);
+      if (sessionId !== undefined) this.wake(approval.id, decision);
     }
   }
 

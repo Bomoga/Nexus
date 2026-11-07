@@ -81,7 +81,7 @@ const firstSentence = (s: string) => (/^.*?[.!?](?=\s|$)/.exec(s)?.[0] ?? s);
 /**
  * Reads a CouncilAsAJudge `output` (recorded from the live API, 2026-11-07): one prose `<dimension>_judge` turn per judge,
  * then an `aggregator_agent` turn that only echoes the Reviewer agent's reply (the candidate), NOT a verdict. Returns the
- * judges' redacted prose, or undefined when the output has no judge turns (the caller then parses the last turn's text).
+ * judges' redacted prose, or undefined when the output has no judge turns (the caller then treats the output as unreadable).
  */
 export function councilJudges(output: unknown): Array<{ modelId: string; text: string }> | undefined {
   if (!Array.isArray(output)) return undefined;
@@ -211,11 +211,11 @@ export class SwarmReviewService implements ApprovalHook {
     const lastTest = [...events].reverse().find(e => e.type === "test_output");
     const diff = approval.diffPreview ?? [...events].reverse().find(e => e.type === "file_edit")?.diff ?? "(no diff available)";
     // The candidate wrapper must not be forgeable from inside the data.
-    const safe = (s: string) => s.replace(/(BEGIN|END)[_\s]*CANDIDATE/gi, m => `${m[0]}\u200b${m.slice(1)}`);
+    const safe = (s: string) => s.replace(/(BEGIN|END)[\W_]*CANDIDATE/gi, m => `${m[0]}\u200b${m.slice(1)}`);
     const brief = frame([{ label: "task brief", text: safe(clip(redact(task?.brief ?? "(no brief)"), BRIEF_CHARS)) }]);
     const candidate = frame([
       { label: "diff", text: safe(clip(redact(diff), DIFF_CHARS)) },
-      { label: "last test output", text: lastTest && lastTest.type === "test_output" ? safe(`${lastTest.command} exited ${lastTest.exitCode}\n${clip(redact(lastTest.tail), TEST_CHARS)}`) : "(no tests were run)" },
+      { label: "last test output", text: lastTest && lastTest.type === "test_output" ? safe(`${redact(lastTest.command)} exited ${lastTest.exitCode}\n${clip(redact(lastTest.tail), TEST_CHARS)}`) : "(no tests were run)" },
     ]);
     return [
       "A coding agent was given the request in the task brief block below.",

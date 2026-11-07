@@ -1,6 +1,6 @@
-# Nexus (PLAN §3.3). Adrian = Bomoga, Brandon = brandondelgadoo, Elkin = aeer0c.
+# Nexus (PLAN §3.3). Adrian = Bomoga, Brandon = brandondelgadoo, Elkin = aerr0c.
 # Not enforced by GitHub (no branch protection); the team follows it by convention.
-/extensions/nexus/src/contracts/ @Bomoga @brandondelgadoo @aeer0c
+/extensions/nexus/src/contracts/ @Bomoga @brandondelgadoo @aerr0c
 /src/ @Bomoga
 /build/ @Bomoga
 /product.json @Bomoga

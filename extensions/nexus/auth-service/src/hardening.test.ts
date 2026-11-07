@@ -123,7 +123,8 @@ describe("malformed tokens", () => {
   });
   it("401 for a wrong or missing iss with a valid exp", async () => {
     expect(await status(await bearer(k1, claims({ iss: "https://other.example/" })), m())).toBe(401);
-    const { iss: _iss, ...noIss } = claims();
+    const noIss: Record<string, unknown> = { ...claims() };
+    delete noIss.iss;
     expect(await status(await bearer(k1, noIss), m())).toBe(401);
   });
 });

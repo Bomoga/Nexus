@@ -1,13 +1,14 @@
 import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { devNull, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { GitCli } from "./git-cli";
 import { binaryPathsInDiff } from "./worktrees";
+import { emptyGitConfig } from "./empty-config";
 
 let base: string, repo: string, sessions: string, git: GitCli;
-const env = { ...process.env, GIT_CONFIG_GLOBAL: devNull, GIT_CONFIG_SYSTEM: devNull, GIT_CONFIG_NOSYSTEM: "1" };
+const env = { ...process.env, GIT_CONFIG_GLOBAL: emptyGitConfig(), GIT_CONFIG_SYSTEM: emptyGitConfig(), GIT_CONFIG_NOSYSTEM: "1" };
 const sh = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8", env }).trim();
 const approve = async (w: { worktreePath: string; baseCommit: string }) => git.diff(w.worktreePath, w.baseCommit);
 const commitAs = async (w: { worktreePath: string; baseCommit: string }, message: string, id: string) => git.commitIn(w.worktreePath, message, id, await approve(w));

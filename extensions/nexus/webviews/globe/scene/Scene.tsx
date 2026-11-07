@@ -10,6 +10,10 @@ import { Markers } from "./Markers";
 import { Orbits } from "./Orbits";
 import { Picking } from "./picking";
 import { Activity } from "./rings";
+import { Tracking } from "./Tracking";
+import { WORLD_ROTATION } from "../model/tracking";
+
+const noop = () => undefined;
 
 export interface SceneProps {
   events: readonly NexusEvent[];
@@ -17,12 +21,16 @@ export interface SceneProps {
   window: TimeWindow;
   /** Click selection (markers, arcs, activity shapes); undefined for a click on empty space. */
   onPick?: (event: NexusEvent | undefined) => void;
+  /** The event the camera follows and rings (search/track); undefined for none. */
+  tracked?: NexusEvent;
+  /** The user dragged the globe while tracking. */
+  onRelease?: () => void;
   /** Seam for arcs, activity rings and picking: rendered inside the same world group. */
   children?: ReactNode;
 }
 
 /** The Canvas fills its parent, which must have an explicit (not content-driven) height; r3f handles resize. */
-export function Scene({ events, now, window, onPick, children }: SceneProps) {
+export function Scene({ events, now, window, onPick, tracked, onRelease, children }: SceneProps) {
   // Rebuild orbits only when the set of families changes, not on every events/now update.
   const key = familiesKey(familiesOf(events));
   const layout = useMemo(() => orbitLayout(key.split("\u0000")), [key]);
@@ -30,7 +38,8 @@ export function Scene({ events, now, window, onPick, children }: SceneProps) {
     <Canvas camera={{ fov: 40, position: [0, 0.8, 8.2], near: 0.1, far: 100 }} dpr={[1, 2]} gl={{ antialias: true, alpha: true }}>
       <OrbitControls enablePan={false} minDistance={4} maxDistance={14} rotateSpeed={0.6} makeDefault />
       {onPick ? <Picking events={events} layout={layout} onPick={onPick} /> : null}
-      <group rotation={[0.22, -0.7, 0]}>
+      <Tracking event={tracked} layout={layout} now={now} window={window} onRelease={onRelease ?? noop} />
+      <group rotation={WORLD_ROTATION as [number, number, number]}>
         <Globe />
         <Orbits layout={layout} />
         <Markers events={events} layout={layout} now={now} window={window} />

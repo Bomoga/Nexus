@@ -42,6 +42,7 @@
     "@testing-library/react": "^16.3.3",
     "@types/node": "^24.0.0",
     "@types/pg": "^8.23.1",
+    "@types/react-dom": "^19.3.0",
     "@types/vscode": "~1.145.0",
     "@vitejs/plugin-react": "^6.2.1",
     "concurrently": "^10.0.6",
@@ -83,10 +84,78 @@
     ],
     "commands": [
       {
+        "command": "nexus.connectProvider",
+        "title": "Nexus: Connect provider"
+      },
+      {
+        "command": "nexus.pickModel",
+        "title": "Nexus: Pick model"
+      },
+      {
+        "command": "nexus.signIn",
+        "title": "Nexus: Sign in (Auth0)"
+      },
+      {
+        "command": "nexus.signOut",
+        "title": "Nexus: Sign out"
+      },
+      {
+        "command": "nexus.dev.reseedDemoRepo",
+        "title": "Nexus (dev): Re-seed demo repo"
+      },
+      {
+        "command": "nexus.approve",
+        "title": "Nexus: Approve"
+      },
+      {
+        "command": "nexus.reject",
+        "title": "Nexus: Reject"
+      },
+      {
+        "command": "nexus.makeTaskFromThread",
+        "title": "Nexus: Make task from thread"
+      },
+      {
+        "command": "nexus.decomposeTask",
+        "title": "Nexus: Break into subtasks"
+      },
+      {
+        "command": "nexus.rerunSwarmReview",
+        "title": "Nexus: Re-run swarm review"
+      },
+      {
+        "command": "nexus.toggleOptimizer",
+        "title": "Nexus: Toggle Optimize with Prune"
+      },
+      {
+        "command": "nexus.cancelSession",
+        "title": "Nexus: Cancel agent session"
+      },
+      {
         "command": "nexus.shareSelectionToSlack",
         "title": "Nexus: Share to Slack"
       }
     ],
+    "configuration": {
+      "title": "Nexus",
+      "properties": {
+        "nexus.auth0.domain": {
+          "type": "string",
+          "default": "dev-pun3bnu12p3pivae.us.auth0.com",
+          "description": "Auth0 tenant host name, for example your-tenant.eu.auth0.com (no https://)."
+        },
+        "nexus.auth0.clientId": {
+          "type": "string",
+          "default": "NW4fvDI8BM1RwiwewACkHnffXn2cE7Zn",
+          "description": "Client ID of the Auth0 Native application. Not a secret."
+        },
+        "nexus.auth0.audience": {
+          "type": "string",
+          "default": "",
+          "description": "Optional API audience to request in the access token."
+        }
+      }
+    },
     "views": {
       "nexus": [
         {

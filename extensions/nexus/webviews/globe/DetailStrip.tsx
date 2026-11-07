@@ -27,12 +27,14 @@ export function DetailStrip({ event, t0Ms = DEFAULT_T0_MS, open = defaultOpen }:
 
   // After a click-pick focus is on the canvas/body, so Enter is handled at the document while an event is selected.
   // Controls that own Enter (inputs, buttons including OPEN, selects, editables) are left alone: no double-open.
+  // Exception: the search box right after a search pick (data-picked, dropdown closed, query unchanged) — Enter opens.
   useEffect(() => {
     if (!event) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Enter" || e.defaultPrevented || e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;
       const t = e.target;
-      if (t instanceof Element && t.closest("input, textarea, select, button, a[href], [contenteditable]:not([contenteditable=false])")) return;
+      const pickedSearch = t instanceof Element && t.matches('input[data-picked="true"]');
+      if (!pickedSearch && t instanceof Element && t.closest("input, textarea, select, button, a[href], [contenteditable]:not([contenteditable=false])")) return;
       e.preventDefault();
       openTarget();
     };

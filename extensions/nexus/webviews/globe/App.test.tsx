@@ -14,9 +14,10 @@ vi.mock("./scene/live", () => ({ useLiveEvents: () => undefined, useDriftNow: ()
 afterEach(cleanup);
 
 /** A local host: `events.query` is answered by `query`, which may throw a coded error. */
-function setup(query: () => NexusEvent[] | { code: string }, hit?: NexusEvent) {
+function setup(query: () => NexusEvent[] | { code: string }, hit?: NexusEvent, hits?: () => NexusEvent[]) {
   const handlers = new Set<(e: Envelope) => void>();
   let queries = 0;
+  const requested: string[] = [];
   const transport: Transport = {
     listen(h) {
       handlers.add(h);
@@ -24,6 +25,7 @@ function setup(query: () => NexusEvent[] | { code: string }, hit?: NexusEvent) {
     },
     post(env) {
       if (env.t !== "req") return;
+      requested.push(env.name);
       queueMicrotask(() => {
         let res: Envelope;
         if (env.name === "events.query") {
@@ -32,8 +34,11 @@ function setup(query: () => NexusEvent[] | { code: string }, hit?: NexusEvent) {
           res = Array.isArray(out)
             ? { t: "res", id: env.id, ok: true, body: out }
             : { t: "res", id: env.id, ok: false, error: { code: out.code as "not_found", message: "no handler for events.query" } };
-        } else if (env.name === "events.search" && hit) {
-          res = { t: "res", id: env.id, ok: true, body: [{ event: hit, score: 1 }] };
+        } else if (env.name === "events.search" && (hit || hits)) {
+          const found = hits ? hits() : [hit as NexusEvent];
+          res = { t: "res", id: env.id, ok: true, body: found.map((event) => ({ event, score: 1 })) };
+        } else if (env.name === "ui.openTarget") {
+          res = { t: "res", id: env.id, ok: true, body: {} };
         } else {
           res = { t: "res", id: env.id, ok: false, error: { code: "not_found", message: env.name } };
         }
@@ -41,7 +46,7 @@ function setup(query: () => NexusEvent[] | { code: string }, hit?: NexusEvent) {
       });
     },
   };
-  return { bridge: createBridgeClient(transport), queries: () => queries };
+  return { bridge: createBridgeClient(transport), queries: () => queries, opens: () => requested.filter((n) => n === "ui.openTarget").length };
 }
 
 describe("globe App states", () => {
@@ -95,6 +100,46 @@ describe("globe App states", () => {
     fireEvent.keyDown(box, { key: "Enter" });
     await screen.findByRole("button", { name: /STOP TRACKING/ });
     expect(document.activeElement).toBe(box);
+    fireEvent.keyDown(box, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("button", { name: /STOP TRACKING/ })).toBeNull());
+  });
+
+  test("after a search pick, Enter in the search box opens the event; after typing again, Enter picks a result instead", async () => {
+    const e: NexusEvent = { ...fx.event, id: "tracked", title: "tracked event", at: new Date().toISOString() };
+    const h = setup(() => [e], e);
+    render(<App bridge={h.bridge} />);
+    const box = screen.getByRole("combobox", { name: "Search events" });
+    box.focus();
+    fireEvent.change(box, { target: { value: "tracked" } });
+    await screen.findByRole("listbox", { name: "Search results" }, { timeout: 2000 });
+    fireEvent.keyDown(box, { key: "Enter" });
+    await screen.findByRole("button", { name: /STOP TRACKING/ });
+    expect(h.opens()).toBe(0); // the pick itself opens nothing
+    fireEvent.keyDown(box, { key: "Enter" });
+    await waitFor(() => expect(h.opens()).toBe(1));
+    // A new query: Enter belongs to the search again, not to OPEN.
+    fireEvent.change(box, { target: { value: "tracked again" } });
+    fireEvent.keyDown(box, { key: "Enter" });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(h.opens()).toBe(1);
+  });
+
+  test("Escape with zero search hits reaches the page on the first press (stops tracking)", async () => {
+    const e: NexusEvent = { ...fx.event, id: "tracked", title: "tracked event", at: new Date().toISOString() };
+    let found: NexusEvent[] = [e];
+    const h = setup(() => [e], undefined, () => found);
+    render(<App bridge={h.bridge} />);
+    const box = screen.getByRole("combobox", { name: "Search events" });
+    box.focus();
+    fireEvent.change(box, { target: { value: "tracked" } });
+    await screen.findByRole("listbox", { name: "Search results" }, { timeout: 2000 });
+    fireEvent.keyDown(box, { key: "Enter" });
+    await screen.findByRole("button", { name: /STOP TRACKING/ });
+    // A new query that finds nothing: no dropdown is visible, so the first Escape stops tracking.
+    found = [];
+    fireEvent.change(box, { target: { value: "zzz" } });
+    await new Promise((r) => setTimeout(r, 300));
+    expect(box.getAttribute("aria-expanded")).toBe("false");
     fireEvent.keyDown(box, { key: "Escape" });
     await waitFor(() => expect(screen.queryByRole("button", { name: /STOP TRACKING/ })).toBeNull());
   });

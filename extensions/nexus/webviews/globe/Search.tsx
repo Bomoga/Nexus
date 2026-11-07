@@ -82,11 +82,15 @@ export function Search({ onPick, search = defaultSearch, t0Ms = DEFAULT_T0_MS }:
     return () => document.removeEventListener("keydown", onKey);
   }, []);
 
+  // True from a pick until the query changes: Enter in the box then belongs to the page (OPEN on the detail strip).
+  const [picked, setPicked] = useState(false);
   const pick = (hit: EventSearchHit | undefined) => {
     if (!hit) return;
     setOpen(false);
+    setPicked(true);
     onPick(hit.event);
   };
+  const shown = open && hits.length > 0;
 
   const onKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
     if (e.key === "ArrowDown" || e.key === "ArrowUp") {
@@ -96,12 +100,12 @@ export function Search({ onPick, search = defaultSearch, t0Ms = DEFAULT_T0_MS }:
       const step = e.key === "ArrowDown" ? 1 : -1;
       setActive((i) => Math.min(hits.length - 1, Math.max(0, i + step)));
     } else if (e.key === "Enter") {
-      if (!open) return;
+      if (!shown) return;
       e.preventDefault();
       pick(hits[active]);
     } else if (e.key === "Escape") {
-      // Only an open dropdown consumes Escape; otherwise it reaches the page (stop tracking).
-      if (open) {
+      // Only a visible dropdown consumes Escape; otherwise it reaches the page (stop tracking).
+      if (shown) {
         e.preventDefault();
         setOpen(false);
       }
@@ -113,12 +117,16 @@ export function Search({ onPick, search = defaultSearch, t0Ms = DEFAULT_T0_MS }:
       <Input
         role="combobox"
         aria-label="Search events"
-        aria-expanded={open}
+        aria-expanded={shown}
         aria-controls="globe-search-list"
         aria-autocomplete="list"
+        data-picked={picked && !shown ? "true" : undefined}
         placeholder="SEARCH EVENTS  /"
         value={q}
-        onChange={(e) => setQ(e.target.value)}
+        onChange={(e) => {
+          setPicked(false);
+          setQ(e.target.value);
+        }}
         onKeyDown={onKeyDown}
       />
       {open && hits.length > 0 ? (

@@ -33,7 +33,7 @@
 - Lead adjustments used in wave 4 (no contract changes): approve/reject buttons and CANCEL use the existing bridge requests approvals.resolve / agent.cancel instead of running nexus.approve/reject/cancelSession commands (no command bridge exists); receipt OPEN is a disabled button until a bridge path exists; nexus.searchEvents can't push "focus" into the webview (no host→webview message in the protocol), so the box takes "/" and Ctrl+F.
 
 ## In flight
-- (none) after wave 4. Next poll: wave 5 (L3-12 approvals view, L3-07 timeline fallback, L3-15 git views).
+- (none) after wave 4. Wave 5 (L3-12 approvals view, L3-07 timeline fallback, L3-15 git views) is HELD: after wave 4 the 5-hour usage window was at 61% (resets 11:10 ET), and a full wave costs about a third of it. The lane is ahead of plan (wave 5 is scheduled T+16-22), so the remaining usage is kept for Elkin's morning cp-1 work: the webview host fix and the src/register/lane-3.ts wiring below. Hourly polls hold wave 5 while the window is above ~60%, and resume it after the reset or when Elkin says so.
 
 ## Blocked — NEEDS ELKIN + BRANDON: real webviews won't load in the fork yet
 - Lane 2's host (src/bridge/host.ts configureWebview/buildHtml) loads `media/<entry>.js` as a classic `<script>` with no stylesheet. Lane 3's build (scripts/build-webviews.mjs, per PLAN line 1443) writes `media/<name>/index.html` + `assets/index-<hash>.js` (an ES module with `export{…}` and lazy chunks) + `assets/index-<hash>.css`. So inside the fork every view would be blank or a syntax error. PLAN contradicts itself (line 1188 vs 1443).

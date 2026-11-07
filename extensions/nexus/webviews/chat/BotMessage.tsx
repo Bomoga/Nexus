@@ -60,18 +60,20 @@ function Approval({ approvalId, bridge }: { approvalId: string; bridge?: BridgeC
     lookup(client, approvalId).then(
       (a) => {
         if (!live) return;
-        setKnown(a ? "yes" : "no");
+        // Never downgrade: a live event may already have shown this approval while the list was in flight.
+        setKnown((k) => (a || k === "yes" ? "yes" : "no"));
         if (a?.decision) setDecided(a);
       },
       (e: unknown) => {
         if (!live) return;
-        setKnown("no");
+        setKnown((k) => (k === "yes" ? "yes" : "no"));
         setError(e instanceof Error ? e.message : String(e));
       },
     );
     const unsub = client.subscribe("approvals.subscribe", {}, (a) => {
       if (a.id !== approvalId) return;
       setKnown("yes");
+      setError(undefined);
       if (a.decision) setDecided(a);
     });
     return () => {
@@ -93,6 +95,7 @@ function Approval({ approvalId, bridge }: { approvalId: string; bridge?: BridgeC
         if (!(e instanceof BridgeError && e.code === "conflict")) throw e;
         const a = await lookup(client, approvalId);
         if (a?.decision) setDecided(a);
+        else setError("already decided elsewhere");
       }
     };
     settle()
@@ -112,7 +115,7 @@ function Approval({ approvalId, bridge }: { approvalId: string; bridge?: BridgeC
   if (known !== "yes") {
     return (
       <div className="chat-approval">
-        <span className="nx-data">{known === "checking" ? "checking approval…" : "approval not found in Nexus"}</span>
+        <span className="nx-data">{known === "checking" ? "checking approval…" : "approval not known on this machine"}</span>
         {error ? <span className="chat-approval-error">{error}</span> : null}
       </div>
     );

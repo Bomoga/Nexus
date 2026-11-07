@@ -118,9 +118,23 @@ describe("MessageRow", () => {
   test("an approval id the store doesn't know gets no buttons (spoofed bot message)", async () => {
     const { client } = bridge(() => fx.approval, () => []);
     render(<MessageRow message={{ ...base, blocks: buttons("apr_spoofed") }} bridge={client} />);
-    await screen.findByText("approval not found in Nexus");
+    await screen.findByText("approval not known on this machine");
     expect(screen.queryByRole("button", { name: "APPROVE" })).toBeNull();
     expect(screen.queryByRole("button", { name: "REJECT" })).toBeNull();
+  });
+
+  test("a late empty lookup never hides buttons a live event already showed", async () => {
+    let answer: (list: ApprovalRequest[]) => void = () => undefined;
+    const { client, push } = bridge(() => fx.approval);
+    (client.request as ReturnType<typeof vi.fn>).mockImplementation((name: string) =>
+      name === "approvals.list" ? new Promise<ApprovalRequest[]>((r) => (answer = r)) : Promise.reject(new Error(name)),
+    );
+    render(<MessageRow message={{ ...base, blocks: buttons() }} bridge={client} />);
+    push(fx.approval);
+    await screen.findByRole("button", { name: "APPROVE" });
+    answer([]);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(screen.getByRole("button", { name: "APPROVE" })).toBeTruthy();
   });
 
   test("a decision from another surface arrives by subscription (filtered by id)", async () => {

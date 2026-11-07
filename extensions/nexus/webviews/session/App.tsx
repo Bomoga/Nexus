@@ -222,6 +222,7 @@ export function App({ bridge, sessionId }: AppProps) {
         if (!(e instanceof BridgeError && e.code === "conflict")) throw e;
         const list = await b.request("approvals.list", { sessionId });
         setApprovals((cur) => list.reduce(putApproval, cur));
+        if (!list.some((a) => a.id === approvalId && a.decision)) setError("already decided elsewhere");
       }
     };
     settle()

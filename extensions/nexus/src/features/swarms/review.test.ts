@@ -4,7 +4,7 @@ import { fx } from "../../contracts/fixtures";
 import { ApprovalsController } from "../approvals/approvals-controller";
 import { SessionsController } from "../sessions/sessions-controller";
 import { FakeGit, MemoryGate, MemoryStore, fakeClock } from "../testing/memory-ports";
-import { SwarmReviewService, extractJson, parseVerdict, swarmReviewBridgeHandlers, swarmReviewSubscriptions, type SwarmsRunner } from "./review";
+import { SwarmReviewService, extractJson, parseCouncil, parseVerdict, swarmReviewBridgeHandlers, swarmReviewSubscriptions, type SwarmsRunner } from "./review";
 import { SwarmsUnavailable, type SwarmRun, type SwarmRunInput } from "./swarms-client";
 
 const SECRET = "sk-ant-api03-SECRETSECRETSECRET1234567890";
@@ -178,6 +178,43 @@ describe("parsing helpers", () => {
   it("parseVerdict handles missing summaries and judges", () => {
     expect(parseVerdict('{"verdict":"do_not_merge"}')).toEqual({ verdict: "do_not_merge", summary: "The council gave a verdict without a summary." });
     expect(parseVerdict('{"verdict":"looks_good","summary":"ok","judges":[]}').judges).toBeUndefined();
+  });
+});
+
+describe("parseCouncil (shape recorded from the live API, 2026-11-07)", () => {
+  const judge = (dimension: string, verdict: string, summary: string) => ({ role: `${dimension}_judge`, content: JSON.stringify({ verdict, summary }) });
+  const turns = (...v: string[]) => [judge("harmlessness", v[0]!, "ok"), judge("accuracy", v[1]!, "the discount moved"), judge("coherence", v[2]!, "reads fine")];
+
+  it("turns each *_judge turn into a judge and uses the aggregator's JSON verdict", () => {
+    const out = parseCouncil([...turns("looks_good", "concerns", "do_not_merge"), { role: "aggregator_agent", content: '{"verdict":"concerns","summary":"Pricing semantics change"}' }])!;
+    expect(out.verdict).toBe("concerns");
+    expect(out.summary).toBe("Pricing semantics change");
+    expect(out.judges).toEqual([
+      { modelId: "harmlessness judge", verdict: "looks_good", notes: "ok" },
+      { modelId: "accuracy judge", verdict: "concerns", notes: "the discount moved" },
+      { modelId: "coherence judge", verdict: "do_not_merge", notes: "reads fine" },
+    ]);
+  });
+
+  it("derives the verdict from the judges when the aggregator is not JSON", () => {
+    const agg = { role: "aggregator_agent", content: "The change looks plausible overall." };
+    expect(parseCouncil([...turns("looks_good", "looks_good", "looks_good"), agg])!.verdict).toBe("looks_good");
+    expect(parseCouncil([...turns("looks_good", "concerns", "looks_good"), agg])!.verdict).toBe("concerns");
+    const bad = parseCouncil([...turns("do_not_merge", "do_not_merge", "looks_good"), agg])!;
+    expect(bad.verdict).toBe("do_not_merge");
+    expect(bad.summary).toContain("plausible");
+  });
+
+  it("keeps a judge's free text as its notes, redacted and clipped, and treats a verdict-less judge as concerns", () => {
+    const out = parseCouncil([{ role: "accuracy_judge", content: `Fails. ${SECRET} ${"x".repeat(500)}` }, { role: "aggregator_agent", content: "{}" }])!;
+    expect(out.judges![0]!.verdict).toBe("concerns");
+    expect(out.judges![0]!.notes).not.toContain(SECRET);
+    expect(out.judges![0]!.notes.length).toBeLessThanOrEqual(301);
+  });
+
+  it("returns undefined for any other shape so the last turn's text is parsed instead", () => {
+    expect(parseCouncil("text")).toBeUndefined();
+    expect(parseCouncil([{ role: "Judge", content: "x" }, { role: "Aggregator", content: GOOD }])).toBeUndefined();
   });
 });
 

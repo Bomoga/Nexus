@@ -31,6 +31,7 @@ const req = (over: Partial<TurnRequest> = {}): TurnRequest => ({ modelId: MODEL,
 const hang = ((_u: string, init?: RequestInit) => new Promise<Response>((_res, rej) => init?.signal?.addEventListener("abort", () => rej(new Error("aborted"))))) as unknown as typeof fetch;
 
 function setup(respond: () => Response | Promise<Response>, over: Partial<PruneConfig> = {}) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const sent: Array<{ url: string; headers: Record<string, string>; body: Record<string, any> }> = [];
   const receipts: ModelCallReceipt[] = [];
   const notes: string[] = [];

@@ -2,7 +2,8 @@
   "contributes": {
     "commands": [
       { "command": "nexus.connectSlack", "title": "Nexus: Connect Slack" },
-      { "command": "nexus.showIdentity", "title": "Nexus: Show Slack posting identity" }
+      { "command": "nexus.showIdentity", "title": "Nexus: Show Slack posting identity" },
+      { "command": "nexus.openCodeRef", "title": "Nexus: Open code reference" }
     ],
     "configuration": {
       "title": "Nexus",

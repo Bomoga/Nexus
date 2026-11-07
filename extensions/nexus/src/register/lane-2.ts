@@ -4,16 +4,22 @@ import { NexusBridgeRouter } from "../bridge/router";
 import { registerAppPing } from "../bridge/host";
 import { handleAuthUri } from "../features/auth/current";
 import { redact } from "../shared/redact";
+import { checkRelativePath, CodeRefError } from "../services/coderef/create";
+import { plainNotificationText } from "../services/coderef/notify-text";
 import { UriRouter } from "../services/coderef/uri-handler";
 import { LocalStore } from "../services/events/local-store";
 import { GitCli } from "../services/git/git-cli";
 import type { Lane2Services } from "./lane-1-features";
-import { buildLane2, SLACK_SECRET_KEYS, type Lane2Built } from "./lane-2-services";
+import { CodeRef, decodeCodeRef, Sha } from "../contracts";
+import type { GitService } from "../services/git/types";
+import { buildLane2, SLACK_SECRET_KEYS, type CodeRefEditor, type Lane2Built } from "./lane-2-services";
+
+/** Read-only documents of a file at a commit: nexus-git:/<path>?<full sha>. */
+const AT_COMMIT_SCHEME = "nexus-git";
 
 // Lane 2 wiring: the shared bridge router, the local event store, the nexus:// URI handler, and (lane-2-services.ts) the Slack
 // service, the git service, the gate and Lane 2's bridge handlers. Lane 1 receives them through extension.ts.
-// Not wired yet: the git write half (L2-06), the Tiger store (L2-10), the Slack cache (L2-04), code refs (L2-14) and
-// ui.openTarget (L2-16). Until L2-06, session worktrees and commits fail with a clear "not implemented" error.
+// Not wired yet: the Tiger store (L2-10) and Token Vault (L2-15).
 export type Lane2Wiring = Pick<Lane2Services, "router" | "store" | "slack" | "approvalHooks"> & Partial<Pick<Lane2Services, "git" | "makeGate">> & {
   router: NexusBridgeRouter;
   /** Lane 1 binds its approvals controller here, so an APPROVE click in Slack wakes the waiting agent like any other decision. */
@@ -50,12 +56,17 @@ export function registerLane2(context: vscode.ExtensionContext): Lane2Wiring {
 
   registerAppPing(router, context);
 
+  const gitService = folder ? new GitCli(folder.uri.fsPath, { sessionsDir: join(context.globalStorageUri.fsPath, "sessions", workspaceSlug) }) : undefined;
+  const codeRefEditor = folder && gitService ? makeCodeRefEditor(context, folder, gitService) : undefined;
+
   const lane2 = buildLane2({
     router, store, redact,
     secret: key => Promise.resolve(context.secrets.get(key)),
     env: process.env,
     // The first workspace folder is the repo; GitCli refuses clearly if it is not one. No folder: no git, so Lane 1 keeps its refusal.
-    ...(folder ? { git: new GitCli(folder.uri.fsPath, { sessionsDir: join(context.globalStorageUri.fsPath, "sessions", workspaceSlug) }) } : {}),
+    ...(gitService ? { git: gitService } : {}),
+    ...(codeRefEditor ? { codeRefEditor } : {}),
+    executeCommand: (id, ...args) => Promise.resolve(vscode.commands.executeCommand(id, ...args)),
     slackCacheDir: join(context.globalStorageUri.fsPath, "slack"),
     ...(folder ? {
       watcher: {
@@ -72,6 +83,39 @@ export function registerLane2(context: vscode.ExtensionContext): Lane2Wiring {
     log: m => log(m),
   });
   context.subscriptions.push(lane2);
+
+  // Code references: nexus:// links from Slack or anywhere else, and the command. A link that cannot be opened says why.
+  const showCodeRefFailure = (e: unknown) => {
+    void vscode.window.showErrorMessage(e instanceof CodeRefError ? `Nexus: ${plainNotificationText(e.message)}` : "Nexus: could not open that code reference.");
+    if (!(e instanceof CodeRefError)) log("code reference open failed", e instanceof Error ? e.name : undefined);
+  };
+  context.subscriptions.push(
+    uris.registerRoute("coderef", async link => {
+      if (!lane2.codeRefs) {
+        void vscode.window.showErrorMessage("Nexus: open a git repository to follow code references.");
+        return true;
+      }
+      try { return await lane2.codeRefs.openLink(link); } catch (e) { showCodeRefFailure(e); return true; }
+    }),
+    vscode.commands.registerCommand("nexus.openCodeRef", async (arg?: unknown) => {
+      if (!lane2.codeRefs) {
+        void vscode.window.showErrorMessage("Nexus: open a git repository to follow code references.");
+        return;
+      }
+      // A CodeRef object (from a chip or another command) or a nexus:// link; with no argument, ask for the link.
+      let ref = typeof arg === "string" ? decodeCodeRef(arg) : CodeRef.safeParse(arg).data ?? null;
+      if (arg === undefined) {
+        const typed = await vscode.window.showInputBox({ prompt: "A nexus:// code reference link", ignoreFocusOut: true });
+        if (!typed) return;
+        ref = decodeCodeRef(typed.trim());
+      }
+      if (!ref) {
+        void vscode.window.showErrorMessage("Nexus: that is not a code reference link.");
+        return;
+      }
+      try { await lane2.codeRefs.open(ref); } catch (e) { showCodeRefFailure(e); }
+    }),
+  );
 
   const startSlack = async () => {
     if (await lane2.hasBotTokens()) {
@@ -94,12 +138,12 @@ export function registerLane2(context: vscode.ExtensionContext): Lane2Wiring {
       await lane2.slack.stop();
       await startSlack();
       const s = await lane2.slack.status();
-      void vscode.window.showInformationMessage(s.postsAs ? `Nexus: Slack connected; you post as ${s.postsAs.name}.` : "Nexus: Slack tokens saved, but the user token could not be verified.");
+      void vscode.window.showInformationMessage(s.postsAs ? `Nexus: Slack connected; you post as ${plainNotificationText(s.postsAs.name)}.` : "Nexus: Slack tokens saved, but the user token could not be verified.");
     }),
     vscode.commands.registerCommand("nexus.showIdentity", async () => {
       const s = await lane2.slack.status();
       void vscode.window.showInformationMessage(s.postsAs
-        ? `Nexus posts what you type as ${s.postsAs.name} (${s.userTokenSource} token). Live events: ${s.connected ? "connected" : "not connected"}.`
+        ? `Nexus posts what you type as ${plainNotificationText(s.postsAs.name)} (${s.userTokenSource} token). Live events: ${s.connected ? "connected" : "not connected"}.`
         : "Nexus has no verified Slack user token: run Nexus: Connect Slack.");
     }),
   );
@@ -112,5 +156,38 @@ export function registerLane2(context: vscode.ExtensionContext): Lane2Wiring {
     ...(lane2.git ? { git: lane2.git } : {}),
     ...(lane2.makeGate ? { makeGate: lane2.makeGate } : {}),
     setSlackApprovalResolver: lane2.setApprovalResolver,
+  };
+}
+
+/** The editor side of code references: the live file, a read-only copy at a commit, and "Open Current Version". */
+function makeCodeRefEditor(context: vscode.ExtensionContext, folder: vscode.WorkspaceFolder, git: GitService): CodeRefEditor {
+  context.subscriptions.push(vscode.workspace.registerTextDocumentContentProvider(AT_COMMIT_SCHEME, {
+    provideTextDocumentContent: async uri => {
+      // Only ever built by openAtCommit below, but checked again: a document URI can come from anywhere.
+      const commit = Sha.safeParse(uri.query);
+      const path = uri.path.replace(/^\//, "");
+      try { checkRelativePath(path); } catch { return undefined; }
+      if (!commit.success) return undefined;
+      return git.fileAt(commit.data, path);
+    },
+  }));
+  const show = async (uri: vscode.Uri, startLine: number, endLine: number) => {
+    const doc = await vscode.workspace.openTextDocument(uri);
+    const last = Math.min(endLine, doc.lineCount) - 1;
+    const selection = new vscode.Range(startLine - 1, 0, last, doc.lineAt(Math.max(last, 0)).range.end.character);
+    await vscode.window.showTextDocument(doc, { selection, preview: true });
+  };
+  const openLive = (path: string, startLine: number, endLine: number) => show(vscode.Uri.joinPath(folder.uri, path), startLine, endLine);
+  return {
+    openLive,
+    openAtCommit: (commit, path, startLine, endLine) => show(vscode.Uri.from({ scheme: AT_COMMIT_SCHEME, path: `/${path}`, query: commit }), startLine, endLine),
+    offerCurrent: (path, startLine, endLine) => {
+      void (async () => {
+        const choice = await vscode.window.showInformationMessage(`Nexus: showing ${plainNotificationText(path)} as it was when it was shared; it has changed since.`, "Open Current Version");
+        if (choice === "Open Current Version") {
+          try { await openLive(path, startLine, endLine); } catch { void vscode.window.showErrorMessage(`Nexus: ${plainNotificationText(path)} is not in the working copy.`); }
+        }
+      })();
+    },
   };
 }

@@ -42,9 +42,25 @@ export function registerLane3(context: vscode.ExtensionContext, router?: NexusBr
 }
 
 /** The slice of the built-in git extension's API (extensions/git/src/api/git.d.ts) used for diff URIs. */
+interface GitRepo { getCommit(ref: string): Promise<{ hash: string }> }
 interface GitApi {
+  readonly state: "uninitialized" | "initialized";
+  onDidChangeState(listener: (state: "uninitialized" | "initialized") => void): vscode.Disposable;
   toGitUri(uri: vscode.Uri, ref: string): vscode.Uri;
-  getRepository(uri: vscode.Uri): { getCommit(ref: string): Promise<{ hash: string }> } | null;
+  getRepository(uri: vscode.Uri): GitRepo | null;
+  openRepository(root: vscode.Uri): Promise<GitRepo | null>;
+}
+
+/** Right after startup the git extension may not have scanned the folder yet: wait for it (up to 5 s), then open it if needed. */
+async function repositoryFor(git: GitApi, folder: vscode.Uri): Promise<GitRepo | null> {
+  if (git.state !== "initialized") {
+    await new Promise<void>((resolve) => {
+      const done = (): void => { clearTimeout(timer); sub.dispose(); resolve(); };
+      const timer = setTimeout(done, 5000);
+      const sub = git.onDidChangeState((s) => { if (s === "initialized") done(); });
+    });
+  }
+  return git.getRepository(folder) ?? (await git.openRepository(folder));
 }
 
 /** git empty tree: the git file system provider serves it as an empty, read-only file. */
@@ -75,8 +91,12 @@ function registerGitViews(context: vscode.ExtensionContext, router: NexusBridgeR
   async function resolveSha(sha: string): Promise<string | undefined> {
     const folder = vscode.workspace.workspaceFolders?.[0];
     if (!folder) return undefined;
-    const repo = (await getGitApi()).getRepository(folder.uri);
-    try { return (await repo?.getCommit(sha))?.hash.toLowerCase(); } catch { return undefined; }
+    try {
+      const repo = await repositoryFor(await getGitApi(), folder.uri);
+      return (await repo?.getCommit(sha))?.hash.toLowerCase();
+    } catch {
+      return undefined;
+    }
   }
 
   context.subscriptions.push(

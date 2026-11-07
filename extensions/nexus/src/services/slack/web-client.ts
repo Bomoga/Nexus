@@ -205,7 +205,7 @@ export class SlackWebClient implements UserSlack {
     const me = await this.identity(reader).catch(() => null);
     if (!me) throw new Error("slack user token not verified: refusing to post");
     if (!opts.text.trim()) throw new Error("empty message");
-    // opts.clientId is not sent to Slack: the bridge matches the pending echo to this confirmed message with it.
+    // opts.clientId is not sent to Slack; it is echoed on the returned copy so the UI can match its pending echo.
     let r;
     try { r = await poster.chat.postMessage({ channel: opts.channelId, text: opts.text, ...(opts.threadTs ? { thread_ts: opts.threadTs } : {}) }); }
     catch (e) { throw safeError(e, "chat.postMessage"); }
@@ -217,6 +217,7 @@ export class SlackWebClient implements UserSlack {
       ...(opts.threadTs ? { threadTs: opts.threadTs } : {}),
       author: { id: me.userId, name: me.name, isBot: false },
       text, codeRefs: extractCodeRefs(text), sentVia: "user",
+      ...(opts.clientId !== undefined ? { clientId: opts.clientId } : {}),
     };
   }
 

@@ -29,6 +29,17 @@ describe("FakeSlack", () => {
     await expect(s.postAsBot({ channelId: "C_BUILD", text: "x" })).rejects.toThrow(/bot is not a member/);
   });
 
+  it("echoes clientId on the confirmed copy only, never on the live event or history", async () => {
+    const s = new FakeSlack();
+    const [channel] = (await s.channels()).filter(c => c.isMember && c.botIsMember);
+    const events: unknown[] = [];
+    s.onMessage(e => events.push(e));
+    const m = await s.postAsUser({ channelId: channel.id, text: "hi", clientId: "k1" });
+    expect(m.clientId).toBe("k1");
+    expect(JSON.stringify(events)).not.toContain("k1");
+    expect(JSON.stringify(await s.history(channel.id))).not.toContain("k1");
+  });
+
   it("failNextPost fails exactly one post", async () => {
     const s = new FakeSlack();
     s.failNextPost("rate_limited");

@@ -50,7 +50,7 @@ export function registerLane3(context: vscode.ExtensionContext, router?: NexusBr
       openReceipt(
         {
           receipts: lane1.receipts,
-          askReceiptId: async () => vscode.window.showInputBox({ prompt: "Prune receipt id", placeHolder: "rcpt_…" }),
+          askReceiptId: async () => vscode.window.showInputBox({ prompt: "Prune receipt id", placeHolder: "the receipt signature from the session view" }),
           copy: (text) => Promise.resolve(vscode.env.clipboard.writeText(text)),
           openExternal: (url) => Promise.resolve(vscode.env.openExternal(vscode.Uri.parse(url, true))),
           info: (m) => void vscode.window.showInformationMessage(m),

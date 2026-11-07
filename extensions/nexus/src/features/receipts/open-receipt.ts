@@ -24,8 +24,11 @@ export interface OpenReceiptDeps {
   error(message: string): void;
 }
 
-/** Prune receipt ids are short opaque tokens; anything else is refused before it reaches the store. */
-export const RECEIPT_ID = /^[A-Za-z0-9:_.-]{1,200}$/;
+/**
+ * Receipt ids as Lane 1 stores them: Prune's Ed25519 receipt signature in base64 (88 chars, may contain + / =), or
+ * "unsigned:<callId>" for a call Prune didn't sign. Anything else is refused before it reaches the store.
+ */
+export const RECEIPT_ID = /^[A-Za-z0-9:_.+/=-]{1,256}$/;
 
 /** Only an https URL is ever opened. */
 export function isHttpsUrl(url: string): boolean {
@@ -49,11 +52,11 @@ export async function openReceipt(deps: OpenReceiptDeps, receiptId?: unknown, se
   }
   try {
     const link = await deps.receipts.openReceipt(id, typeof sessionId === "string" && sessionId ? sessionId : undefined);
-    if (link.metadataJson) await deps.copy(link.metadataJson);
     if (!isHttpsUrl(link.verifyUrl)) {
       deps.error("Nexus: the receipt's verify address isn't a secure web address, so it wasn't opened.");
       return;
     }
+    if (link.metadataJson) await deps.copy(link.metadataJson);
     await deps.openExternal(link.verifyUrl);
     deps.info(plainNotificationText(`Nexus: ${link.message}`));
   } catch (e) {

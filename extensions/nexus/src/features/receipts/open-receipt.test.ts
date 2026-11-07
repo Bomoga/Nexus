@@ -47,6 +47,23 @@ describe("openReceipt", () => {
     expect(cancelled.error).not.toHaveBeenCalled();
   });
 
+  test("accepts real receipt ids: an 88-char base64 Ed25519 signature and an unsigned call id", async () => {
+    const signature = "/uZ+yICpAgz6M1e+u0sKxlwra+LYXP+HhuUxkBwz1d/XSoR7ueuBKVPcO7CBW/OsSYAbB/qpLHALZcsJWRAiBw==";
+    expect(signature).toHaveLength(88);
+    for (const id of [signature, "unsigned:call_ses_01_3"]) {
+      const d = deps();
+      await openReceipt(d, id);
+      expect(d.receipts.openReceipt, id).toHaveBeenCalledWith(id, undefined);
+      expect(d.error, id).not.toHaveBeenCalled();
+    }
+  });
+
+  test("a non-https verify address copies nothing", async () => {
+    const d = deps({ verifyUrl: "http://withprune.com/verify", metadataJson: '{"sig":"abc"}', message: "m" });
+    await openReceipt(d, "rcpt_01");
+    expect(d.copy).not.toHaveBeenCalled();
+  });
+
   test("a malformed id is refused before any lookup", async () => {
     const d = deps();
     await openReceipt(d, "rcpt 01; rm -rf /");

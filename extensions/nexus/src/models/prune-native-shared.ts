@@ -49,6 +49,7 @@ async function blockedMessage(res: Response): Promise<string> {
 
 /** POSTs a JSON payload to Prune with the config's timeout and the caller's abort signal. */
 export async function postToPrune<T>(cfg: PruneConfig, url: string, headers: Record<string, string>, payload: unknown, signal?: AbortSignal): Promise<PruneOutcome<T>> {
+  if (signal?.aborted) return { kind: "cancelled" };          // already aborted: send nothing
   const doFetch = cfg.fetch ?? fetch;
   const ac = new AbortController();
   const timer = setTimeout(() => ac.abort(), cfg.timeoutMs ?? PRUNE_TIMEOUT_MS);
@@ -86,26 +87,36 @@ export interface BodyModel {
 }
 
 /**
- * Records the receipt and says whether the answer may be used. Pinned on Prune's routed_model when it reports one;
- * otherwise on the response's own model field (strict) or a note (soft). With no prune_metadata at all the served model
- * is unverified, and the agent role discards the answer.
+ * Records the receipt and says whether the answer may be used. The served model is Prune's routed_model when it reports
+ * one; the response's own model field is ALWAYS compared too (strictly for Anthropic, so a body that disagrees with
+ * routed_model is discarded; softly for Gemini, where a difference is only noted in the receipt and via onNote).
+ * With no routed_model and no body model there is no evidence of what served the call: the agent role discards it.
  */
 export function checkServedModel(cfg: PruneConfig, req: TurnRequest, md: PruneMetadata | undefined, bodyModel?: BodyModel): { receipt: ModelCallReceipt; error?: string } {
   let effective: PruneMetadata = md ?? {};
-  const noRouted = typeof effective.routed_model !== "string" || effective.routed_model.length === 0;
-  const bm = bodyModel?.value;
-  if (noRouted && bm && !sameModel(req.modelId, bm)) {
-    if (bodyModel.strict) effective = { ...effective, routed_model: bm };
+  const routed = typeof effective.routed_model === "string" && effective.routed_model.length > 0 ? effective.routed_model : undefined;
+  const bm = bodyModel?.value && bodyModel.value.length > 0 ? bodyModel.value : undefined;
+  let inconsistent: string | undefined;                    // strict body model that disagrees with what Prune reported
+  if (bm && routed && !sameModel(routed, bm)) {
+    if (bodyModel?.strict) inconsistent = `Prune reported ${routed} as the served model but the response itself says ${bm}`;
+    else {
+      const tag = `body_model_differs:${redact(bm).slice(0, 80)}`;
+      effective = { ...effective, optimizations_applied: [...(Array.isArray(effective.optimizations_applied) ? effective.optimizations_applied : []), tag] };
+      cfg.onNote?.(`Prune reported ${routed} as the served model but the response says ${bm}; keeping the answer.`);
+    }
+  } else if (bm && !routed && !sameModel(req.modelId, bm)) {
+    if (bodyModel?.strict) effective = { ...effective, routed_model: bm };
     else cfg.onNote?.(`Prune did not report a routed model and the response says ${bm} for a request of ${req.modelId}; keeping the answer.`);
   }
   const receipt = toReceipt(effective, { callId: cfg.newCallId(), sessionId: cfg.sessionId, role: req.role, requestedModel: req.modelId, at: cfg.now() });
   cfg.onReceipt?.(receipt, effective);
 
-  if (!md && req.role === "agent") {
-    return { receipt, error: "Prune did not report which model served this call (no prune_metadata), so the agent answer could not be verified and was discarded." };
+  if (req.role === "agent" && (!md || (!routed && !bm))) {
+    return { receipt, error: "Prune did not report which model served this call (no prune_metadata, or no routed model and no model in the response), so the agent answer could not be verified and was discarded." };
   }
   if (receipt.servedModel !== req.modelId && !sameModel(req.modelId, receipt.servedModel) && !routingAllowed(cfg, req.role)) {
     return { receipt, error: `Prune answered with ${receipt.servedModel} instead of ${req.modelId}. ${req.role === "agent" ? "The coding agent is pinned to the model you picked" : "Model routing is off for this role"}; turn off model routing in the Prune dashboard. The answer was discarded.` };
   }
+  if (inconsistent) return { receipt, error: `${inconsistent}, so the served model could not be verified and the answer was discarded.` };
   return { receipt };
 }

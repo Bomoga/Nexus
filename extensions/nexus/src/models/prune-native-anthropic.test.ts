@@ -124,7 +124,7 @@ describe("model pinning", () => {
   });
 
   it("allows another served model for a text role only when routing is enabled", async () => {
-    const routed = () => json(200, message({ prune_metadata: metadata({ routed_model: "claude-haiku-4-5" }) }));
+    const routed = () => json(200, message({ model: "claude-haiku-4-5", prune_metadata: metadata({ routed_model: "claude-haiku-4-5" }) }));
     const off = setup(routed);
     expect((await collectTurn(off.provider.turn(req({ role: "summary" }), PROVIDER_KEY))).error).toBeDefined();
     const on = setup(routed, { allowModelRouting: true });
@@ -163,6 +163,15 @@ describe("failure handling", () => {
     expect(s.notes[0]).toMatch(/in time/);
   });
 
+  it("rejects an already-aborted signal before sending any request", async () => {
+    const s = setup(() => json(200, message()));
+    const ac = new AbortController();
+    ac.abort();
+    const r = await collectTurn(s.provider.turn(req({ signal: ac.signal }), PROVIDER_KEY));
+    expect(r.done?.stopReason).toBe("cancelled");
+    expect(s.sent).toEqual([]);
+  });
+
   it("yields cancelled when the caller aborts, without a direct retry", async () => {
     const ac = new AbortController();
     const s = setup(() => json(200, message()), { fetch: hang });
@@ -190,6 +199,20 @@ describe("served-model verification beyond the receipt", () => {
     expect(r.error).toMatch(/claude-haiku-4-5-20251001 instead of claude-sonnet-5-5/);
     expect(r.text).toBe("");
     expect(s.receipts[0]!.servedModel).toBe("claude-haiku-4-5-20251001");
+  });
+
+  it("discards an agent answer whose body.model differs even when routed_model claims the requested model", async () => {
+    const s = setup(() => json(200, message({ model: "claude-haiku-4-5-20251001", prune_metadata: metadata({ routed_model: MODEL }) })));
+    const r = await collectTurn(s.provider.turn(req(), PROVIDER_KEY));
+    expect(r.error).toMatch(/claude-haiku-4-5-20251001/);
+    expect(r.text).toBe("");
+  });
+
+  it("discards an agent answer with empty prune_metadata and no body model", async () => {
+    const s = setup(() => json(200, message({ model: undefined, prune_metadata: {} })));
+    const r = await collectTurn(s.provider.turn(req(), PROVIDER_KEY));
+    expect(r.error).toMatch(/did not report which model/);
+    expect(r.text).toBe("");
   });
 
   it("accepts a trailing date suffix on the same base id", async () => {

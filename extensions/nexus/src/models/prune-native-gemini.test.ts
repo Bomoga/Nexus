@@ -200,6 +200,30 @@ describe("served-model verification", () => {
     expect(s.notes.join(" ")).toContain("gemini-3.8-flash");
   });
 
+  it("notes in the receipt when routed_model is set and modelVersion differs", async () => {
+    const s = setup(() => json(200, gemini([{ text: "ok" }], "STOP", { modelVersion: "gemini-3.6-flash", prune_metadata: metadata({ routed_model: MODEL }) })));
+    const r = await collectTurn(s.provider.turn(req(), PROVIDER_KEY));
+    expect(r.text).toBe("ok");
+    expect(s.receipts[0]!.optimizations).toContain("body_model_differs:gemini-3.6-flash");
+    expect(s.notes.join(" ")).toContain("gemini-3.6-flash");
+  });
+
+  it("discards an agent answer with empty prune_metadata and no modelVersion", async () => {
+    const s = setup(() => json(200, gemini([{ text: "ok" }], "STOP", { modelVersion: undefined, prune_metadata: {} })));
+    const r = await collectTurn(s.provider.turn(req(), PROVIDER_KEY));
+    expect(r.error).toMatch(/did not report which model/);
+    expect(r.text).toBe("");
+  });
+
+  it("rejects an already-aborted signal before sending any request", async () => {
+    const s = setup(() => json(200, gemini([{ text: "ok" }])));
+    const ac = new AbortController();
+    ac.abort();
+    const r = await collectTurn(s.provider.turn(req({ signal: ac.signal }), PROVIDER_KEY));
+    expect(r.done?.stopReason).toBe("cancelled");
+    expect(s.sent).toEqual([]);
+  });
+
   it("discards an agent answer when prune_metadata is missing entirely", async () => {
     const s = setup(() => json(200, gemini([{ text: "ok" }], "STOP", { prune_metadata: undefined })));
     const r = await collectTurn(s.provider.turn(req(), PROVIDER_KEY));

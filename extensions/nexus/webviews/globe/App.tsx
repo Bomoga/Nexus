@@ -2,11 +2,13 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { NexusEvent, TimeWindow } from "../../src/contracts";
 import { Button, EmptyState, Select, StatusLine, StoreStatusLine, friendlyError, getBridge, isFakeMode } from "../shared";
 import type { BridgeClient } from "../shared";
-import { QUERY_LIMIT, TIME_WINDOWS, keepNewest, visibleEvents, windowMs } from "./model";
+import { QUERY_LIMIT, TIME_WINDOWS, familiesOf, keepNewest, visibleEvents, windowMs } from "./model";
+import { formatEventTime } from "./model/picking";
 import { insertLive, scriptedNow } from "./model/arcs";
 import { markLive, useDriftNow, useLiveEvents } from "./scene/live";
 import { Scene } from "./scene/Scene";
 import { chooseWindow, shouldRelease, withEvent } from "./model/tracking";
+import { ActivityStrip } from "./ActivityStrip";
 import { DetailStrip } from "./DetailStrip";
 import { Search } from "./Search";
 
@@ -37,6 +39,10 @@ export function App({ bridge: injected }: AppProps = {}) {
   // Tracked event (search): the camera follows and rings it until a drag, STOP TRACKING, or it leaves the window.
   const [tracked, setTracked] = useState<NexusEvent | undefined>();
   const [notice, setNotice] = useState<string | undefined>();
+  // "Viewing the past": set by a click on the activity strip, it replaces the live clock for rendering and queries.
+  const [pinnedNow, setPinnedNow] = useState<number | undefined>();
+  const pinnedRef = useRef(pinnedNow);
+  const shown = pinnedNow ?? now;
 
   useEffect(() => {
     if (isFakeMode()) {
@@ -63,10 +69,11 @@ export function App({ bridge: injected }: AppProps = {}) {
   }, []);
 
   useEffect(() => {
-    if (now === null) return;
+    const at = pinnedNow ?? now;
+    if (at === null) return;
     let live = true;
-    const from = new Date(now - windowMs(window_)).toISOString();
-    const to = new Date(now + 60_000).toISOString();
+    const from = new Date(at - windowMs(window_)).toISOString();
+    const to = new Date(at + 60_000).toISOString();
     bridge
       .request("events.query", { from, to, limit: QUERY_LIMIT })
       .then((res) => {
@@ -82,7 +89,7 @@ export function App({ bridge: injected }: AppProps = {}) {
       live = false;
     };
     // Re-query only when the window changes (or "now" first becomes known) or on RETRY; drift moves markers but does not refetch.
-  }, [window_, ready, bridge, attempt]);
+  }, [window_, ready, pinnedNow, bridge, attempt]);
 
   const onWindow = useCallback((value: string) => {
     const w = value as TimeWindow;
@@ -97,7 +104,8 @@ export function App({ bridge: injected }: AppProps = {}) {
   useEffect(() => {
     eventsRef.current = events;
     windowRef.current = window_;
-  }, [events, window_]);
+    pinnedRef.current = pinnedNow;
+  }, [events, window_, pinnedNow]);
   const onLive = useCallback(
     (incoming: NexusEvent) => {
       if (!ready) return;
@@ -130,13 +138,13 @@ export function App({ bridge: injected }: AppProps = {}) {
   const search = useCallback((q: string) => bridge.request("events.search", { q, limit: 20 }), [bridge]);
   const open = useCallback((target: NexusEvent["target"]) => bridge.request("ui.openTarget", target), [bridge]);
   useEffect(() => {
-    if (tracked && now !== null && shouldRelease(tracked, now, window_)) setTracked(undefined);
-  }, [tracked, now, window_]);
+    if (tracked && shown !== null && shouldRelease(tracked, shown, window_)) setTracked(undefined);
+  }, [tracked, shown, window_]);
 
   const onSearchPick = useCallback(
     (event: NexusEvent) => {
       setSelected(event);
-      const choice = chooseWindow(Date.parse(event.at), driftNow(), windowRef.current);
+      const choice = chooseWindow(Date.parse(event.at), pinnedRef.current ?? driftNow(), windowRef.current);
       if (choice.kind === "outside") {
         setTracked(undefined);
         setNotice(`${event.title}: outside the 30d window`);
@@ -152,7 +160,10 @@ export function App({ bridge: injected }: AppProps = {}) {
     [driftNow, onWindow],
   );
 
-  const visible = useMemo(() => (now === null ? [] : visibleEvents(events, now, window_)), [events, now, window_]);
+  const visible = useMemo(() => (shown === null ? [] : visibleEvents(events, shown, window_)), [events, shown, window_]);
+  const families = useMemo(() => familiesOf(events), [events]);
+  // A click on the strip's newest bucket (its end is in the future) is just "live".
+  const onPin = useCallback((at: number) => setPinnedNow(at >= driftNow() ? undefined : at), [driftNow]);
 
   return (
     <div className="globe-app">
@@ -160,6 +171,8 @@ export function App({ bridge: injected }: AppProps = {}) {
       <div className="globe-bar">
         <Select aria-label="Time window" value={window_} options={OPTIONS} onChange={(e) => onWindow(e.target.value)} />
         <Search onPick={onSearchPick} search={search} />
+        {pinnedNow !== undefined ? <Button onClick={() => setPinnedNow(undefined)}>BACK TO LIVE</Button> : null}
+        {pinnedNow !== undefined ? <span className="nx-data">{`viewing ${formatEventTime(pinnedNow)}`}</span> : null}
         {tracked ? <Button kbd="ESC" onClick={release}>STOP TRACKING</Button> : null}
         <span className="nx-data">{visible.length} events</span>
       </div>
@@ -172,8 +185,9 @@ export function App({ bridge: injected }: AppProps = {}) {
       {loaded && !error && visible.length === 0 ? <EmptyState message="no events in this window" /> : null}
       {notice ? <StatusLine tone="pending">{notice}</StatusLine> : null}
       <div className="globe-stage">
-        {now === null ? null : <Scene events={visible} now={now} window={window_} onPick={setSelected} tracked={tracked} onRelease={release} />}
+        {shown === null ? null : <Scene events={visible} now={shown} window={window_} onPick={setSelected} tracked={tracked} onRelease={release} />}
       </div>
+      {now === null || shown === null ? null : <ActivityStrip bridge={bridge} now={shown} window={window_} families={families} onPin={onPin} />}
       <DetailStrip event={selected} open={open} />
     </div>
   );

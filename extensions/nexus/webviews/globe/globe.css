@@ -22,3 +22,6 @@ body { overflow: hidden; }
 .globe-search-title { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .globe-search-cell { flex: none; color: var(--nx-muted); }
 .globe-search-cell.nx-data { font-family: var(--nx-font-data); font-variant-numeric: tabular-nums; }
+.globe-activity { height: 32px; min-height: 32px; display: flex; align-items: stretch; border-top: var(--nx-border-w) solid var(--nx-border); overflow: hidden; }
+.globe-activity > .nx-status-line { align-self: center; width: 100%; }
+.globe-activity-svg { display: block; width: 100%; height: 100%; cursor: pointer; }

@@ -212,10 +212,13 @@ export class ApprovalsController implements ApprovalRequester {
       if (this.pending.has(created.id)) await this.markDead(created);
       throw e;
     }
+    if (decision === "approved" && this.ended.has(created.sessionId)) throw new Error("That session has ended; there is nothing to approve.");
     // The decision is already known; the read-back only adds who decided, so a store failure here must not turn it into an error.
     // It must not outlive the session either: after a cancel nobody should be left holding a read that never answers.
     const read = this.deps.store.getApproval(created.id).catch(e => { this.deps.log?.(`could not read back approval ${created.id}: ${e instanceof Error ? e.message : "unknown error"}`); return undefined; });
     const stored = await this.untilSessionEnds(created.sessionId, read);
+    // An APPROVE must never reach the gate for a session that is over (it would run in a dead worktree). The stored row stays as the human recorded it.
+    if (decision === "approved" && this.ended.has(created.sessionId)) throw new Error("That session has ended; there is nothing to approve.");
     return { approval: stored ?? created, decision };
   }
 
@@ -247,6 +250,9 @@ export class ApprovalsController implements ApprovalRequester {
     if (goneNow) return { approval: goneNow, won: false };
     if (this.ended.has(existing.sessionId) && !existing.decision) throw new Error("That session has ended; there is nothing to approve.");
     const res = await this.deps.store.decideApproval(approvalId, decision, by, this.deps.clock.now());
+    // A cancel can land while the write is in flight and the store may order the human's APPROVE first. That row cannot be unwritten;
+    // request() refuses to hand "approved" to the gate for an ended session, so it is harmless. Say so instead of staying silent.
+    if (res.won && decision === "approved" && this.ended.has(existing.sessionId)) this.deps.log?.(`approval ${approvalId} was approved after its session ended; the agent was not told`);
     await this.settle(res.approval);
     return res;
   }

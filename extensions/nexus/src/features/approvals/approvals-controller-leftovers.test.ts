@@ -72,7 +72,28 @@ describe("approvals leftovers", () => {
     await s.approvals.resolve(pending.id, "approved", human);
     await new Promise(r => setTimeout(r, 20));                         // request() is now stuck in its read-back
     await bounded(s.sessions.cancel(s.session.id), 2000);
-    expect(await bounded(asking)).toBe("approved");                   // the human's decision stands; the read just stopped being awaited
+    await expect(bounded(asking)).rejects.toThrow(/ended/);          // never "approved" for a dead session; the read just stopped being awaited
+    expect((await realGet(pending.id))!.decision).toBe("approved");   // the stored row stays as the human recorded it
+  });
+
+  it("(a) a cancel racing a human APPROVE never hands the agent \"approved\"", async () => {
+    const s = await setup();
+    const real = s.store.decideApproval.bind(s.store);
+    let release!: () => void;
+    const held = new Promise<void>(r => { release = r; });
+    let first = true;
+    // The APPROVE commits in the store first, but its answer is slow; the cancel runs in between.
+    vi.spyOn(s.store, "decideApproval").mockImplementation(async (...a) => { const r = await real(...a); if (first) { first = false; await held; } return r; });
+    const asking = s.approvals.request({ sessionId: s.session.id, action: runCmd, reason: "r" }).then(r => r.decision, (e: Error) => e.message);
+    await new Promise(r => setTimeout(r, 20));
+    const [pending] = await s.store.listApprovals();
+    const deciding = s.approvals.resolve(pending.id, "approved", human);
+    await new Promise(r => setTimeout(r, 20));
+    await bounded(s.sessions.cancel(s.session.id), 2000);
+    release();
+    await bounded(deciding);
+    expect(await bounded(asking)).not.toBe("approved");
+    expect((await s.store.getSession(s.session.id))!.status).toBe("cancelled");
   });
 
   it("(d) an approval pushed out of sessionOf still learns that its session ended", async () => {

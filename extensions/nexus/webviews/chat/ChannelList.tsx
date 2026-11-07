@@ -30,7 +30,6 @@ export function ChannelList({ bridge, selectedId, onSelect, onLoaded }: ChannelL
     return () => {
       live = false;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [bridge]);
 
   if (failed) return <EmptyState message="could not load channels" />;

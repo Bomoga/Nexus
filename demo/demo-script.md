@@ -12,7 +12,7 @@ The acceptance test for the product (`CLAUDE.md` §8, sponsor beats from `docs/P
 
 ## Before you start (once, ~10 minutes)
 
-1. Seed the repo: `node demo/seed.mjs --out <folder> --force` (or run **Nexus (dev): Re-seed demo repo**). Open `<folder>` in Nexus. Check: the globe shows ~36 hours of history over six orbits, and `npm test` fails on exactly one test, "applies discount per unit".
+1. Seed the repo **shortly before the demo** with `node demo/seed.mjs --out <folder> --force --t0 <now, ISO>` (the **Nexus (dev): Re-seed demo repo** command does exactly this). The history ends at `--t0`, so seeding at hour 0 leaves it 70 hours old and outside the globe's default 36 h window. Open `<folder>` in Nexus. Check: the globe shows ~36 hours of history over six orbits, and `npm test` fails on exactly one test, "applies discount per unit".
 2. `#nexus-demo`: pin the starting message. The presenter posts it as themselves:
    > cart total ignores the discount when qty > 1 (this is what the code-ref in step 3 attaches to)
 3. The Nexus bot is in `#nexus-demo` and `#nexus-build`. Brandon's phone shows `#nexus-demo`.
@@ -42,4 +42,4 @@ The acceptance test for the product (`CLAUDE.md` §8, sponsor beats from `docs/P
 
 ## Reset between rehearsals
 
-`node demo/seed.mjs --out <folder> --force` rebuilds the repo with identical hashes. Delete the thread replies in `#nexus-demo`, keep the pinned message.
+`node demo/seed.mjs --out <folder> --force --t0 <now, ISO>` rebuilds the repo with its history ending now (the same `--t0` gives identical hashes). Delete the thread replies in `#nexus-demo`, keep the pinned message.

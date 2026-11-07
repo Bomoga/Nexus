@@ -12,7 +12,7 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 
 const DEFAULT_T0 = "2026-11-07T03:15:00Z";   // same as contracts/fixtures T0
@@ -225,10 +225,15 @@ function git(cwd, args, extraEnv = {}) {
 
 function parseArgs(argv) {
   const a = { force: false, fixCheck: false };
+  const value = (i, flag) => {
+    const v = argv[i];
+    if (v === undefined || v.startsWith("--")) throw new Error(`${flag} needs a value`);
+    return v;
+  };
   for (let i = 0; i < argv.length; i++) {
     const k = argv[i];
-    if (k === "--out") a.out = argv[++i];
-    else if (k === "--t0") a.t0 = argv[++i];
+    if (k === "--out") a.out = value(++i, k);
+    else if (k === "--t0") a.t0 = value(++i, k);
     else if (k === "--force") a.force = true;
     else if (k === "--fix-check") a.fixCheck = true;
     else throw new Error(`unknown argument ${k}`);
@@ -265,6 +270,8 @@ export function seed({ out, t0 = DEFAULT_T0, force = false }) {
   if (existsSync(dir) && readdirSync(dir).length > 0) {
     if (!force) throw new Error(`${dir} is not empty (use --force to replace a previous demo repo)`);
     if (!existsSync(join(dir, ".git", MARKER))) throw new Error(`${dir} was not created by this script (no .git/${MARKER}); refusing to delete it`);
+    const cwd = resolve(process.cwd());
+    if (cwd === dir || cwd.startsWith(dir + sep)) throw new Error(`cannot replace ${dir} while it is the current directory; run the script from elsewhere`);
     rmSync(dir, { recursive: true, force: true });
   }
   mkdirSync(dir, { recursive: true });

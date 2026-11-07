@@ -15,8 +15,10 @@ export function registerLane1(context: vscode.ExtensionContext): void {
       const res = await reseedDemoRepo(dir, {
         seedScript: join(context.extensionPath, "..", "..", "demo", "seed.mjs"),
         exists: existsSync,
+        homeDir: homedir(),
+        now: () => new Date().toISOString(),
         run: (script, args) => new Promise(resolve => {
-          execFile(process.execPath, [script, ...args], { env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" }, windowsHide: true }, (err, stdout, stderr) => {
+          execFile(process.execPath, [script, ...args], { env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" }, windowsHide: true, timeout: 120_000, maxBuffer: 4 * 1024 * 1024 }, (err, stdout, stderr) => {
             const code = err ? (typeof err.code === "number" ? err.code : 1) : 0;
             resolve({ code, output: `${stdout}\n${stderr}` });
           });

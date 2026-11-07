@@ -317,9 +317,15 @@ export class LocalStore implements EventStore {
     return canonical;
   }
 
+  /** 0 only for a missing file. Any other failure rethrows before a byte is written, so a rollback can never truncate to a wrong size. */
   private sizeOf(file: string): number {
-    try { return fs.statSync(path.join(this.dir, file)).size; } catch { return 0; }
+    try { return this.fileSize(path.join(this.dir, file)); } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") return 0;
+      throw err;
+    }
   }
+
+  protected fileSize(file: string): number { return fs.statSync(file).size; }
 
   /** Appends one line, first closing a torn tail (no final newline) so a good record never glues onto torn bytes. */
   private appendLine(file: string, line: string) {

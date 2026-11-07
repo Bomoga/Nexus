@@ -191,6 +191,28 @@ describe("LocalStore", () => {
       expect((await open().getApproval("apr_01"))?.decision).toBe("approved");
     });
 
+    it("refuses a write when a file size cannot be read, so a rollback can never truncate a journal", async () => {
+      class Faulty extends LocalStore {
+        failing = false;
+        protected override fileSize(f: string): number {
+          if (this.failing) throw Object.assign(new Error("EIO: i/o error"), { code: "EIO" });
+          return super.fileSize(f);
+        }
+      }
+      const s = new Faulty({ dir, redact: x => x });
+      await s.putTask(fx.task);
+      const before = [fs.readFileSync(file("tasks.jsonl"), "utf8"), fs.readFileSync(file("outbox.jsonl"), "utf8")];
+      s.failing = true;
+      await expect(s.putTask({ ...fx.task, id: "task_2" })).rejects.toThrow("EIO");
+      s.failing = false;
+      expect([fs.readFileSync(file("tasks.jsonl"), "utf8"), fs.readFileSync(file("outbox.jsonl"), "utf8")]).toEqual(before);
+      expect((await s.listTasks()).map(x => x.id)).toEqual([fx.task.id]);
+      await s.putTask({ ...fx.task, id: "task_2" });   // a retry works
+      const reopened = new LocalStore({ dir, redact: x => x });
+      expect((await reopened.listTasks()).map(x => x.id)).toEqual([fx.task.id, "task_2"]);
+      expect(reopened.skippedLines()).toBe(0);
+    });
+
     it("non-serializable values throw before anything is written", async () => {
       const a = open();
       await a.putNexusEvent(ev("e1", T1));

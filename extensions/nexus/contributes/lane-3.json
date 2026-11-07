@@ -1,1 +1,11 @@
-{"contributes":{},"activationEvents":[]}
+{
+  "contributes": {
+    "views": {
+      "nexus": [
+        { "type": "webview", "id": "nexus.chat", "name": "Slack" },
+        { "type": "webview", "id": "nexus.approvals", "name": "Approvals" }
+      ]
+    }
+  },
+  "activationEvents": []
+}

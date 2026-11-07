@@ -55,7 +55,9 @@
   "activationEvents": [
     "onCustomEditor:nexus.home",
     "onStartupFinished",
-    "onUri"
+    "onUri",
+    "onView:nexus.approvals",
+    "onView:nexus.chat"
   ],
   "contributes": {
     "viewsContainers": {
@@ -78,6 +80,20 @@
         ],
         "priority": "option"
       }
-    ]
+    ],
+    "views": {
+      "nexus": [
+        {
+          "type": "webview",
+          "id": "nexus.chat",
+          "name": "Slack"
+        },
+        {
+          "type": "webview",
+          "id": "nexus.approvals",
+          "name": "Approvals"
+        }
+      ]
+    }
   }
 }

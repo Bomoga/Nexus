@@ -134,6 +134,30 @@
       {
         "command": "nexus.shareSelectionToSlack",
         "title": "Nexus: Share to Slack"
+      },
+      {
+        "command": "nexus.openHome",
+        "title": "Nexus: Open Home"
+      },
+      {
+        "command": "nexus.searchEvents",
+        "title": "Nexus: Search events"
+      },
+      {
+        "command": "nexus.openTimeline",
+        "title": "Nexus: Open timeline (globe fallback)"
+      },
+      {
+        "command": "nexus.openSlack",
+        "title": "Nexus: Open Slack"
+      },
+      {
+        "command": "nexus.openApprovals",
+        "title": "Nexus: Open approvals"
+      },
+      {
+        "command": "nexus.openSession",
+        "title": "Nexus: Open session"
       }
     ],
     "configuration": {
@@ -176,6 +200,12 @@
           "command": "nexus.shareSelectionToSlack",
           "when": "editorHasSelection",
           "group": "nexus"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "nexus.openSession",
+          "when": "false"
         }
       ]
     }

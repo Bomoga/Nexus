@@ -73,6 +73,8 @@ export class MemoryStore implements StorePort {
 
 export class FakeGit implements GitPort {
   readonly created: Array<{ sessionId: string; workspaceId: string }> = [];
+  /** Tests assign this to observe cleanup after a session that could not start. */
+  removeSessionWorktree?: (sessionId: string) => Promise<void>;
   constructor(private readonly base: Partial<SessionWorktree> = {}) {}
   async createSessionWorktree(input: { sessionId: string; workspaceId: string }): Promise<SessionWorktree> {
     this.created.push(input);

@@ -51,6 +51,8 @@ export interface SessionWorktree {
 export interface GitPort {
   /** Creates the session's own worktree and branch from the current commit. Never touches the user's checkout. */
   createSessionWorktree(input: { sessionId: string; workspaceId: string }): Promise<SessionWorktree>;
+  /** Removes a session's worktree and branch again when the session could not start. Optional: the git service may keep them. */
+  removeSessionWorktree?(sessionId: string): Promise<void>;
 }
 
 export interface SlackPort {

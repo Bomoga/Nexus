@@ -65,6 +65,10 @@ export class ApprovalsController implements ApprovalRequester {
   private readonly pending = new Map<string, string>();               // approvalId -> sessionId
   private readonly waiters = new Map<string, Array<(d: Decision) => void>>();
   private readonly known = new Set<string>();                         // ids already announced on this machine
+  /** Approvals being created right now: a decision that arrives early is parked here and applied, in order, afterwards. */
+  private readonly creating = new Map<string, ApprovalRequest | undefined>();
+  /** Sessions that are over: their approvals can no longer be decided (an APPROVE must not run a command in a dead worktree). */
+  private readonly ended = new Set<string>();
   private readonly listeners = new Set<(a: ApprovalRequest) => void>();
 
   constructor(private readonly deps: ApprovalsDeps) {}
@@ -73,34 +77,48 @@ export class ApprovalsController implements ApprovalRequester {
 
   async create(input: { sessionId: string; action: ApprovalAction; reason: string; diffPreview?: string }): Promise<ApprovalRequest> {
     const { store, clock, sessions } = this.deps;
+    if (this.ended.has(input.sessionId)) throw new Error("That session has ended; there is nothing to approve.");
     const approval = ApprovalRequest.parse({
       id: clock.newId("apr"), sessionId: input.sessionId, action: redactAction(input.action),
       reason: redact(input.reason), requestedAt: clock.now(),
       ...(input.diffPreview !== undefined ? { diffPreview: redact(input.diffPreview) } : {}),
     });
-    await store.putApproval(approval);
+    this.creating.set(approval.id, undefined);
     this.pending.set(approval.id, approval.sessionId);
     this.known.add(approval.id);
-    await sessions.emit(approval.sessionId, { type: "approval_request", approvalId: approval.id });
-    await sessions.setStatus(approval.sessionId, "awaiting_approval");
-    this.announce(approval);
-    this.emitChange(approval);
-    for (const hook of this.deps.hooks ?? []) {
-      // A broken surface must never block the human from deciding on another one.
-      hook.onCreated(approval).catch(e => this.deps.log?.(`approval hook ${hook.name} failed: ${e instanceof Error ? e.message : "unknown error"}`));
+    try {
+      await store.putApproval(approval);
+      await sessions.emit(approval.sessionId, { type: "approval_request", approvalId: approval.id });
+      await sessions.setStatus(approval.sessionId, "awaiting_approval");
+      this.announce(approval);
+      this.emitChange(approval);
+      for (const hook of this.deps.hooks ?? []) {
+        // A broken surface must never block the human from deciding on another one.
+        hook.onCreated(approval).catch(e => this.deps.log?.(`approval hook ${hook.name} failed: ${e instanceof Error ? e.message : "unknown error"}`));
+      }
+    } catch (e) {
+      this.pending.delete(approval.id);
+      this.creating.delete(approval.id);
+      throw e;
     }
+    // A decision made while we were still creating (another machine, a Slack button) is applied now, after approval_request.
+    const early = this.creating.get(approval.id) ?? (await store.getApproval(approval.id));
+    this.creating.delete(approval.id);
+    if (early?.decision) await this.settle(early);
     return approval;
   }
 
   /** Resolves when ANY surface or machine decides. There is no timeout path: a silent human leaves it pending. */
   async waitForDecision(approvalId: string): Promise<Decision> {
-    const stored = await this.deps.store.getApproval(approvalId);
-    if (stored?.decision) return stored.decision;
-    return new Promise<Decision>(resolve => {
+    // Register first, then look at the store: a decision that lands in between must not leave this waiting forever.
+    const waiting = new Promise<Decision>(resolve => {
       const list = this.waiters.get(approvalId) ?? [];
       list.push(resolve);
       this.waiters.set(approvalId, list);
     });
+    const stored = await this.deps.store.getApproval(approvalId);
+    if (stored?.decision && !this.pending.has(approvalId)) this.wake(approvalId, stored.decision);
+    return waiting;
   }
 
   async request(input: { sessionId: string; action: ApprovalAction; reason: string; diffPreview?: string }): Promise<{ approval: ApprovalRequest; decision: Decision }> {
@@ -115,7 +133,9 @@ export class ApprovalsController implements ApprovalRequester {
   async resolve(approvalId: string, decision: Decision, decidedBy: DecidedBy): Promise<{ approval: ApprovalRequest; won: boolean }> {
     const by = DecidedBy.parse(decidedBy);
     if (by.userId.trim().length === 0) throw new Error("A decision needs the name of the person who made it.");
-    if (!(await this.deps.store.getApproval(approvalId))) throw new Error(`No approval ${approvalId}.`);
+    const existing = await this.deps.store.getApproval(approvalId);
+    if (!existing) throw new Error(`No approval ${approvalId}.`);
+    if (this.ended.has(existing.sessionId) && !existing.decision) throw new Error("That session has ended; there is nothing to approve.");
     const res = await this.deps.store.decideApproval(approvalId, decision, by, this.deps.clock.now());
     await this.settle(res.approval);
     return res;
@@ -133,8 +153,14 @@ export class ApprovalsController implements ApprovalRequester {
 
   /** `nexus.approve` / `nexus.reject`: act on one approval, or on the newest undecided one when no id is given. */
   async decideFromCommand(decision: Decision, approvalId?: string): Promise<{ approval: ApprovalRequest; won: boolean } | undefined> {
-    const id = approvalId ?? (await this.list({ pendingOnly: true })).at(-1)?.id;
-    if (!id) return undefined;
+    let id = approvalId;
+    if (!id) {
+      const waiting = await this.list({ pendingOnly: true });
+      if (waiting.length === 0) return undefined;
+      // With several waiting, a keypress could approve something the user never looked at: make them pick.
+      if (waiting.length > 1) throw new Error(`${waiting.length} approvals are waiting; choose one in the approvals view.`);
+      id = waiting[0].id;
+    }
     return this.resolve(id, decision, { via: "app", userId: this.deps.identity() });
   }
 
@@ -172,6 +198,7 @@ export class ApprovalsController implements ApprovalRequester {
   private async settle(approval: ApprovalRequest): Promise<void> {
     const decision = approval.decision;
     if (!decision) return;
+    if (this.creating.has(approval.id)) { this.creating.set(approval.id, approval); return; }
     const who = approval.decidedBy ? `${approval.decidedBy.userId} via ${approval.decidedBy.via.replace("_", " ")}` : "a teammate";
     this.deps.notify.update(approval.id, `Decided by ${who}: ${decision}`);
     this.emitChange(approval);
@@ -182,8 +209,33 @@ export class ApprovalsController implements ApprovalRequester {
     // The session reads "running" again before the agent is woken, so no surface shows a working agent as waiting.
     if (![...this.pending.values()].includes(sessionId)) await this.deps.sessions.setStatus(sessionId, "running");
     this.deps.host.sendEvent("approval.resolved", { approvalId: approval.id, decision });
-    for (const w of this.waiters.get(approval.id) ?? []) w(decision);
-    this.waiters.delete(approval.id);
+    this.wake(approval.id, decision);
+  }
+
+  private wake(approvalId: string, decision: Decision): void {
+    for (const w of this.waiters.get(approvalId) ?? []) w(decision);
+    this.waiters.delete(approvalId);
+  }
+
+  /**
+   * The session is over. If a human cancelled it, what was waiting counts as their "no" (recorded under their name);
+   * for any other ending the waiting gate is released as rejected, locally, without writing a decision. Either way the
+   * approvals can no longer be decided afterwards.
+   */
+  async sessionEnded(sessionId: string, how: "cancelled" | "failed" | "done"): Promise<void> {
+    const waiting = [...this.pending].filter(([, s]) => s === sessionId).map(([id]) => id);
+    if (how === "cancelled") {
+      for (const id of waiting) {
+        await this.resolve(id, "rejected", { via: "app", userId: this.deps.identity() }).catch(e => this.deps.log?.(`could not record the cancel: ${e instanceof Error ? e.message : "unknown error"}`));
+      }
+    }
+    this.ended.add(sessionId);
+    for (const id of waiting) {
+      if (!this.pending.has(id)) continue;                            // already settled above
+      this.pending.delete(id);
+      this.deps.notify.update(id, "The session ended; there is nothing to approve.");
+      this.wake(id, "rejected");
+    }
   }
 }
 

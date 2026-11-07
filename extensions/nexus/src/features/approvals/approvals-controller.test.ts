@@ -22,11 +22,12 @@ async function setup(opts: { hooks?: ApprovalHook[] } = {}) {
   // Assigned after the sessions controller that points at it exists, so it cannot be a const.
   // eslint-disable-next-line prefer-const
   let approvalsRef!: ApprovalsController;
-  const gate = new MemoryGate();
+  const requester = { request: (i: Parameters<ApprovalsController["request"]>[0]) => approvalsRef.request(i), sessionEnded: (id: string, how: "cancelled" | "failed" | "done") => approvalsRef.sessionEnded(id, how) };
+  const gate = new MemoryGate({ approvals: requester });          // like the real gate, cmd.run and git.commit wait on a human
   const sessions = new SessionsController({
     store, git: new FakeGit(), gate, clock, machineId: "m_adrian", getKey: async () => "k",
     host: { startSession: async () => ({}), cancelSession: async () => ({}), endSession: () => {} },
-    approvals: { request: i => approvalsRef.request(i) },
+    approvals: requester,
   });
   const approvals = new ApprovalsController({
     store, clock, sessions, hooks: opts.hooks, log: m => logs.push(m), identity: () => "adrian",
@@ -192,15 +193,18 @@ describe("deciding", () => {
 });
 
 describe("commands, listing, subscriptions", () => {
-  it("nexus.approve / nexus.reject act on the newest pending approval when no id is given", async () => {
+  it("nexus.approve / nexus.reject without an id act only when exactly one approval is waiting, and never guess between several", async () => {
     const s = await setup();
+    expect(await s.approvals.decideFromCommand("approved")).toBeUndefined();               // nothing waiting
     const a = await s.approvals.create({ sessionId: s.session.id, action: runCmd, reason: "old" });
     const b = await s.approvals.create({ sessionId: s.session.id, action: { kind: "commit", message: "m" }, reason: "new" });
-    const res = await s.approvals.decideFromCommand("rejected");
+    await expect(s.approvals.decideFromCommand("rejected")).rejects.toThrow("2 approvals are waiting");
+    expect((await s.approvals.get(a.id))!.decision).toBeUndefined();                       // nothing was decided by the keypress
+    expect((await s.approvals.get(b.id))!.decision).toBeUndefined();
+    const res = await s.approvals.decideFromCommand("rejected", b.id);                     // an explicit id always works
     expect(res!.approval).toMatchObject({ id: b.id, decision: "rejected", decidedBy: { via: "app", userId: "adrian" } });
-    expect((await s.approvals.get(a.id))!.decision).toBeUndefined();
-    await s.approvals.decideFromCommand("approved", a.id);
-    expect(await s.approvals.decideFromCommand("approved")).toBeUndefined();               // nothing left pending
+    const only = await s.approvals.decideFromCommand("approved");                          // now exactly one is left
+    expect(only!.approval).toMatchObject({ id: a.id, decision: "approved" });
   });
 
   it("lists by session and pending-only, oldest first", async () => {
@@ -228,6 +232,87 @@ describe("commands, listing, subscriptions", () => {
     expect(describeAction({ kind: "write_outside_scope", path: "/etc/hosts" })).toBe("write outside its worktree: /etc/hosts");
     expect(describeAction({ kind: "commit", message: "m" })).toBe('commit: "m"');
     expect(describeAction({ kind: "other", description: "d" })).toBe("d");
+  });
+});
+
+describe("races with the shared store", () => {
+  const decideAndObserve = async (s: Awaited<ReturnType<typeof setup>>, approvalId: string) => {
+    const { approval } = await s.store.decideApproval(approvalId, "approved", human("brandon"), "2026-11-07T03:20:00Z");
+    await s.approvals.observe(approval);
+  };
+
+  it("a decision that lands while the approval is still being written is applied afterwards, in order, and wakes the agent", async () => {
+    const s = await setup();
+    const put = s.store.putApproval.bind(s.store);
+    s.store.putApproval = async a => { await put(a); await decideAndObserve(s, a.id); };
+    const { decision } = await s.approvals.request({ sessionId: s.session.id, action: runCmd, reason: "r" });
+    expect(decision).toBe("approved");
+    expect(await s.eventTypes()).toEqual(["status:running", "approval_request", "status:awaiting_approval", "approval_resolved", "status:running"]);
+    expect((await s.store.getSession(s.session.id))!.status).toBe("running");
+    expect(s.hostEvents).toHaveLength(1);
+  });
+
+  it("a decision that lands while approval_request is being emitted does not show the session as waiting afterwards", async () => {
+    const s = await setup();
+    const append = s.store.appendAgentEvent.bind(s.store);
+    s.store.appendAgentEvent = async e => { await append(e); if (e.type === "approval_request") await decideAndObserve(s, e.approvalId); };
+    await s.approvals.request({ sessionId: s.session.id, action: runCmd, reason: "r" });
+    expect(await s.eventTypes()).toEqual(["status:running", "approval_request", "status:awaiting_approval", "approval_resolved", "status:running"]);
+    expect((await s.store.getTask("task_01"))!.status).toBe("running");
+  });
+
+  it("waitForDecision called after the decision was settled still returns it", async () => {
+    const s = await setup();
+    const a = await s.approvals.create({ sessionId: s.session.id, action: runCmd, reason: "r" });
+    await s.approvals.resolve(a.id, "rejected", human());
+    expect(await s.approvals.waitForDecision(a.id)).toBe("rejected");
+  });
+
+  it("two waiters for one approval are both woken", async () => {
+    const s = await setup();
+    const a = await s.approvals.create({ sessionId: s.session.id, action: runCmd, reason: "r" });
+    const both = Promise.all([s.approvals.waitForDecision(a.id), s.approvals.waitForDecision(a.id)]);
+    await s.approvals.resolve(a.id, "approved", human());
+    expect(await both).toEqual(["approved", "approved"]);
+  });
+});
+
+describe("when the session ends", () => {
+  const runCommand = (s: Awaited<ReturnType<typeof setup>>) => s.gate.request(s.session, "cmd.run", { command: "npm test", timeoutMs: 1000 }).then(() => "ran", (e: Error) => e.message);
+
+  it("cancelling records the waiting approval as the cancelling human's rejection, and a late APPROVE runs nothing", async () => {
+    const s = await setup();
+    const result = runCommand(s);
+    await vi.waitFor(() => expect(s.shown).toHaveLength(1));
+    const id = s.shown[0].approval.id;
+    await s.sessions.cancel(s.session.id);
+    expect(await result).toBe("rejected by a human");
+    expect(await s.store.getApproval(id)).toMatchObject({ decision: "rejected", decidedBy: { via: "app", userId: "adrian" } });
+    const late = await s.approvals.resolve(id, "approved", human("brandon"));
+    expect(late).toMatchObject({ won: false, approval: { decision: "rejected" } });
+    const types = await s.eventTypes();
+    expect(types.indexOf("approval_resolved")).toBeLessThan(types.indexOf("status:cancelled"));
+    expect(types).not.toContain("test_output");
+    expect(s.updates.at(-1)!.text).toMatch(/Decided by adrian via app: rejected/);
+  });
+
+  it("a crashed session releases the waiting gate as rejected without writing any decision, and refuses later decisions", async () => {
+    const s = await setup();
+    const result = runCommand(s);
+    await vi.waitFor(() => expect(s.shown).toHaveLength(1));
+    const id = s.shown[0].approval.id;
+    await s.sessions.onProcessError(s.session.id, "agent process crashed");
+    expect(await result).toBe("rejected by a human");
+    expect((await s.store.getApproval(id))!.decision).toBeUndefined();            // nobody decided: the session just ended
+    await expect(s.approvals.resolve(id, "approved", human())).rejects.toThrow("session has ended");
+    expect(s.updates.at(-1)!.text).toMatch(/session ended/);
+    expect(await s.eventTypes()).not.toContain("approval_resolved");
+  });
+
+  it("refuses to create a new approval for a session that has ended", async () => {
+    const s = await setup();
+    await s.sessions.onFinished({ sessionId: s.session.id, outcome: "done", turns: 1 });
+    await expect(s.approvals.create({ sessionId: s.session.id, action: runCmd, reason: "r" })).rejects.toThrow("session has ended");
   });
 });
 

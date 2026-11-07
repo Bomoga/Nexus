@@ -1,8 +1,9 @@
 import { SYSTEM_RULES } from "../../agent/prompt-framing";
 import type { AgentHandlers } from "../../agent/process-host";
 import type { SessionFinished } from "../../agent-process/session-events";
-import { AgentEvent, orbitOf, type AgentSession, type ApprovalAction, type ApprovalRequest, type ModelInfo, type NexusEvent, type Req, type Res, type Task } from "../../contracts";
+import { AgentEvent, orbitOf, type AgentSession, type ApprovalAction, type ApprovalRequest, type ModelCallReceipt, type ModelInfo, type NexusEvent, type Req, type Res, type Task } from "../../contracts";
 import { redact } from "../../shared/redact";
+import { cleanString, sanitizeForEvent } from "../../shared/sanitize";
 import type { Clock, GatePort, GitPort, StorePort, Unsubscribe } from "../ports";
 
 // Sessions controller (PLAN L1-10): the lifecycle of one agent session on the extension-host side. It asks the git
@@ -22,6 +23,8 @@ export interface SessionEvents {
 /** The approvals controller as the agent's `approval.request` sees it. */
 export interface ApprovalRequester {
   request(input: { sessionId: string; action: ApprovalAction; reason: string }): Promise<{ approval: ApprovalRequest; decision: "approved" | "rejected" }>;
+  /** The session is over: release whatever is still waiting and refuse later decisions (a cancelled session's APPROVE must run nothing). */
+  sessionEnded?(sessionId: string, how: "cancelled" | "failed" | "done"): Promise<void>;
 }
 
 /** The session's single Slack progress message (L1-13, proposed to move to Lane 2). */
@@ -53,7 +56,15 @@ export interface SessionsDeps {
   untrustedBlocks?: (task: Task) => Array<{ label: string; text: string }>;
   /** Called after every task write (status changes), so tasks.subscribe can publish them. */
   onTaskChange?: (task: Task) => void;
+  /** Whether the agent's next provider call should go through Prune (OptimizerService.pruneFor("agent")). */
+  prune?: () => Promise<{ enabled: boolean; apiKey?: string }>;
+  /** Called with every receipt the agent reports, so spend totals and the shared store see it. */
+  onReceipt?: (receipt: ModelCallReceipt) => void;
+  log?: (message: string) => void;
 }
+
+/** A cumulative diff can grow without bound over a session; events keep at most this much of it. */
+const MAX_DIFF_CHARS = 20_000;
 
 const TERMINAL = new Set<AgentSession["status"]>(["done", "failed", "cancelled"]);
 
@@ -64,6 +75,8 @@ interface Counter {
 
 export class SessionsController implements SessionEvents {
   private active?: { session: AgentSession; task: Task };
+  /** Held from the first line of start() until the session is active, so two concurrent starts cannot both pass the guard. */
+  private reserved = false;
   private readonly counters = new Map<string, Counter>();
   private readonly subscribers = new Map<string, Set<(e: AgentEvent) => void>>();
 
@@ -80,39 +93,51 @@ export class SessionsController implements SessionEvents {
 
   async start(taskId: string, model: { provider: string; modelId: string }): Promise<AgentSession> {
     const { store, git, host, clock } = this.deps;
-    if (this.active) throw new Error("An agent session is already running; cancel it or wait for it to finish.");
-    const task = await store.getTask(taskId);
-    if (!task) throw new Error(`No task ${taskId}.`);
-    if (task.status !== "draft") throw new Error(`Task "${task.title}" is ${task.status}, not draft.`);
-    if (this.deps.agentModels && !this.deps.agentModels().some(m => m.provider === model.provider && m.modelId === model.modelId)) {
-      throw new Error(`${model.provider} ${model.modelId} cannot run the coding agent (not connected, no tool calling, or a text-only provider).`);
-    }
-
-    const id = clock.newId("ses");
-    const wt = await git.createSessionWorktree({ sessionId: id, workspaceId: task.workspaceId });
-    const session: AgentSession = {
-      id, taskId, model: { provider: model.provider, modelId: model.modelId },
-      branch: wt.branch, worktreePath: wt.worktreePath, baseCommit: wt.baseCommit,
-      status: "running", startedAt: clock.now(), machineId: this.deps.machineId,
-    };
-    const running: Task = { ...task, status: "running", sessionId: id };
-    await store.putSession(session);
-    await this.putTask(running);
-    this.active = { session, task: running };
-    await this.emit(id, { type: "status", status: "running" });
-    await store.putNexusEvent(this.sessionEvent(session, running, orbitOf(wt.baseBranch)));
-
+    if (this.reserved || this.active) throw new Error("An agent session is already running; cancel it or wait for it to finish.");
+    this.reserved = true;                                       // synchronous with the check above: no await in between
     try {
-      await host.startSession({
-        session: { id, taskId, branch: session.branch, worktreePath: session.worktreePath, baseCommit: session.baseCommit, model: session.model },
-        task: running, systemRules: SYSTEM_RULES, untrustedBlocks: this.deps.untrustedBlocks?.(running) ?? [],
-      });
-    } catch (e) {
-      await this.emit(id, { type: "error", message: `The agent process did not start: ${redact(e instanceof Error ? e.message : "unknown error")}` });
-      await this.finalize(id, "failed");
-      throw new Error("The agent process did not start.", { cause: e });
+      const task = await store.getTask(taskId);
+      if (!task) throw new Error(`No task ${taskId}.`);
+      if (task.status !== "draft") throw new Error(`Task "${task.title}" is ${task.status}, not draft.`);
+      if (this.deps.agentModels && !this.deps.agentModels().some(m => m.provider === model.provider && m.modelId === model.modelId)) {
+        throw new Error(`${model.provider} ${model.modelId} cannot run the coding agent (not connected, no tool calling, or a text-only provider).`);
+      }
+
+      const id = clock.newId("ses");
+      const wt = await git.createSessionWorktree({ sessionId: id, workspaceId: task.workspaceId });
+      const session: AgentSession = {
+        id, taskId, model: { provider: model.provider, modelId: model.modelId },
+        branch: wt.branch, worktreePath: wt.worktreePath, baseCommit: wt.baseCommit,
+        status: "running", startedAt: clock.now(), machineId: this.deps.machineId,
+      };
+      const running: Task = { ...task, status: "running", sessionId: id };
+      try {
+        await store.putSession(session);
+        await this.putTask(running);
+      } catch (e) {
+        // The agent never started: give the worktree back instead of leaking it.
+        await git.removeSessionWorktree?.(id).catch(err => this.deps.log?.(`could not remove worktree ${id}: ${err instanceof Error ? err.message : "unknown error"}`));
+        throw e;
+      }
+      this.active = { session, task: running };
+
+      try {
+        await this.emit(id, { type: "status", status: "running" });
+        await store.putNexusEvent(this.sessionEvent(session, running, orbitOf(wt.baseBranch)));
+        await host.startSession({
+          session: { id, taskId, branch: session.branch, worktreePath: session.worktreePath, baseCommit: session.baseCommit, model: session.model },
+          task: running, systemRules: SYSTEM_RULES, untrustedBlocks: this.deps.untrustedBlocks?.(running) ?? [],
+        });
+      } catch (e) {
+        // Whatever failed, the controller must not stay "busy" with an agent that never ran.
+        await this.emit(id, { type: "error", message: `The agent did not start: ${redact(e instanceof Error ? e.message : "unknown error")}` }).catch(() => undefined);
+        await this.finalize(id, "failed");
+        throw new Error("The agent process did not start.", { cause: e });
+      }
+      return session;
+    } finally {
+      this.reserved = false;
     }
-    return session;
   }
 
   async cancel(sessionId: string): Promise<AgentSession> {
@@ -158,13 +183,20 @@ export class SessionsController implements SessionEvents {
   private async finalize(sessionId: string, status: "done" | "failed" | "cancelled"): Promise<AgentSession> {
     const a = this.active;
     if (!a || a.session.id !== sessionId) return (await this.deps.store.getSession(sessionId))!;
+    // Release anything still waiting on a human first; a cancelled session's APPROVE must run nothing afterwards.
+    await this.attempt("release approvals", () => this.deps.approvals?.sessionEnded?.(sessionId, status) ?? Promise.resolve());
     this.active = undefined;
     const ended: AgentSession = { ...a.session, status, endedAt: this.deps.clock.now() };
-    await this.deps.store.putSession(ended);
-    await this.putTask({ ...a.task, status });
-    await this.emit(sessionId, { type: "status", status });
+    // Each write is best effort: a store hiccup must never leave the controller wedged or the agent host un-ended.
+    await this.attempt("save the session", () => this.deps.store.putSession(ended));
+    await this.attempt("save the task", () => this.putTask({ ...a.task, status }));
+    await this.attempt("record the final status", () => this.emit(sessionId, { type: "status", status }));
     this.deps.host.endSession(sessionId);
     return ended;
+  }
+
+  private async attempt(what: string, fn: () => Promise<unknown>): Promise<void> {
+    try { await fn(); } catch (e) { this.deps.log?.(`could not ${what}: ${redact(e instanceof Error ? e.message : "unknown error")}`); }
   }
 
   private sessionEvent(session: AgentSession, task: Task, orbit: string): NexusEvent {
@@ -189,7 +221,10 @@ export class SessionsController implements SessionEvents {
       const full = AgentEvent.parse({ ...event, sessionId, seq: c.next, at: this.deps.clock.now() });
       await this.deps.store.appendAgentEvent(full);
       c.next = full.seq + 1;                                    // advanced only after a successful write: no gaps
-      for (const cb of this.subscribers.get(sessionId) ?? []) cb(full);
+      // The event is already stored: a broken subscriber must neither fail the emit nor starve the others.
+      for (const cb of this.subscribers.get(sessionId) ?? []) {
+        try { cb(full); } catch (e) { this.deps.log?.(`an event subscriber failed: ${e instanceof Error ? e.message : "unknown error"}`); }
+      }
       return full;
     });
     c.chain = run.catch(() => undefined);
@@ -206,9 +241,14 @@ export class SessionsController implements SessionEvents {
     const set = this.subscribers.get(sessionId) ?? new Set();
     set.add(handler);
     this.subscribers.set(sessionId, set);
-    void this.deps.store.agentEvents(sessionId, fromSeq).then(past => {
+    this.deps.store.agentEvents(sessionId, fromSeq).then(past => {
       for (const e of past) deliver(e);
-      for (const e of buffered) deliver(e);
+      for (const e of buffered.splice(0)) deliver(e);
+      live = true;
+    }).catch(e => {
+      // The replay could not be loaded: say so, drop the buffer, and carry on with live events only.
+      this.deps.log?.(`could not replay session ${sessionId}: ${e instanceof Error ? e.message : "unknown error"}`);
+      buffered.length = 0;
       live = true;
     });
     return () => { set.delete(handler); };
@@ -233,7 +273,8 @@ export class SessionsController implements SessionEvents {
         const res = await gate.request(s, "fs.write", b);
         // The diff is produced by git in the host, never written by the model (CLAUDE.md §5).
         const { diff } = await gate.request(s, "git.diff", {});
-        if (diff.trim().length > 0) await this.emit(s.id, { type: "file_edit", path: b.path, diff: redact(diff) });
+        // Path and diff are redacted and size-capped here: the path is chosen by the model, the diff grows with the session.
+        if (diff.trim().length > 0) await this.emit(s.id, { type: "file_edit", path: cleanString(b.path, 300), diff: cleanString(diff, MAX_DIFF_CHARS) });
         return res;
       },
       "cmd.run": async b => {
@@ -265,7 +306,9 @@ export class SessionsController implements SessionEvents {
         if (b.provider !== s.model.provider) throw new Error(`The session uses ${s.model.provider}, not ${b.provider}.`);
         const apiKey = await this.deps.getKey(b.provider);
         if (!apiKey) throw new Error(`No API key for ${b.provider}.`);
-        return { apiKey };
+        // Prune only when the toggle is on, the agent is in scope and a Prune key exists; the agent is never allowed to route.
+        const prune = await this.deps.prune?.();
+        return prune?.enabled && prune.apiKey ? { apiKey, prune: { enabled: true, apiKey: prune.apiKey, allowModelRouting: false as const } } : { apiKey };
       },
       "event.emit": async b => {
         const s = session();
@@ -276,14 +319,18 @@ export class SessionsController implements SessionEvents {
   }
 
   private fromPayload(type: "message" | "tool_call" | "tool_result" | "error" | "receipt", payload: unknown): NewAgentEvent {
-    const p = (payload ?? {}) as Record<string, unknown>;
+    // The child already sanitized its payloads; the host never trusts that and applies the same bounds again.
+    const p = (sanitizeForEvent(payload ?? {}) ?? {}) as Record<string, unknown>;
     const s = (v: unknown) => (typeof v === "string" ? v : "");
     switch (type) {
       case "message": return { type: "message", text: s(p.text) };
-      case "tool_call": return { type: "tool_call", tool: s(p.tool), args: p.args };
-      case "tool_result": return { type: "tool_result", tool: s(p.tool), ok: p.ok === true, summary: s(p.summary) };
+      case "tool_call": return { type: "tool_call", tool: cleanString(s(p.tool), 100), args: p.args };
+      case "tool_result": return { type: "tool_result", tool: cleanString(s(p.tool), 100), ok: p.ok === true, summary: s(p.summary) };
       case "error": return { type: "error", message: s(p.message) };
-      case "receipt": return { type: "receipt", receipt: p as never };
+      case "receipt": {
+        this.deps.onReceipt?.(p as never);
+        return { type: "receipt", receipt: p as never };
+      }
     }
   }
 }

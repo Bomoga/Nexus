@@ -284,6 +284,134 @@ describe("SessionsController lifecycle", () => {
   });
 });
 
+describe("SessionsController robustness", () => {
+  const second = { ...fx.task, id: "task_02", title: "Second task" };
+
+  it("two concurrent starts: exactly one wins, one worktree is made, the host is asked once", async () => {
+    const s = await setup();
+    await s.store.putTask(second);
+    const results = await Promise.allSettled([s.c.start("task_01", model), s.c.start("task_02", model)]);
+    expect(results.map(r => r.status).sort()).toEqual(["fulfilled", "rejected"]);
+    expect((results.find(r => r.status === "rejected") as PromiseRejectedResult).reason.message).toMatch(/already running/);
+    expect(s.git.created).toHaveLength(1);
+    expect(s.host.calls.filter(c => c === "start")).toHaveLength(1);
+    expect((await s.store.listSessions()).filter(x => x.status === "running")).toHaveLength(1);
+  });
+
+  it("a store failure after the session became active never wedges the controller", async () => {
+    const s = await setup();
+    await s.store.putTask(second);
+    const put = s.store.putNexusEvent.bind(s.store);
+    s.store.putNexusEvent = async () => { throw new Error("tiger down"); };
+    await expect(s.c.start("task_01", model)).rejects.toThrow("did not start");
+    expect(s.c.activeSession).toBeUndefined();
+    expect((await s.store.listSessions())[0].status).toBe("failed");
+    expect(s.host.calls).not.toContain("start");                                   // the agent was never asked to run
+    s.store.putNexusEvent = put;
+    await expect(s.c.start("task_02", model)).resolves.toBeDefined();               // and the next one works
+  });
+
+  it("gives the worktree back when the session cannot even be saved", async () => {
+    const s = await setup();
+    const removed: string[] = [];
+    s.git.removeSessionWorktree = async id => { removed.push(id); };
+    s.store.putSession = async () => { throw new Error("disk full"); };
+    await expect(s.c.start("task_01", model)).rejects.toThrow("disk full");
+    expect(removed).toEqual([s.git.created[0].sessionId]);
+    expect(s.c.activeSession).toBeUndefined();
+    expect((await s.store.getTask("task_01"))!.status).toBe("draft");
+  });
+
+  it("finalizing survives failing writes: the host is still told, the controller is free", async () => {
+    const logs: string[] = [];
+    const store = new MemoryStore();
+    await store.putTask({ ...fx.task });
+    const host = fakeHost();
+    const c = new SessionsController({ store, git: new FakeGit(), gate: new MemoryGate(), host, clock: fakeClock(), machineId: "m", getKey: async () => "k", log: m => logs.push(m) });
+    const session = await c.start("task_01", model);
+    store.putSession = async () => { throw new Error("store down"); };
+    store.failAppends = 5;
+    await c.onFinished({ sessionId: session.id, outcome: "done", turns: 1 });
+    expect(host.calls).toContain(`end:${session.id}`);
+    expect(c.activeSession).toBeUndefined();
+    expect(logs.join("\n")).toMatch(/could not save the session: store down/);
+  });
+
+  it("a throwing subscriber neither fails emit nor starves the others", async () => {
+    const s = await setup();
+    const session = await s.c.start("task_01", model);
+    const got: number[] = [];
+    s.c.subscribe(session.id, 0, () => { throw new Error("boom"); });
+    s.c.subscribe(session.id, 0, e => got.push(e.seq));
+    await vi.waitFor(() => expect(got).toEqual([0]));
+    await expect(s.c.emit(session.id, { type: "message", text: "x" })).resolves.toBeDefined();
+    await vi.waitFor(() => expect(got).toEqual([0, 1]));
+  });
+
+  it("a failed replay is logged, and live events still arrive", async () => {
+    const logs: string[] = [];
+    const store = new MemoryStore();
+    await store.putTask({ ...fx.task });
+    const c = new SessionsController({ store, git: new FakeGit(), gate: new MemoryGate(), host: fakeHost(), clock: fakeClock(), machineId: "m", getKey: async () => "k", log: m => logs.push(m) });
+    const session = await c.start("task_01", model);
+    const read = store.agentEvents.bind(store);
+    store.agentEvents = async () => { throw new Error("replay failed"); };
+    const got: number[] = [];
+    c.subscribe(session.id, 0, e => got.push(e.seq));
+    await vi.waitFor(() => expect(logs.some(l => l.includes("could not replay"))).toBe(true));
+    store.agentEvents = read;
+    await c.emit(session.id, { type: "message", text: "live" });
+    expect(got.length).toBeGreaterThan(0);
+  });
+});
+
+describe("what the host stores from the child", () => {
+  it("re-sanitizes event payloads: deep secrets, huge arrays and long strings never reach the store", async () => {
+    const s = await setup();
+    const session = await s.c.start("task_01", model);
+    let deep: unknown = SECRET;
+    for (let i = 0; i < 9; i++) deep = { next: deep };
+    const many = Array.from({ length: 500 }, () => "x".repeat(1500));
+    await s.c.agentHandlers()["event.emit"]!({ type: "tool_call", payload: { tool: `t-${SECRET}`, args: { deep, many, [`key-${SECRET}`]: 1 } } });
+    const stored = JSON.stringify(await s.store.agentEvents(session.id, 0));
+    expect(stored).not.toContain("SECRETSECRET");
+    expect(stored.length).toBeLessThan(40_000);
+  });
+
+  it("redacts the path and caps the size of a file_edit diff", async () => {
+    const base = new MemoryGate();
+    const big = "+" + "line of change\n+".repeat(5000);
+    const gate = { request: async (session: Parameters<MemoryGate["request"]>[0], name: Parameters<MemoryGate["request"]>[1], body: unknown) => (name === "git.diff" ? { diff: `${big} ${SECRET}` } : base.request(session, name, body as never)) } as unknown as MemoryGate;
+    const store = new MemoryStore();
+    await store.putTask({ ...fx.task });
+    const c = new SessionsController({ store, git: new FakeGit(), gate, host: fakeHost(), clock: fakeClock(), machineId: "m", getKey: async () => "k" });
+    const session = await c.start("task_01", model);
+    await c.agentHandlers()["fs.write"]!({ path: `src/${SECRET}.ts`, content: "x" });
+    const edit = (await store.agentEvents(session.id, 0)).find(e => e.type === "file_edit") as Extract<AgentEvent, { type: "file_edit" }>;
+    expect(edit.path).not.toContain("SECRETSECRET");
+    expect(edit.diff.length).toBeLessThan(21_000);
+    expect(edit.diff).toContain("clipped");
+  });
+
+  it("hands the agent a Prune setting only when the optimizer says so, never allowing routing, and reports receipts", async () => {
+    const receipts: unknown[] = [];
+    const store = new MemoryStore();
+    await store.putTask({ ...fx.task });
+    let prune: { enabled: boolean; apiKey?: string } = { enabled: false };
+    const c = new SessionsController({ store, git: new FakeGit(), gate: new MemoryGate(), host: fakeHost(), clock: fakeClock(), machineId: "m", getKey: async () => "sk-live", prune: async () => prune, onReceipt: r => receipts.push(r) });
+    const session = await c.start("task_01", model);
+    const h = c.agentHandlers();
+    expect(await h["credentials.get"]!({ provider: "anthropic", callId: "c1" })).toEqual({ apiKey: "sk-live" });
+    prune = { enabled: true, apiKey: "prune_key_123" };
+    expect(await h["credentials.get"]!({ provider: "anthropic", callId: "c2" })).toEqual({ apiKey: "sk-live", prune: { enabled: true, apiKey: "prune_key_123", allowModelRouting: false } });
+    prune = { enabled: true };                                                       // no Prune key: no Prune
+    expect(await h["credentials.get"]!({ provider: "anthropic", callId: "c3" })).toEqual({ apiKey: "sk-live" });
+    await h["event.emit"]!({ type: "receipt", payload: fx.receipt });
+    expect(receipts).toEqual([fx.receipt]);
+    expect((await store.agentEvents(session.id, 0)).at(-1)).toMatchObject({ type: "receipt", receipt: { callId: "call_01" } });
+  });
+});
+
 describe("bridge handlers", () => {
   it("serve agent.start, agent.cancel, sessions.get and sessions.list with contract-shaped responses", async () => {
     const s = await setup();

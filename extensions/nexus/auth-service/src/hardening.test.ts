@@ -64,6 +64,19 @@ describe("concurrent starts", () => {
   });
 });
 
+describe("concurrent starts after expiry", () => {
+  it("starts one new request, not two, when two callers find the same expired entry", async () => {
+    const m = setup(() => [k1], { [BC_URL]: async () => { await new Promise((r) => setTimeout(r, 10)); return bcOk(); } });
+    const auth = await bearer(k1);
+    const t0 = Date.now();
+    expect(await status(auth, m, t0)).toBe(200);
+    const later = t0 + 301_000;
+    const rs = await Promise.all([1, 2, 3].map(() => handle(post("/ciba/start", startBody, auth), env, { fetch: m.fn, now: () => later })));
+    expect(rs.map((r) => r.status)).toEqual([200, 200, 200]);
+    expect(m.calls.filter((c) => c.url === BC_URL)).toHaveLength(2);   // the first start plus exactly one restart
+  });
+});
+
 describe("JWKS refetch limits", () => {
   it("refetches at most once per 30s for unknown kids and rejects them", async () => {
     const m = setup(() => [k1], { [BC_URL]: bcOk });

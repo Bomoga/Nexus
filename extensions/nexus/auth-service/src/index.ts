@@ -79,11 +79,13 @@ async function start(req: Request, env: Env, f: typeof fetch, now: number): Prom
   const parsed = StartBody.safeParse(await req.json().catch(() => undefined));
   if (!parsed.success) return fail(400, "bad_request", "Body must be {approvalId, sessionId, actionLabel, approverAuth0UserId}.");
   const b = parsed.data;
-  const existing = started.get(b.approvalId);
-  if (existing) {
+  for (;;) {
+    const existing = started.get(b.approvalId);
+    if (!existing) break;
     const r = await existing;   // an in-flight or finished start for this approval
     if (!r.ok || r.expiresAt > now) return startReply(r, now);
-    if (started.get(b.approvalId) === existing) started.delete(b.approvalId);   // expired: allow a new start
+    if (started.get(b.approvalId) === existing) { started.delete(b.approvalId); break; }   // expired: allow a new start
+    // another caller already replaced the expired entry while we waited: read it again instead of starting a second one
   }
   if (started.size >= MAX_ENTRIES) started.delete(started.keys().next().value as string);
   const p = callAuth0Start(b, env, f, now);

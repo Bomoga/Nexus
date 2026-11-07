@@ -3,7 +3,7 @@
 // validated, paths are checked and follow `--`, and output is bounded. The write half is in worktrees.ts and merge.ts.
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { devNull } from "node:os";
+import { emptyGitConfig } from "./empty-config";
 import path from "node:path";
 import { mergeAgentBranch } from "./merge";
 import * as wt from "./worktrees";
@@ -72,7 +72,7 @@ export class GitCli implements GitService {
     const env: NodeJS.ProcessEnv = {};
     for (const [k, v] of Object.entries(process.env)) if (!k.toUpperCase().startsWith("GIT_")) env[k] = v;
     Object.assign(env, { LC_ALL: "C", GIT_TERMINAL_PROMPT: "0", GIT_OPTIONAL_LOCKS: "0", GIT_LITERAL_PATHSPECS: "1" });
-    if (this.options.isolatedConfig) Object.assign(env, { GIT_CONFIG_GLOBAL: devNull, GIT_CONFIG_SYSTEM: devNull, GIT_CONFIG_NOSYSTEM: "1" });
+    if (this.options.isolatedConfig) { const empty = emptyGitConfig(); Object.assign(env, { GIT_CONFIG_GLOBAL: empty, GIT_CONFIG_SYSTEM: empty, GIT_CONFIG_NOSYSTEM: "1" }); }
     if (extra) Object.assign(env, extra);
     return env;
   }

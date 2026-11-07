@@ -1,4 +1,7 @@
+import { EventEmitter } from "node:events";
 import { existsSync } from "node:fs";
+import type { ChildProcess } from "node:child_process";
+import { PassThrough } from "node:stream";
 import { link, lstat, mkdtemp, mkdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -22,6 +25,13 @@ const approvals: ApprovalsHook = {
   }),
 };
 const flush = () => new Promise(r => setTimeout(r, 20));
+const win32 = process.platform === "win32";
+/** Exit code of a timeout kill: SIGKILL (128+9) on POSIX, taskkill /F makes the child exit 1 on Windows. */
+const KILLED = win32 ? 1 : 137;
+const until = async (cond: () => boolean, ms = 5000) => {
+  const end = Date.now() + ms;
+  while (!cond() && Date.now() < end) await new Promise(r => setTimeout(r, 10));
+};
 const gate = (extra: { allow?: string[] } & Partial<GateDeps> = {}) =>
   createGate({ git, approvals, redact, ...extra, allowlist: () => extra.allow ?? [] });
 
@@ -32,7 +42,8 @@ beforeEach(async () => {
   git = new FakeGit();
   pending = [];
 });
-afterEach(async () => { await rm(dir, { recursive: true, force: true }); await rm(outside, { recursive: true, force: true }); });
+const rmOpts = { recursive: true, force: true, maxRetries: 10, retryDelay: 100 } as const;
+afterEach(async () => { await rm(dir, rmOpts); await rm(outside, rmOpts); });
 
 describe("fs", () => {
   it("writes, reads and lists inside the worktree", async () => {
@@ -85,17 +96,22 @@ describe("fs", () => {
     await expect(readFile(path.join(outside, "new.txt"))).rejects.toThrow();
   });
 
-  it("never writes through a symlinked file", async () => {
+  it.skipIf(win32)("never writes through a symlinked file", async () => {  // creating symlinks needs elevated rights on Windows
     await writeFile(path.join(outside, "t"), "orig");
     await symlink(path.join(outside, "t"), path.join(dir, "f"));
     const p = gate().request(session, "fs.write", { path: "f", content: "evil" }).catch((e: Error) => e);
-    await flush();
+    await until(() => pending.length > 0);
     expect(pending[0]!.action.kind).toBe("write_outside_scope");
     pending[0]!.resolve("rejected");
     await p;
     expect(await readFile(path.join(outside, "t"), "utf8")).toBe("orig");
   });
 });
+
+// node prints the same thing on every platform, unlike env and pwd (MSYS paths on Windows).
+const dumpEnv = `node -e "process.stdout.write(JSON.stringify(process.env))"`;
+const printCwd = `node -e "process.stdout.write(process.cwd())"`;
+const sleep5 = `node -e "setTimeout(()=>{},5000)"`;
 
 describe("cmd.run", () => {
   it("runs an allowlisted command without approval", async () => {
@@ -143,11 +159,11 @@ describe("cmd.run", () => {
   it("passes no token from process.env to the child, and runs in the worktree", async () => {
     vi.stubEnv("SLACK_USER_TOKEN", "xoxp-1234567890-secret");
     vi.stubEnv("ANTHROPIC_API_KEY", "sk-ant-leak");
-    const r = await gate({ allow: ["env"] }).request(session, "cmd.run", { command: "env", timeoutMs: 10000 });
+    const r = await gate({ allow: [dumpEnv] }).request(session, "cmd.run", { command: dumpEnv, timeoutMs: 10000 });
     vi.unstubAllEnvs();
     expect(r.stdoutTail).not.toMatch(/SLACK_USER_TOKEN|ANTHROPIC|xoxp|sk-ant/);
-    const pwd = await gate({ allow: ["pwd"] }).request(session, "cmd.run", { command: "pwd", timeoutMs: 10000 });
-    expect(pwd.stdoutTail.trim()).toBe(dir);
+    const cwd = await gate({ allow: [printCwd] }).request(session, "cmd.run", { command: printCwd, timeoutMs: 10000 });
+    expect(cwd.stdoutTail.trim()).toBe(dir);
   });
 
   it("redacts output", async () => {
@@ -156,8 +172,8 @@ describe("cmd.run", () => {
   });
 
   it("gives an integer exit code for a timeout kill and a missing binary", async () => {
-    const killed = await gate({ allow: ["sleep 5"] }).request(session, "cmd.run", { command: "sleep 5", timeoutMs: 100 });
-    expect(killed.exitCode).toBe(137);
+    const killed = await gate({ allow: [sleep5] }).request(session, "cmd.run", { command: sleep5, timeoutMs: 100 });
+    expect(killed.exitCode).toBe(KILLED);
     const missing = await gate({ allow: ["no-such-binary-xyz"] }).request(session, "cmd.run", { command: "no-such-binary-xyz", timeoutMs: 1000 });
     expect(Number.isInteger(missing.exitCode)).toBe(true);
     expect(missing.exitCode).not.toBe(0);
@@ -341,19 +357,42 @@ describe("hardening", () => {
     expect(r.stdoutTail).toBe("$HOME ; *\n");
   });
 
-  it("kills the whole process group on timeout, including a grandchild holding stdout", async () => {
+  it.skipIf(win32)("kills the whole process group on timeout, including a grandchild holding stdout", async () => {
     const marker = path.join(outside, "alive");
     const script = `require('child_process').spawn('sh',['-c','sleep 1.5; touch ${marker}'],{stdio:'inherit'});setInterval(()=>{},1000)`;
     await writeFile(path.join(dir, "t.js"), script);
     const t0 = Date.now();
     const r = await gate({ allow: ["node t.js"] }).request(session, "cmd.run", { command: "node t.js", timeoutMs: 300 });
     expect(Date.now() - t0).toBeLessThan(1200);
-    expect(r.exitCode).toBe(137);
+    expect(r.exitCode).toBe(KILLED);
     await new Promise(res => setTimeout(res, 2000));
     expect(existsSync(marker)).toBe(false);
   }, 10000);
 
-  it("does not let a worktree binary shadow an allowlisted one through an empty or relative PATH entry", async () => {
+  it("waits for taskkill to exit before reporting a timed-out run on Windows", async () => {
+    const calls: string[] = [];
+    let taskkillExits = 0;
+    const spawn = ((file: string, args: string[]) => {
+      const child = Object.assign(new EventEmitter(), { pid: 4242, stdout: new PassThrough(), stderr: new PassThrough(), kill: () => true });
+      if (file === "taskkill") {
+        calls.push(args.join(" "));
+        setTimeout(() => { taskkillExits++; child.emit("exit", 0, null); }, 200);
+      } else {
+        calls.push("main");
+        // The tree dies once taskkill has been started; the main process then exits with 1.
+        const wait = setInterval(() => { if (calls.length > 1) { clearInterval(wait); child.emit("exit", 1, null); child.emit("close", 1, null); } }, 5);
+      }
+      return child as unknown as ChildProcess;
+    }) as unknown as SpawnFn;
+    const env = { PATH: "C:\\bin", PATHEXT: ".EXE", ComSpec: "C:\\Windows\\System32\\cmd.exe" };
+    const r = await gate({ allow: ["tool"], spawn, platform: "win32", env, fileExists: f => f === "C:\\bin\\tool.EXE" }).request(session, "cmd.run", { command: "tool", timeoutMs: 50 });
+    expect(r.exitCode).toBe(1);
+    expect(calls[0]).toBe("main");
+    expect(calls.length - 1).toBe(taskkillExits);  // every taskkill started had exited before the result was reported
+    expect(new Set(calls.slice(1))).toEqual(new Set(["/pid 4242 /T /F"]));
+  });
+
+  it.skipIf(win32)("does not let a worktree binary shadow an allowlisted one through an empty or relative PATH entry", async () => {  // POSIX PATH and a #!/bin/sh shadow; the Windows refusal of bare names is covered in the windows describe
     await writeFile(path.join(dir, "mytool"), "#!/bin/sh\necho SHADOWED\n", { mode: 0o755 });
     for (const PATH of ["/usr/bin:/bin:", ".:/usr/bin:/bin", ":/usr/bin:/bin", "/usr/bin:/bin::"]) {
       const r = await gate({ allow: ["mytool"], env: { PATH, HOME: "/tmp" } }).request(session, "cmd.run", { command: "mytool", timeoutMs: 5000 });

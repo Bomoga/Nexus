@@ -1,11 +1,12 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
-import { devNull, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { Requests } from "../../contracts";
 import { GitCli } from "./git-cli";
+import { emptyGitConfig } from "./empty-config";
 
 let root: string;
 let day = 0;
@@ -17,7 +18,7 @@ const sh = (...args: string[]) => {
   day++;
   return execFileSync("git", args, {
     cwd: root, encoding: "utf8",
-    env: { ...process.env, GIT_AUTHOR_NAME: "Test Author", GIT_AUTHOR_EMAIL: "t@example.com", GIT_COMMITTER_NAME: "Test Author", GIT_COMMITTER_EMAIL: "t@example.com", GIT_AUTHOR_DATE: date, GIT_COMMITTER_DATE: date, GIT_CONFIG_GLOBAL: devNull, GIT_CONFIG_SYSTEM: devNull, ...extraEnv },
+    env: { ...process.env, GIT_AUTHOR_NAME: "Test Author", GIT_AUTHOR_EMAIL: "t@example.com", GIT_COMMITTER_NAME: "Test Author", GIT_COMMITTER_EMAIL: "t@example.com", GIT_AUTHOR_DATE: date, GIT_COMMITTER_DATE: date, GIT_CONFIG_GLOBAL: emptyGitConfig(), GIT_CONFIG_SYSTEM: emptyGitConfig(), ...extraEnv },
   }).trim();
 };
 const write = (rel: string, text: string) => { mkdirSync(path.dirname(path.join(root, rel)), { recursive: true }); writeFileSync(path.join(root, rel), text); };
@@ -285,7 +286,7 @@ describe("GitCli read side", () => {
 
   it("reports truncated results through the logger", { timeout: 120000 }, async () => {
     const big = mkdtempSync(path.join(tmpdir(), "nexus-git-big-"));
-    const env = { ...process.env, GIT_CONFIG_GLOBAL: devNull, GIT_CONFIG_SYSTEM: devNull };
+    const env = { ...process.env, GIT_CONFIG_GLOBAL: emptyGitConfig(), GIT_CONFIG_SYSTEM: emptyGitConfig() };
     try {
       execFileSync("git", ["init", "-q", "-b", "main"], { cwd: big, env });
       // 20001 commits on main, then one commit with 2001 files, written in one fast-import stream.
@@ -350,7 +351,7 @@ describe("GitCli read side", () => {
   it("refuses an empty repository clearly", async () => {
     const empty = mkdtempSync(path.join(tmpdir(), "nexus-git-empty-"));
     try {
-      execFileSync("git", ["init", "-q", "-b", "main"], { cwd: empty, env: { ...process.env, GIT_CONFIG_GLOBAL: devNull, GIT_CONFIG_SYSTEM: devNull } });
+      execFileSync("git", ["init", "-q", "-b", "main"], { cwd: empty, env: { ...process.env, GIT_CONFIG_GLOBAL: emptyGitConfig(), GIT_CONFIG_SYSTEM: emptyGitConfig() } });
       const g = new GitCli(empty, { isolatedConfig: true });
       await expect(g.workspaceId()).rejects.toThrow(/repository has no commits/);
       expect(await g.log()).toEqual([]);

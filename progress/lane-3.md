@@ -103,8 +103,15 @@
 - Elkin tested by hand first in the fork on the demo repo: Open commit (file list + diff), bad SHA error, globe search → track → Enter opens → Esc stops, all 6 orbits in view, Merge agent branch with no done sessions. All passed.
 - Merged main first: Lane 2 fixed most Windows test failures (11 left, all in Lane 2's gate/git/coderef files).
 
+## L3-14 task-plan review: MERGED into lane-3 (~T+19:30; Sonnet worker, Opus review confirmed first time) — not on main yet
+- webviews/plan: PlanReview (status chip, "model-written · left machine", subtasks table with expandable briefs and 1-based "after" deps, ACCEPT/REJECT only while proposed, "created N draft tasks"), embedded in the task editor after BREAK INTO SUBTASKS, plus a standalone nexus.plan panel via Lane3Views.openPlan(planId) (no command yet — Lane 1 can call it).
+- Lead follow-ups from the review: a refused ACCEPT/REJECT re-reads the plan and shows a teammate's decision instead of an error with live buttons (test fails on the old code); the embedded plan is keyed by id so a second plan never shows the first one's state; rejected is red per §6.
+- Lead fix 175169ac (reviewed with L3-14): Open commit waits up to 5 s for the git extension to open the repo before resolving a short sha.
+- L3-06 activity strip still blocked: no events.activity handler on main (Lane 2's L2-12).
+- Follow-ups: BREAK INTO SUBTASKS stays available after a plan was accepted (a second plan makes a second set of drafts); 5 s wait per short-sha lookup if git is disabled; openRepository may reopen a repo the user closed.
+
 ## In flight
-- (none). Hourly polls off. Everything Lane 3 has is on main. Next: cp-2 (T+22–24) — Elkin's laptop starts an agent session that should orbit on Adrian's globe. Waiting on: PR #9 (Brandon's approval), the shared router in extension.ts (Adrian), panel body-data and the bot-only/escaping fixes (Brandon), Lane 2's git service (for L3-15). Next per the playbook: wave 6 (L3-06 activity strip, L3-14 task-plan review, L3-16 empty/error states). L3-06 and L3-14 have only a header line in PLAN and depend on Lane 2/Lane 1 work in the same wave.
+- (none). lane-3 is ahead of main by L3-14 + fixes: PR when Elkin agrees. Next: cp-2 (T+22–24) — Elkin's laptop starts an agent session that should orbit on Adrian's globe. Waiting on: PR #9 (Brandon's approval), the shared router in extension.ts (Adrian), panel body-data and the bot-only/escaping fixes (Brandon), Lane 2's git service (for L3-15). Next per the playbook: wave 6 (L3-06 activity strip, L3-14 task-plan review, L3-16 empty/error states). L3-06 and L3-14 have only a header line in PLAN and depend on Lane 2/Lane 1 work in the same wave.
 
 ## Webview host: RESOLVED by Lane 2 (main 0fb28e17, merged into lane-3 at ~T+14)
 - Brandon's host now reads media/<entry>/index.html (our Vite output) and loads its module scripts (with the nonce) and stylesheets; script-src includes cspSource, so our lazy chunks (fakeBridge/fixtures) load too. No Lane 3 build change needed.

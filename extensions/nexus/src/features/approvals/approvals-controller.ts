@@ -93,8 +93,10 @@ export class ApprovalsController implements ApprovalRequester {
     let early: ApprovalRequest | undefined;
     try {
       await store.putApproval(approval);
+      this.assertLive(approval);                                       // the session may have ended while the write was in flight
       await sessions.emit(approval.sessionId, { type: "approval_request", approvalId: approval.id });
       await sessions.setStatus(approval.sessionId, "awaiting_approval");
+      this.assertLive(approval);                                       // no live card for a dead session
       this.announce(approval);
       this.emitChange(approval);
       for (const hook of this.deps.hooks ?? []) {
@@ -104,6 +106,7 @@ export class ApprovalsController implements ApprovalRequester {
       // A decision made while we were still creating (another machine, a Slack button) is applied after approval_request.
       const stored = await store.getApproval(approval.id);
       early = this.creating.get(approval.id) ?? stored;                // read the parked decision AFTER the await: one may land during it
+      if (!early?.decision) this.assertLive(approval);                 // a decision that landed is real; otherwise an ended session means nobody can wake the gate
     } catch (e) {
       await this.abandon(approval);
       throw e;
@@ -111,6 +114,11 @@ export class ApprovalsController implements ApprovalRequester {
     this.creating.delete(approval.id);
     if (early?.decision) await this.settle(early);
     return approval;
+  }
+
+  /** Throws unless the approval's session is still running and this machine still owns the approval (see sessionEnded()). */
+  private assertLive(approval: ApprovalRequest): void {
+    if (this.ended.has(approval.sessionId) || !this.pending.has(approval.id)) throw new Error("That session has ended; there is nothing to approve.");
   }
 
   /**
@@ -143,7 +151,15 @@ export class ApprovalsController implements ApprovalRequester {
       if (rest.length > 0) this.waiters.set(approvalId, rest); else this.waiters.delete(approvalId);
       throw e;
     }
+    // Already woken while the read was in flight (a human decided, or the session ended): that outcome stands, the read is stale.
+    if (!(this.waiters.get(approvalId) ?? []).includes(register)) return waiting;
     if (stored?.decision && !this.pending.has(approvalId)) this.wake(approvalId, stored.decision);
+    else if (!stored?.decision && (this.dead.has(approvalId) || (stored && this.ended.has(stored.sessionId)))) {
+      // Nothing can ever wake this waiter (its session ended, or it was abandoned): release the gate as rejected, writing no decision.
+      const rest = (this.waiters.get(approvalId) ?? []).filter(w => w !== register);
+      if (rest.length > 0) this.waiters.set(approvalId, rest); else this.waiters.delete(approvalId);
+      throw new Error("That session has ended; there is nothing to approve.");
+    }
     return waiting;
   }
 
@@ -276,7 +292,7 @@ export class ApprovalsController implements ApprovalRequester {
     this.pending.delete(approval.id);
     this.dead.set(approval.id, approval);
     try { this.deps.notify.update(approval.id, "The request could not be completed; there is nothing to approve."); } catch (err) { this.deps.log?.(`could not update the notification: ${err instanceof Error ? err.message : "unknown error"}`); }
-    if (![...this.pending.values()].includes(approval.sessionId)) await this.attempt("restore the session status", () => this.deps.sessions.setStatus(approval.sessionId, "running"));
+    if (!this.ended.has(approval.sessionId) && ![...this.pending.values()].includes(approval.sessionId)) await this.attempt("restore the session status", () => this.deps.sessions.setStatus(approval.sessionId, "running"));
   }
 
   private async attempt(what: string, fn: () => Promise<unknown>): Promise<void> {

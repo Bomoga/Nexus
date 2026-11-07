@@ -1,5 +1,4 @@
-import { useCallback, useState } from "react";
-import type { KeyboardEvent } from "react";
+import { useCallback, useEffect, useState } from "react";
 import type { EventTarget, NexusEvent } from "../../src/contracts";
 import { Button, StatusLine, request } from "../shared";
 import { DEFAULT_T0_MS, formatEventTime, shortId } from "./model/picking";
@@ -17,20 +16,29 @@ const defaultOpen = (target: EventTarget) => request("ui.openTarget", target);
 
 /** One-row detail for the selected event: kind, title, orbit, T+, short id, actor, and an OPEN button. All text is rendered as text. */
 export function DetailStrip({ event, t0Ms = DEFAULT_T0_MS, open = defaultOpen }: DetailStripProps) {
-  const [error, setError] = useState<string | undefined>();
+  // The error is tied to the event it came from, so selecting another event hides it (and a late rejection stays hidden).
+  const [failure, setFailure] = useState<{ event: NexusEvent; message: string } | undefined>();
+  const error = failure && failure.event === event ? failure.message : undefined;
   const openTarget = useCallback(() => {
     if (!event) return;
-    setError(undefined);
-    open(event.target).catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)));
+    setFailure(undefined);
+    open(event.target).catch((e: unknown) => setFailure({ event, message: e instanceof Error ? e.message : String(e) }));
   }, [event, open]);
 
-  const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
-    // Only when the strip itself has focus: Enter on the OPEN button is that button's own click.
-    if (e.key === "Enter" && e.target === e.currentTarget) {
+  // After a click-pick focus is on the canvas/body, so Enter is handled at the document while an event is selected.
+  // Controls that own Enter (inputs, buttons including OPEN, selects, editables) are left alone: no double-open.
+  useEffect(() => {
+    if (!event) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Enter" || e.defaultPrevented || e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;
+      const t = e.target;
+      if (t instanceof Element && t.closest("input, textarea, select, button, a[href], [contenteditable]:not([contenteditable=false])")) return;
       e.preventDefault();
       openTarget();
-    }
-  };
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [event, openTarget]);
 
   if (!event) {
     return (
@@ -40,7 +48,7 @@ export function DetailStrip({ event, t0Ms = DEFAULT_T0_MS, open = defaultOpen }:
     );
   }
   return (
-    <div className="globe-strip" role="group" aria-label="Selected event" tabIndex={0} onKeyDown={onKeyDown}>
+    <div className="globe-strip" role="group" aria-label="Selected event" tabIndex={0}>
       <span className="globe-strip-kind nx-data">{event.kind}</span>
       <span className="globe-strip-title" title={event.title}>
         {event.title}

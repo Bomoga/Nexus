@@ -33,15 +33,21 @@ export function Picking({ events, layout, onPick }: PickingProps) {
     const el = gl.domElement;
     const instanceIds = commitInstanceIds(events, layout);
     const byId = new Map(events.map((e) => [e.id, e]));
-    let down: { x: number; y: number } | undefined;
+    let down: { x: number; y: number; id: number } | undefined;
 
     const onDown = (e: PointerEvent) => {
-      down = e.button === 0 ? { x: e.clientX, y: e.clientY } : undefined;
+      // Only the primary pointer can start a pick; a second finger (pinch) cancels it.
+      if (!e.isPrimary) {
+        down = undefined;
+        return;
+      }
+      down = e.button === 0 ? { x: e.clientX, y: e.clientY, id: e.pointerId } : undefined;
     };
     const onUp = (e: PointerEvent) => {
       const start = down;
+      if (!e.isPrimary) return;
       down = undefined;
-      if (!start || e.button !== 0 || !isClick(e.clientX - start.x, e.clientY - start.y)) return;
+      if (!start || e.pointerId !== start.id || e.button !== 0 || !isClick(e.clientX - start.x, e.clientY - start.y)) return;
       const rect = el.getBoundingClientRect();
       if (rect.width === 0 || rect.height === 0) return;
       ndc.set(((e.clientX - rect.left) / rect.width) * 2 - 1, -((e.clientY - rect.top) / rect.height) * 2 + 1);

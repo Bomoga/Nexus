@@ -8,10 +8,10 @@ export const CLICK_SLOP_PX = 4;
 export const LINE_THRESHOLD = 0.06;
 
 /**
- * Default T+0: 10:15 PM ET on Fri 6 Nov 2026 as UTC. The host's `nexus.t0` setting is not readable from a
+ * Default T+0: 22:00 ET on Fri 6 Nov 2026 as UTC, as recorded in progress/lane-3.md. The host's `nexus.t0` setting is not readable from a
  * webview (app.ping only returns whole hours), so the strip uses this unless a caller supplies another origin.
  */
-export const DEFAULT_T0_MS = Date.parse("2026-11-07T03:15:00Z");
+export const DEFAULT_T0_MS = Date.parse("2026-11-07T03:00:00Z");
 
 export function isClick(dx: number, dy: number): boolean {
   return Math.hypot(dx, dy) < CLICK_SLOP_PX;
@@ -38,12 +38,21 @@ export function shortId(target: EventTarget): string {
   }
 }
 
-/** Event ids in the order Markers writes InstancedMesh instances (commits on a known orbit, in event order). */
-export function commitInstanceIds(events: readonly NexusEvent[], layout: readonly { id: string }[]): string[] {
-  const known = new Set(layout.map((o) => o.id));
-  const out: string[] = [];
-  for (const e of events) if (e.kind === "commit" && known.has(e.orbit)) out.push(e.id);
+/** Commits on a known orbit, in event order, with their orbit. Markers draws exactly this list, in this order. */
+export function commitPlacements<O extends { id: string }>(events: readonly NexusEvent[], layout: readonly O[]): { event: NexusEvent; orbit: O }[] {
+  const byId = new Map(layout.map((o) => [o.id, o]));
+  const out: { event: NexusEvent; orbit: O }[] = [];
+  for (const event of events) {
+    if (event.kind !== "commit") continue;
+    const orbit = byId.get(event.orbit);
+    if (orbit) out.push({ event, orbit });
+  }
   return out;
+}
+
+/** Event ids in InstancedMesh instance order (same list Markers instances, via commitPlacements). */
+export function commitInstanceIds(events: readonly NexusEvent[], layout: readonly { id: string }[]): string[] {
+  return commitPlacements(events, layout).map((p) => p.event.id);
 }
 
 /** The minimal shape of a three Intersection that picking needs, so this stays testable without three. */

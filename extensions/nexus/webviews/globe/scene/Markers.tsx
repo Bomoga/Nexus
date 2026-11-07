@@ -5,6 +5,7 @@ import { useFrame } from "@react-three/fiber";
 import type { NexusEvent, TimeWindow } from "../../../src/contracts";
 import { eventPoint, shouldInstance, windowMs } from "../model";
 import { eventPointInto } from "../model/arcs";
+import { commitPlacements } from "../model/picking";
 import type { Vec3 } from "../model/arcs";
 import type { OrbitSpec } from "../model";
 import { PURPLE_HI } from "./colors";
@@ -34,13 +35,9 @@ const markerMaterial = new MeshBasicMaterial({ color: PURPLE_HI });
 /** Commits as small spheres at their time angle. Individual meshes up to 2,000 (pickable), one InstancedMesh beyond. */
 export function Markers({ events, layout, now, window }: MarkersProps) {
   const placed = useMemo<Placed[]>(() => {
-    const byId = new Map(layout.map((o) => [o.id, o]));
     const out: Placed[] = [];
     const perf = performance.now();
-    for (const event of events) {
-      if (event.kind !== "commit") continue;
-      const orbit = byId.get(event.orbit);
-      if (!orbit) continue;
+    for (const { event, orbit } of commitPlacements(events, layout)) {
       const atMs = Date.parse(event.at);
       out.push({
         event,

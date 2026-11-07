@@ -9,7 +9,7 @@ import { DetailStrip } from "./DetailStrip";
 
 afterEach(cleanup);
 
-const T0_MS = Date.parse("2026-11-07T03:15:00Z");
+const T0_MS = Date.parse("2026-11-07T03:00:00Z");
 const SHA = "3f2a9c1e4b7d8a6f5e0c9b2a1d4f6e8c7b5a3d21";
 
 function scripted() {
@@ -40,7 +40,7 @@ describe("DetailStrip", () => {
     expect(strip.textContent).toContain("commit");
     expect(strip.textContent).toContain("add cart module");
     expect(strip.textContent).toContain("lane-3");
-    expect(strip.textContent).toContain("T+02:05");
+    expect(strip.textContent).toContain("T+02:20");
     expect(strip.textContent).toContain(SHA.slice(0, 7));
     expect(strip.textContent).toContain("Adrian");
     expect(screen.getByRole("button", { name: /open/i })).toBeTruthy();
@@ -97,5 +97,37 @@ describe("DetailStrip", () => {
     fireEvent.keyDown(screen.getByRole("group"), { key: "Enter" });
     await new Promise((r) => setTimeout(r, 10));
     expect(s.posted).toHaveLength(0);
+  });
+
+  test("Enter on document.body opens the selected target once (focus is on the canvas after a pick)", async () => {
+    const s = scripted();
+    render(<DetailStrip event={commit} t0Ms={T0_MS} open={s.open} />);
+    fireEvent.keyDown(document.body, { key: "Enter" });
+    await waitFor(() => expect(s.posted).toHaveLength(1));
+    await new Promise((r) => setTimeout(r, 10));
+    expect(s.posted).toHaveLength(1);
+    expect(s.posted[0]).toMatchObject({ name: "ui.openTarget", body: commit.target });
+  });
+
+  test("Enter in an input is ignored", async () => {
+    const s = scripted();
+    render(
+      <>
+        <input aria-label="q" />
+        <DetailStrip event={commit} t0Ms={T0_MS} open={s.open} />
+      </>,
+    );
+    fireEvent.keyDown(screen.getByLabelText("q"), { key: "Enter" });
+    await new Promise((r) => setTimeout(r, 10));
+    expect(s.posted).toHaveLength(0);
+  });
+
+  test("shows a failed open and clears it when another event is selected", async () => {
+    const failing = () => Promise.reject(new Error("host exploded"));
+    const { rerender } = render(<DetailStrip event={commit} t0Ms={T0_MS} open={failing} />);
+    fireEvent.click(screen.getByRole("button", { name: /open/i }));
+    await waitFor(() => expect(screen.getByRole("group").textContent).toContain("host exploded"));
+    rerender(<DetailStrip event={thread} t0Ms={T0_MS} open={failing} />);
+    expect(screen.getByRole("group").textContent).not.toContain("host exploded");
   });
 });

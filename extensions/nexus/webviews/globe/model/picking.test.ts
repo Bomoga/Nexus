@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
 import type { NexusEvent } from "../../../src/contracts";
-import { CLICK_SLOP_PX, commitInstanceIds, formatEventTime, isClick, pickEventId, shortId } from "./picking";
+import { CLICK_SLOP_PX, DEFAULT_T0_MS, commitInstanceIds, commitPlacements, formatEventTime, isClick, pickEventId, shortId } from "./picking";
 
 const H = 3_600_000;
-const T0 = Date.parse("2026-11-07T03:15:00Z");
+const T0 = Date.parse("2026-11-07T03:00:00Z");
 
 describe("formatEventTime", () => {
   it("formats T+hh:mm relative to the origin", () => {
@@ -41,6 +41,19 @@ describe("commitInstanceIds", () => {
   it("lists commits on known orbits in event order, as Markers instances them", () => {
     const events = [ev("a", "commit", "main"), ev("m", "merge", "main"), ev("b", "commit", "ghost"), ev("c", "commit", "lane-1")];
     expect(commitInstanceIds(events, [{ id: "main" }, { id: "lane-1" }])).toEqual(["a", "c"]);
+  });
+});
+
+describe("commitPlacements", () => {
+  it("is the single list Markers draws, so instance ids match it exactly", () => {
+    const events = [ev("a", "commit", "main"), ev("m", "merge", "main"), ev("b", "commit", "ghost"), ev("c", "commit", "lane-1")];
+    const layout = [{ id: "lane-1" }, { id: "main" }];
+    const placed = commitPlacements(events, layout);
+    expect(placed.map((p) => p.event.id)).toEqual(commitInstanceIds(events, layout));
+    expect(placed[1].orbit).toBe(layout[0]);
+  });
+  it("defaults T+0 to 22:00 ET Nov 6", () => {
+    expect(DEFAULT_T0_MS).toBe(Date.parse("2026-11-07T03:00:00Z"));
   });
 });
 

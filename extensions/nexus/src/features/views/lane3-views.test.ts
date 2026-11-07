@@ -92,8 +92,22 @@ describe("Lane3Views", () => {
     const { run, opened, errors } = setup();
     run("nexus.openSession");
     run("nexus.openSession", 42);
+    run("nexus.openSession", "ses 01\n<x>");
+    run("nexus.openSession", "a".repeat(129));
     expect(opened.length).toBe(0);
-    expect(errors.length).toBe(2);
+    expect(errors.length).toBe(4);
+  });
+
+  it("forgets a closed panel's listener (no growth across open/close cycles)", () => {
+    const { views, run, opened, commands } = setup();
+    for (let i = 0; i < 5; i++) {
+      run("nexus.openSession", `ses_${i}`);
+      opened[i].panel.dispose();
+    }
+    run("nexus.openSession", "ses_0");
+    expect(opened.length).toBe(6);
+    views.dispose();
+    expect(commands.size).toBe(0);
   });
 
   it("opens the task editor with the task id on <body>", () => {

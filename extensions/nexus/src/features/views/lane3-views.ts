@@ -24,6 +24,11 @@ export interface Lane3Deps {
   showError(message: string): void;
 }
 
+/** Session and task ids arrive from URIs and notifications: short, plain characters only (they end up in tab titles and HTML). */
+export function isPanelId(id: unknown): id is string {
+  return typeof id === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(id);
+}
+
 /** Escape a value for a double-quoted HTML attribute. */
 export function escapeAttr(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
@@ -58,10 +63,11 @@ export class Lane3Views {
       d.registerCommand("nexus.openSlack", () => d.executeCommand(`${CHAT_VIEW}.focus`)),
       d.registerCommand("nexus.openApprovals", () => d.executeCommand(`${APPROVALS_VIEW}.focus`)),
       // Declared in the editor menu; the real flow (share-selection.ts) needs Lane 2's code-ref and Slack services wired in.
+      // DELETE this stub when wiring registerShareSelection: registering the same command twice throws during activation.
       d.registerCommand("nexus.shareSelectionToSlack", () => d.showError("Share to Slack isn't connected yet: the Slack service still has to be wired in.")),
       d.registerCommand("nexus.openSession", (sessionId?: unknown) => {
-        if (typeof sessionId !== "string" || sessionId === "") {
-          d.showError("Open session needs a session id (open it from a thread, the globe or a notification).");
+        if (!isPanelId(sessionId)) {
+          d.showError("Open session needs a valid session id (open it from a thread, the globe or a notification).");
           return;
         }
         this.openSession(sessionId);
@@ -86,6 +92,10 @@ export class Lane3Views {
 
   /** The task editor for a draft task (for Lane 1's "Make task" flow). One panel per task id. */
   openTaskEditor(taskId: string): void {
+    if (!isPanelId(taskId)) {
+      this.deps.showError("Can't open the task editor: invalid task id.");
+      return;
+    }
     this.keyed(this.tasks, taskId, TASK_PANEL, "task", "Task", "task-id");
   }
 
@@ -99,8 +109,18 @@ export class Lane3Views {
       return current;
     }
     const panel = this.deps.makeHost(viewId, entry).openPanel(title);
-    this.disposables.push(panel.onDidDispose(() => forget(undefined)));
+    this.track(panel, () => forget(undefined));
     return panel;
+  }
+
+  /** Run `onClose` when the panel closes, and drop the listener itself then (no growth across open/close cycles). */
+  private track(panel: PanelLike, onClose: () => void): void {
+    const listener = panel.onDidDispose(() => {
+      onClose();
+      const i = this.disposables.indexOf(listener);
+      if (i >= 0) this.disposables.splice(i, 1);
+    });
+    this.disposables.push(listener);
   }
 
   private keyed(map: Map<string, PanelLike>, id: string, viewId: string, entry: string, title: string, attr: string): void {
@@ -112,6 +132,6 @@ export class Lane3Views {
     const panel = this.deps.makeHost(viewId, entry).openPanel(title);
     panel.webview.html = withBodyData(panel.webview.html, attr, id);
     map.set(id, panel);
-    this.disposables.push(panel.onDidDispose(() => map.delete(id)));
+    this.track(panel, () => map.delete(id));
   }
 }

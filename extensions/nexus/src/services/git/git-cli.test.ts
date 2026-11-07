@@ -358,11 +358,10 @@ describe("GitCli read side", () => {
     } finally { rmSync(empty, { recursive: true, force: true }); }
   });
 
-  it("leaves the write half to L2-06", async () => {
-    await expect(git.createSessionWorktree({ sessionId: "s", workspaceId: "w" })).rejects.toThrow(/not implemented in L2-05/);
-    await expect(git.mergeAgentBranch("s")).rejects.toThrow(/not implemented in L2-05/);
-    await expect(git.diff("/x", shas.first)).rejects.toThrow(/not implemented in L2-05/);
-    await expect(git.commitIn("/x", "m", "s")).rejects.toThrow(/not implemented in L2-05/);
-    await expect(git.removeSessionWorktree("s")).rejects.toThrow(/not implemented in L2-05/);
+  it("refuses the write half when no sessions directory is configured", async () => {
+    await expect(git.createSessionWorktree({ sessionId: "s", workspaceId: "w" })).rejects.toThrow(/no sessions directory/);
+    await expect(git.removeSessionWorktree("s")).rejects.toThrow(/no sessions directory/);
+    await expect(git.diff("/x", shas.first)).rejects.toThrow(/no sessions directory/);
+    await expect(git.commitIn("/x", "m", "s")).rejects.toThrow(/no sessions directory/);
   });
 });

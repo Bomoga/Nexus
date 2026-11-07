@@ -5,6 +5,8 @@ import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { devNull } from "node:os";
 import path from "node:path";
+import { mergeAgentBranch } from "./merge";
+import * as wt from "./worktrees";
 import type { BranchInfo, CommitDetail, FullSha, GitService, LogEntry, MergeResult, RefInfo, SessionWorktree } from "./types";
 
 const MAX_OUTPUT = 16 * 1024 * 1024;
@@ -49,6 +51,8 @@ export interface GitCliOptions {
   logger?: { warn(message: string): void };
   /** Ignore the user's and the system's git config (tests). */
   isolatedConfig?: boolean;
+  /** Where session worktrees live (production: the extension's global storage). Must be outside the user's checkout; required for the write half. */
+  sessionsDir?: string;
 }
 
 interface RunResult { stdout: string; code: number }
@@ -66,9 +70,13 @@ export class GitCli implements GitService {
   }
 
   private run(args: string[], options: { allowExit?: number[] } = {}): Promise<RunResult> {
+    return this.runIn(this.repoRoot, args, options);
+  }
+
+  private runIn(cwd: string, args: string[], options: { allowExit?: number[] } = {}): Promise<RunResult> {
     return new Promise((resolve, reject) => {
       execFile("git", ["-c", "core.quotepath=off", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=", ...args], {
-        cwd: this.repoRoot,
+        cwd,
         maxBuffer: MAX_OUTPUT,
         encoding: "utf8",
         env: this.env(),
@@ -258,14 +266,13 @@ export class GitCli implements GitService {
     return stdout.length > 0;
   }
 
-  // ---- write half: L2-06 ----
-  async createSessionWorktree(_input: { sessionId: string; workspaceId: string }): Promise<SessionWorktree> { return notYet(); }
-  async removeSessionWorktree(_sessionId: string): Promise<void> { return notYet(); }
-  async diff(_worktreePath: string, _baseCommit: FullSha, _paths?: string[]): Promise<string> { return notYet(); }
-  async commitIn(_worktreePath: string, _message: string, _sessionId: string): Promise<FullSha> { return notYet(); }
-  async mergeAgentBranch(_sessionId: string): Promise<MergeResult> { return notYet(); }
-}
-
-function notYet(): never {
-  throw new Error("not implemented in L2-05: the git write half lands in L2-06");
+  // ---- write half: worktrees.ts and merge.ts ----
+  private context(): wt.GitContext {
+    return { repoRoot: this.repoRoot, sessionsDir: this.options.sessionsDir, run: (cwd, args, o) => this.runIn(cwd, args, o) };
+  }
+  createSessionWorktree(input: { sessionId: string; workspaceId: string }): Promise<SessionWorktree> { return wt.createSessionWorktree(this.context(), input); }
+  removeSessionWorktree(sessionId: string): Promise<void> { return wt.removeSessionWorktree(this.context(), sessionId); }
+  diff(worktreePath: string, baseCommit: FullSha, paths?: string[]): Promise<string> { return wt.diff(this.context(), worktreePath, baseCommit, paths); }
+  commitIn(worktreePath: string, message: string, sessionId: string): Promise<FullSha> { return wt.commitIn(this.context(), worktreePath, message, sessionId); }
+  mergeAgentBranch(sessionId: string): Promise<MergeResult> { return mergeAgentBranch(this.context(), sessionId); }
 }

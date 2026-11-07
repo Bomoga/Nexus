@@ -1,4 +1,5 @@
-import { mkdtemp, mkdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { link, lstat, mkdtemp, mkdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -6,8 +7,9 @@ import { fx } from "../../contracts/fixtures";
 import type { AgentSession } from "../../contracts";
 import { redact } from "../../shared/redact";
 import { FakeGit } from "../git/fake-git";
-import { splitCommand } from "./commands";
-import { createGate, type SpawnFn } from "./gate";
+import { absolutePath, splitCommand, windowsPlan } from "./commands";
+import { writeFileAt } from "./fs";
+import { createGate, type GateDeps, type SpawnFn } from "./gate";
 import type { ApprovalsHook } from "./types";
 
 type Pending = { action: { kind: string; [k: string]: unknown }; diffPreview?: string; resolve: (d: "approved" | "rejected") => void };
@@ -20,8 +22,8 @@ const approvals: ApprovalsHook = {
   }),
 };
 const flush = () => new Promise(r => setTimeout(r, 20));
-const gate = (extra: { allow?: string[]; spawn?: SpawnFn } = {}) =>
-  createGate({ git, approvals, allowlist: () => extra.allow ?? [], redact, ...(extra.spawn ? { spawn: extra.spawn } : {}) });
+const gate = (extra: { allow?: string[] } & Partial<GateDeps> = {}) =>
+  createGate({ git, approvals, redact, ...extra, allowlist: () => extra.allow ?? [] });
 
 beforeEach(async () => {
   dir = await realpath(await mkdtemp(path.join(tmpdir(), "gate-")));
@@ -194,5 +196,168 @@ describe("git", () => {
     pending[0]!.resolve("rejected");
     expect(await p).toBeInstanceOf(Error);
     expect(spy).not.toHaveBeenCalled();
+  });
+});
+
+describe("hardening", () => {
+  it("refuses .git paths at any depth and case, for read, list and write, without asking", async () => {
+    await mkdir(path.join(dir, ".git", "hooks"), { recursive: true });
+    await mkdir(path.join(dir, "sub"));
+    await writeFile(path.join(dir, "sub", ".git"), "gitdir: x");
+    const g = gate();
+    for (const p of [".git/hooks/pre-commit", ".git/config", ".GIT/config", "a/.Git/x", ".git", "sub/.git", "a\\.git\\config"]) {
+      await expect(g.request(session, "fs.write", { path: p, content: "x" })).rejects.toThrow(/git metadata/);
+    }
+    await expect(g.request(session, "fs.read", { path: ".git" })).rejects.toThrow(/git metadata/);
+    await expect(g.request(session, "fs.list", { path: ".git/hooks", depth: 1 })).rejects.toThrow(/git metadata/);
+    expect(pending).toHaveLength(0);
+  });
+
+  it("refuses a symlink that leads into .git and hides .git from listings", async () => {
+    await mkdir(path.join(dir, ".git"));
+    await symlink(".git", path.join(dir, "sneaky"));
+    await expect(gate().request(session, "fs.write", { path: "sneaky/config", content: "x" })).rejects.toThrow(/git metadata/);
+    expect((await gate().request(session, "fs.list", { path: ".", depth: 1 })).entries).toEqual(["sneaky"]);
+  });
+
+  it("allows names that merely start with two dots", async () => {
+    await gate().request(session, "fs.write", { path: "..foo", content: "ok" });
+    expect((await gate().request(session, "fs.read", { path: "..foo" })).content).toBe("ok");
+    expect(pending).toHaveLength(0);
+  });
+
+  it("refuses hard-linked files for read and write and leaves the other file alone", async () => {
+    await writeFile(path.join(outside, "h"), "secret-outside");
+    await link(path.join(outside, "h"), path.join(dir, "h"));
+    await expect(gate().request(session, "fs.read", { path: "h" })).rejects.toThrow(/hard-linked/);
+    await expect(gate().request(session, "fs.write", { path: "h", content: "pwned" })).rejects.toThrow(/hard-linked/);
+    expect(await readFile(path.join(outside, "h"), "utf8")).toBe("secret-outside");
+  });
+
+  it("the write guard refuses a symlink final component directly", async () => {
+    await writeFile(path.join(outside, "t"), "orig");
+    await symlink(path.join(outside, "t"), path.join(dir, "f"));
+    expect((await lstat(path.join(dir, "f"))).isSymbolicLink()).toBe(true);
+    await expect(writeFileAt(path.join(dir, "f"), "evil")).rejects.toThrow();
+    expect(await readFile(path.join(outside, "t"), "utf8")).toBe("orig");
+  });
+
+  it("redacts file content returned by fs.read", async () => {
+    await writeFile(path.join(dir, ".env"), "key sk-ant-abcdefghijklmnopqrstuv\n");
+    const r = await gate().request(session, "fs.read", { path: ".env" });
+    expect(r.content).not.toContain("sk-ant-abcdefghijklmnopqrstuv");
+  });
+
+  it("carries redacted, capped content on a write_outside_scope approval", async () => {
+    const content = "sk-ant-abcdefghijklmnopqrstuv " + "y".repeat(10_000);
+    void gate().request(session, "fs.write", { path: "../gate-pv.txt", content }).catch(() => undefined);
+    await flush();
+    const preview = pending[0]!.diffPreview!;
+    expect(preview).not.toContain("sk-ant-abcdefghijklmnopqrstuv");
+    expect(preview.length).toBeLessThan(4200);
+    pending[0]!.resolve("rejected");
+  });
+
+  it("refuses to run git, however it is spelled, even when allowlisted", async () => {
+    for (const command of ["git push origin main", "/usr/bin/git status", "GIT.EXE log", "C:\\\\bin\\\\git status"]) {
+      await expect(gate({ allow: [command] }).request(session, "cmd.run", { command, timeoutMs: 1000 })).rejects.toThrow(/git\.commit/);
+    }
+    expect(pending).toHaveLength(0);
+  });
+
+  it("refuses an unknown or inherited request name", async () => {
+    for (const name of ["constructor", "toString", "__proto__", "nope"]) {
+      await expect(gate().request(session, name as never, {} as never)).rejects.toThrow(/unknown gate request/);
+    }
+  });
+
+  it("refuses the commit when the worktree changed during approval", async () => {
+    git.setDiff(dir, "+approved\n");
+    const spy = vi.spyOn(git, "commitIn");
+    const p = gate().request(session, "git.commit", { message: "m" }).catch((e: Error) => e);
+    await flush();
+    git.setDiff(dir, "+approved\n+evil\n");
+    pending[0]!.resolve("approved");
+    expect(String(await p)).toMatch(/changed during approval/);
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it("redacts the commit diffPreview", async () => {
+    git.setDiff(dir, "+k sk-ant-abcdefghijklmnopqrstuv\n");
+    vi.spyOn(git, "commitIn").mockResolvedValue("c".repeat(40));
+    const p = gate().request(session, "git.commit", { message: "m" });
+    await flush();
+    expect(pending[0]!.diffPreview).not.toContain("sk-ant-abcdefghijklmnopqrstuv");
+    pending[0]!.resolve("approved");
+    await p;
+  });
+
+  it("runs without a shell: metacharacters inside quotes arrive as plain arguments", async () => {
+    const r = await gate({ allow: ["echo '$HOME ; *'"] }).request(session, "cmd.run", { command: "echo '$HOME ; *'", timeoutMs: 5000 });
+    expect(r.stdoutTail).toBe("$HOME ; *\n");
+  });
+
+  it("kills the whole process group on timeout, including a grandchild holding stdout", async () => {
+    const marker = path.join(outside, "alive");
+    const script = `require('child_process').spawn('sh',['-c','sleep 1.5; touch ${marker}'],{stdio:'inherit'});setInterval(()=>{},1000)`;
+    await writeFile(path.join(dir, "t.js"), script);
+    const t0 = Date.now();
+    const r = await gate({ allow: ["node t.js"] }).request(session, "cmd.run", { command: "node t.js", timeoutMs: 300 });
+    expect(Date.now() - t0).toBeLessThan(1200);
+    expect(r.exitCode).toBe(137);
+    await new Promise(res => setTimeout(res, 2000));
+    expect(existsSync(marker)).toBe(false);
+  }, 10000);
+
+  it("does not let a worktree binary shadow an allowlisted one through an empty or relative PATH entry", async () => {
+    await writeFile(path.join(dir, "mytool"), "#!/bin/sh\necho SHADOWED\n", { mode: 0o755 });
+    for (const PATH of ["/usr/bin:/bin:", ".:/usr/bin:/bin", ":/usr/bin:/bin", "/usr/bin:/bin::"]) {
+      const r = await gate({ allow: ["mytool"], env: { PATH, HOME: "/tmp" } }).request(session, "cmd.run", { command: "mytool", timeoutMs: 5000 });
+      expect(r.stdoutTail).not.toContain("SHADOWED");
+      expect(r.exitCode).not.toBe(0);
+    }
+  });
+
+  it("keeps only absolute PATH entries", () => {
+    expect(absolutePath("/a::.:rel:/b:", "linux")).toBe("/a:/b");
+    expect(absolutePath(undefined, "linux")).toBe("/usr/bin:/bin");
+    expect(absolutePath("C:\\bin;.;tools;\\\\srv\\x", "win32")).toBe("C:\\bin;\\\\srv\\x");
+  });
+});
+
+describe("windows", () => {
+  const env = { PATH: "C:\\bin;C:\\npm\\", PATHEXT: ".COM;.EXE;.BAT;.CMD", ComSpec: "C:\\Windows\\System32\\cmd.exe" };
+  const has = (...files: string[]) => (f: string) => files.includes(f);
+
+  it("runs an .exe directly", () => {
+    expect(windowsPlan(["node", "a.js"], env, has("C:\\bin\\node.EXE"))).toEqual({ file: "C:\\bin\\node.EXE", args: ["a.js"], verbatim: false });
+  });
+
+  it("runs a .cmd shim through cmd.exe /d /s /c with escaped arguments", () => {
+    const plan = windowsPlan(["npm", "test", 'a "b" 100%'], env, has("C:\\npm\\npm.CMD"));
+    expect(plan).toEqual({ file: env.ComSpec, args: ["/d", "/s", "/c", '"' + '"C:\\npm\\npm.CMD" "test" "a ""b"" 100%%"' + '"'], verbatim: true });
+  });
+
+  it("refuses cmd metacharacters in a shim's arguments", () => {
+    for (const bad of ["a&b", "a|b", "a<b", "a>b", "a^b"]) {
+      expect(() => windowsPlan(["npm", bad], env, has("C:\\npm\\npm.CMD"))).toThrow();
+    }
+  });
+
+  it("hands the gate a win32 spawn with only the allowed environment and a taskkill on timeout", async () => {
+    const calls: Array<{ file: string; args: string[]; env: NodeJS.ProcessEnv }> = [];
+    const { EventEmitter } = await import("node:events");
+    const { PassThrough } = await import("node:stream");
+    const spawn = ((file: string, args: string[], options: { env: NodeJS.ProcessEnv }) => {
+      calls.push({ file, args, env: options.env });
+      const child = Object.assign(new EventEmitter(), { pid: 4242, stdout: new PassThrough(), stderr: new PassThrough(), kill: () => true });
+      if (file !== "taskkill") setTimeout(() => child.emit("exit", 0, null), 5);
+      return child;
+    }) as unknown as SpawnFn;
+    const r = await gate({ allow: ["npm test"], spawn, platform: "win32", fileExists: has("C:\\npm\\npm.CMD"),
+      env: { ...env, HOME: "h", SystemRoot: "C:\\Windows", SLACK_TOKEN: "xoxp-1" } }).request(session, "cmd.run", { command: "npm test", timeoutMs: 1000 });
+    expect(r.exitCode).toBe(0);
+    expect(calls[0]!.file).toBe(env.ComSpec);
+    expect(Object.keys(calls[0]!.env).sort()).toEqual(["ComSpec", "HOME", "PATH", "PATHEXT", "SystemRoot"]);
   });
 });

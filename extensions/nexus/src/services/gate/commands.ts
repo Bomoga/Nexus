@@ -57,3 +57,47 @@ export function isAllowlisted(argv: string[], allowlist: string[]): boolean {
 export function tail(text: string, max: number): string {
   return text.length <= max ? text : `[... ${text.length - max} chars dropped]\n${text.slice(text.length - max)}`;
 }
+
+/** True when argv[0] names git (any directory, git or git.exe, any case). The agent never runs git itself; commits go through git.commit. */
+export function isGitBinary(argv0: string): boolean {
+  const base = argv0.split(/[\\/]/).pop()!.toLowerCase();
+  return base === "git" || base === "git.exe";
+}
+
+/** Keeps only absolute PATH entries, so an empty entry or "." cannot let a binary in the worktree shadow an allowlisted one. */
+export function absolutePath(value: string | undefined, platform: NodeJS.Platform): string {
+  const win = platform === "win32";
+  const kept = (value ?? "").split(win ? ";" : ":").filter(e => (win ? /^(?:[A-Za-z]:[\\/]|\\\\)/.test(e) : e.startsWith("/")));
+  return kept.length > 0 ? kept.join(win ? ";" : ":") : win ? "" : "/usr/bin:/bin";
+}
+
+export interface SpawnPlan { file: string; args: string[]; verbatim: boolean }
+
+/** Escapes one argument for cmd.exe inside a /s /c line; refuses characters that cmd would interpret. */
+function cmdQuote(arg: string): string {
+  if (/[\^&|<>\r\n\0]/.test(arg)) throw new CommandRefused("argument contains a character cmd.exe would interpret");
+  return `"${arg.replace(/%/g, "%%").replace(/"/g, '""')}"`;
+}
+
+/**
+ * What to hand to spawn on win32. Node refuses to spawn .cmd and .bat without a shell, so argv[0] is resolved through
+ * PATH and PATHEXT and a shim runs via `cmd.exe /d /s /c "<line>"` with every argument escaped. Pure: `exists` and `env` are injected.
+ */
+export function windowsPlan(argv: string[], env: Record<string, string | undefined>, exists: (file: string) => boolean): SpawnPlan {
+  const exts = (env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD").split(";").filter(Boolean);
+  const dirs = (env.PATH ?? "").split(";").filter(Boolean);
+  const name = argv[0]!;
+  const hasDir = /[\\/]/.test(name);
+  const hasExt = exts.some(e => name.toLowerCase().endsWith(e.toLowerCase()));
+  const candidates: string[] = [];
+  for (const d of hasDir ? [""] : dirs) {
+    const base = d ? `${d.replace(/[\\/]+$/, "")}\\${name}` : name;
+    if (hasExt) candidates.push(base);
+    for (const e of exts) candidates.push(base + e);
+  }
+  const found = candidates.find(exists);
+  if (!found) return { file: name, args: argv.slice(1), verbatim: false };
+  if (!/\.(cmd|bat)$/i.test(found)) return { file: found, args: argv.slice(1), verbatim: false };
+  const line = [found, ...argv.slice(1)].map(cmdQuote).join(" ");
+  return { file: env.ComSpec ?? "cmd.exe", args: ["/d", "/s", "/c", `"${line}"`], verbatim: true };
+}

@@ -1,6 +1,6 @@
 // Path confinement and file access for the gate. Paths are untrusted model output; every check works on real paths.
 import { constants as fsc } from "node:fs";
-import { lstat, mkdir, open, readdir, realpath } from "node:fs/promises";
+import { lstat, mkdir, open, readdir, realpath, type FileHandle } from "node:fs/promises";
 import path from "node:path";
 
 export const MAX_READ_BYTES = 200_000;
@@ -9,7 +9,12 @@ export const MAX_LIST_ENTRIES = 2000;
 /** True when `target` is `root` or inside it. Both must already be real, absolute paths. */
 export function isInside(root: string, target: string): boolean {
   const rel = path.relative(root, target);
-  return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
+  return rel === "" || (rel !== ".." && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel));
+}
+
+/** True when any path segment (either separator) is .git, in any case. Git metadata is never reachable through the gate. */
+export function hasGitComponent(p: string): boolean {
+  return p.split(/[\\/]/).some(seg => seg.toLowerCase() === ".git");
 }
 
 /** The real path of `p` even if it does not exist yet: the deepest existing ancestor is realpath'd (following symlinks) and the rest appended. */
@@ -33,14 +38,24 @@ export interface Resolved { root: string; target: string; inside: boolean }
 /** Resolves `p` (relative to the worktree) to a real path and says whether it stays inside the real worktree. */
 export async function resolveIn(worktree: string, p: string): Promise<Resolved> {
   if (p.includes("\0")) throw new Error("path contains a NUL byte");
+  if (hasGitComponent(p)) throw new Error("git metadata is off limits");
   const root = await realpath(worktree);
   const target = await realish(path.resolve(root, p));
-  return { root, target, inside: isInside(root, target) };
+  const inside = isInside(root, target);
+  // A symlink inside the worktree may lead to .git; check where the path really lands.
+  if (hasGitComponent(inside ? path.relative(root, target) : target)) throw new Error("git metadata is off limits");
+  return { root, target, inside };
+}
+
+async function refuseHardLink(handle: FileHandle): Promise<void> {
+  const st = await handle.stat();
+  if (st.isFile() && st.nlink > 1) throw new Error("refusing to touch a hard-linked file");
 }
 
 export async function readCapped(file: string): Promise<{ content: string; truncated: boolean }> {
-  const handle = await open(file, "r");
+  const handle = await open(file, fsc.O_RDONLY | fsc.O_NOFOLLOW);
   try {
+    await refuseHardLink(handle);
     const buf = Buffer.alloc(MAX_READ_BYTES + 1);
     const { bytesRead } = await handle.read(buf, 0, buf.length, 0);
     const truncated = bytesRead > MAX_READ_BYTES;
@@ -55,7 +70,7 @@ export async function listTree(root: string, dir: string, depth: number): Promis
     const entries = (await readdir(d, { withFileTypes: true })).sort((a, b) => a.name.localeCompare(b.name));
     for (const e of entries) {
       if (out.length >= MAX_LIST_ENTRIES) return;
-      if (e.name === ".git") continue;
+      if (hasGitComponent(e.name)) continue;
       const full = path.join(d, e.name);
       const rel = path.relative(root, full).split(path.sep).join("/");
       out.push(e.isDirectory() ? `${rel}/` : rel);
@@ -72,8 +87,10 @@ export async function writeFileAt(target: string, content: string): Promise<numb
   try {
     if ((await lstat(target)).isSymbolicLink()) throw new Error("refusing to write through a symlink");
   } catch (err) { if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err; }
-  const handle = await open(target, fsc.O_WRONLY | fsc.O_CREAT | fsc.O_TRUNC | fsc.O_NOFOLLOW, 0o644);
+  const handle = await open(target, fsc.O_WRONLY | fsc.O_CREAT | fsc.O_NOFOLLOW, 0o644);
   try {
+    await refuseHardLink(handle);   // before truncating: a hard link would write through to a file elsewhere
+    await handle.truncate(0);
     const data = Buffer.from(content, "utf8");
     await handle.write(data, 0, data.length, 0);
     return data.length;

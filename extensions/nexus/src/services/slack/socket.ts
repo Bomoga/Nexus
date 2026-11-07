@@ -2,7 +2,7 @@
 // Every handler is async and short; a dropped or failed connection is retried with backoff; nothing here logs or returns a token.
 import { App, LogLevel, SocketModeReceiver } from "@slack/bolt";
 import type { ChatMessage, SlackUser } from "../../contracts";
-import type { BotTokenProvider, BotTokens } from "./bot";
+import type { BotIdentity, BotTokenProvider, BotTokens } from "./bot";
 import type { Disposable, SlackMessageEvent } from "./types";
 import { isShownSlackMsg, mapSlackMessage, toSlackUser, type SlackMsg, type SlackUserInfo } from "./web-client";
 
@@ -10,19 +10,24 @@ import { isShownSlackMsg, mapSlackMessage, toSlackUser, type SlackMsg, type Slac
 export interface SlackEventMessage extends SlackMsg {
   channel?: string;
   hidden?: boolean;
+  event_ts?: string;
+  deleted_ts?: string;
   message?: SlackMsg;   // message_changed: the new version
 }
+
 
 export interface BoltActionArgs {
   ack(): Promise<unknown>;
   body: {
     type?: string;
-    user?: { id?: string; name?: string; username?: string };
+    team?: { id?: string };
+    user?: { id?: string; name?: string; username?: string; team_id?: string };
     channel?: { id?: string };
     container?: { channel_id?: string; message_ts?: string };
-    message?: { ts?: string };
+    /** The message the button sits on, as Slack reports it (used to tie a click to the bot's own card). */
+    message?: { ts?: string; user?: string; bot_id?: string };
   };
-  action: { action_id?: string; value?: string };
+  action: { action_id?: string; block_id?: string; value?: string };
 }
 
 export interface BoltClientLike {
@@ -36,6 +41,8 @@ export interface BoltLike {
   error(handler: (e: unknown) => Promise<void>): void;
   /** Reports Socket Mode connect and disconnect (the underlying client reconnects on its own). */
   onConnection(cb: (connected: boolean) => void): void;
+  /** Called when the SDK's own reconnect path failed for good: the client is dead and must be rebuilt by the caller. */
+  onDead(cb: () => void): void;
   start(): Promise<unknown>;
   stop(): Promise<unknown>;
   client: BoltClientLike;
@@ -46,19 +53,50 @@ const SILENT_LOGGER = {
   setLevel() {}, getLevel: () => LogLevel.ERROR, setName() {},
 };
 
-/** The real Bolt App in Socket Mode with the app-level token. Constructing it does no network I/O. */
-export function createBoltApp(tokens: BotTokens): BoltLike {
-  const receiver = new SocketModeReceiver({ appToken: tokens.appToken, logger: SILENT_LOGGER, logLevel: LogLevel.ERROR });
+/** Connection retries for apps.connections.open: short, so a bad token fails fast and SlackSocket's own backoff takes over. */
+const CONNECT_RETRY = { retries: 2, factor: 1.5, minTimeout: 500, maxTimeout: 3_000 };
+
+/**
+ * The real Bolt App in Socket Mode with the app-level token. Construction does no network I/O: token verification is off and the
+ * bot's ids come from our own auth.test, so Bolt never calls auth.test itself (and cannot leave an unhandled rejection).
+ */
+export function createBoltApp(tokens: BotTokens, identity: BotIdentity): BoltLike {
+  const receiver = new SocketModeReceiver({
+    appToken: tokens.appToken, logger: SILENT_LOGGER, logLevel: LogLevel.ERROR,
+    installerOptions: { clientOptions: { retryConfig: CONNECT_RETRY } },
+  });
   // ignoreSelf off: the bot's own posts and edits are part of the live feed too (consumers match them by id).
-  const app = new App({ token: tokens.botToken, receiver, logger: SILENT_LOGGER, logLevel: LogLevel.ERROR, ignoreSelf: false });
+  const app = new App({
+    token: tokens.botToken, receiver, logger: SILENT_LOGGER, logLevel: LogLevel.ERROR, ignoreSelf: false,
+    tokenVerificationEnabled: false, botUserId: identity.userId, botId: identity.botId,
+  });
+  // The SDK reconnects by calling client.start() from a timer and drops the promise, so a failure there is an unhandled rejection and a
+  // silently dead client. Wrap start: the first connect still rejects to the caller; later failures are caught and reported as "dead".
+  const client = receiver.client;
+  const originalStart = client.start.bind(client);
+  const deadListeners: (() => void)[] = [];
+  let everConnected = false;
+  client.start = async () => {
+    try {
+      const r = await originalStart();
+      everConnected = true;
+      return r;
+    } catch (e) {
+      if (!everConnected) throw e;
+      for (const cb of deadListeners) { try { cb(); } catch { /* observer */ } }
+      return undefined as never;
+    }
+  };
   return {
     event: (name, handler) => { app.event(name, async ({ event }) => { await handler({ event: event as unknown as SlackEventMessage }); }); },
     action: (id, handler) => { app.action(id, async ({ ack, body, action }) => { await handler({ ack: () => ack(), body: body as unknown as BoltActionArgs["body"], action: action as unknown as BoltActionArgs["action"] }); }); },
     error: handler => { app.error(async e => { await handler(e); }); },
     onConnection: cb => {
-      receiver.client.on("connected", () => cb(true));
-      receiver.client.on("disconnected", () => cb(false));
+      // only a live websocket counts as connected: connecting, reconnecting and disconnected are all "down"
+      client.on("connected", () => cb(true));
+      for (const down of ["connecting", "reconnecting", "disconnecting", "disconnected"] as const) client.on(down, () => cb(false));
     },
+    onDead: cb => { deadListeners.push(cb); },
     start: () => app.start(),
     stop: () => app.stop(),
     client: app.client as unknown as BoltClientLike,
@@ -67,8 +105,10 @@ export function createBoltApp(tokens: BotTokens): BoltLike {
 
 export interface SocketOptions {
   getTokens: BotTokenProvider;
+  /** The bot's own ids (auth.test), passed to Bolt so it makes no auth call of its own. */
+  getIdentity: () => Promise<BotIdentity>;
   /** Test seam; defaults to createBoltApp. */
-  makeApp?: (tokens: BotTokens) => BoltLike;
+  makeApp?: (tokens: BotTokens, identity: BotIdentity) => BoltLike;
   /** Registers more handlers (approval buttons) on the app before it starts. */
   configure?: (app: BoltLike) => void;
   initialBackoffMs?: number;
@@ -77,10 +117,14 @@ export interface SocketOptions {
   now?: () => number;
 }
 
+const SEEN_LIMIT = 2_000;
+
 type Listener = { fn: (evt: SlackMessageEvent) => void; channelIds?: string[] };
 
 export class SlackSocket {
   private app: BoltLike | undefined;
+  private starting: BoltLike | undefined;
+  private readonly seen = new Map<string, true>();
   private running = false;
   private connected = false;
   private generation = 0;
@@ -110,10 +154,12 @@ export class SlackSocket {
   async stop(): Promise<void> {
     this.running = false;
     this.generation++;
-    const app = this.app;
+    const apps = [this.app, this.starting];
     this.app = undefined;
+    this.starting = undefined;
     this.setConnected(false);
-    try { await app?.stop(); } catch { /* already down */ }
+    // also stops an attempt still in flight (its start() then rejects or resolves into a superseded generation)
+    for (const app of apps) { try { await app?.stop(); } catch { /* already down */ } }
   }
 
   onMessage(fn: (evt: SlackMessageEvent) => void, channelIds?: string[]): Disposable {
@@ -136,20 +182,36 @@ export class SlackSocket {
     if (!tokens || gen !== this.generation) return false;
     let app: BoltLike | undefined;
     try {
-      app = (this.opts.makeApp ?? createBoltApp)(tokens);
-      app.event("message", async ({ event }) => { await this.onEvent(app as BoltLike, event); });
+      const identity = await this.opts.getIdentity();
+      if (gen !== this.generation) return false;
+      app = (this.opts.makeApp ?? createBoltApp)(tokens, identity);
+      const mine = app;
+      app.event("message", async ({ event }) => { if (gen === this.generation) await this.onEvent(mine, event); });
       app.error(async () => { /* handler errors are already contained; never echo them */ });
       app.onConnection(up => { if (gen === this.generation) this.setConnected(up); });
+      app.onDead(() => { void this.onDead(gen, mine); });
       this.opts.configure?.(app);
+      this.starting = app;
       await app.start();
     } catch {
+      if (this.starting === app) this.starting = undefined;
       try { await app?.stop(); } catch { /* never started */ }
       return false;
     }
+    if (this.starting === app) this.starting = undefined;
     if (gen !== this.generation) { try { await app.stop(); } catch { /* superseded */ } return false; }
     this.app = app;
     this.setConnected(true);
     return true;
+  }
+
+  /** The SDK gave up reconnecting: drop the dead client and start over with our own backoff. */
+  private async onDead(gen: number, app: BoltLike): Promise<void> {
+    if (gen !== this.generation || this.app !== app) return;
+    this.app = undefined;
+    this.setConnected(false);
+    try { await app.stop(); } catch { /* already dead */ }
+    if (this.running && gen === this.generation) void this.retry(gen);
   }
 
   private async retry(gen: number): Promise<void> {
@@ -172,10 +234,17 @@ export class SlackSocket {
   private async onEvent(app: BoltLike, evt: SlackEventMessage): Promise<void> {
     try {
       const changed = evt.subtype === "message_changed";
+      // Slack always marks message_changed hidden: true, so that one subtype is the exception to dropping hidden events.
+      if (evt.hidden && !changed) return;
       const raw = changed ? evt.message : evt;
       const channelId = evt.channel;
-      if (!raw || !channelId || evt.hidden || !isShownSlackMsg(raw)) return;
+      if (!raw || !channelId || !isShownSlackMsg(raw)) return;
       if (!changed && (evt.subtype === "message_deleted" || evt.subtype === "message_replied")) return;
+      // Socket Mode redelivers after a reconnect: one live event per message (and per edit).
+      const key = changed ? `${channelId}:${raw.ts}:edit:${evt.ts ?? ""}` : `${channelId}:${raw.ts}`;
+      if (this.seen.has(key)) return;
+      this.seen.set(key, true);
+      if (this.seen.size > SEEN_LIMIT) this.seen.delete(this.seen.keys().next().value as string);
       const known = raw.user ? await this.lookupUser(app, raw.user) : undefined;
       const message = mapSlackMessage(channelId, raw, known);
       this.emit({ type: changed ? "message_changed" : "message", message });

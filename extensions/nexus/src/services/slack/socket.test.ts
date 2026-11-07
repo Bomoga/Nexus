@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { ChatMessage } from "../../contracts";
 import { encodeCodeRef } from "../../contracts";
 import { fx } from "../../contracts/fixtures";
-import { makeFakeBolt } from "./fake-bolt.test-util";
+import { getIdentity, identity, makeFakeBolt } from "./fake-bolt.test-util";
 import { SlackSocket, createBoltApp } from "./socket";
 import type { SlackMessageEvent } from "./types";
 
@@ -10,7 +10,7 @@ const tokens = { botToken: "xoxb-SECRET-bot", appToken: "xapp-SECRET-app" };
 
 function setup(over: Partial<ConstructorParameters<typeof SlackSocket>[0]> = {}) {
   const bolt = makeFakeBolt();
-  const socket = new SlackSocket({ getTokens: async () => tokens, makeApp: () => bolt.app, sleep: async () => undefined, ...over });
+  const socket = new SlackSocket({ getIdentity, getTokens: async () => tokens, makeApp: () => bolt.app, sleep: async () => undefined, ...over });
   const events: SlackMessageEvent[] = [];
   socket.onMessage(e => events.push(e));
   return { bolt, socket, events };
@@ -52,7 +52,7 @@ describe("SlackSocket events", () => {
   it("message_changed replaces: emits the new version with the original ts", async () => {
     const { bolt, socket, events } = setup();
     await socket.start();
-    await bolt.message({ type: "message", subtype: "message_changed", channel: "C1", ts: "12.000900", message: { type: "message", user: "U_BOT", bot_id: "B1", ts: "12.000100", text: "progress 2/3" } });
+    await bolt.message({ type: "message", subtype: "message_changed", hidden: true, channel: "C1", ts: "12.000900", event_ts: "12.000900", message: { type: "message", user: "U_BOT", bot_id: "B1", ts: "12.000100", text: "progress 2/3" } });
     expect(events).toHaveLength(1);
     expect(events[0].type).toBe("message_changed");
     expect((events[0] as { message: ChatMessage }).message).toMatchObject({ id: "C1:12.000100", text: "progress 2/3", sentVia: "bot" });
@@ -63,10 +63,24 @@ describe("SlackSocket events", () => {
     await socket.start();
     await bolt.message({ type: "message", subtype: "channel_join", channel: "C1", user: "U_ADRIAN", ts: "1.1", text: "joined" });
     await bolt.message({ type: "message", subtype: "message_deleted", channel: "C1", ts: "1.2" });
-    await bolt.message({ type: "message", subtype: "message_changed", channel: "C1", ts: "1.3", hidden: true, message: { user: "U_ADRIAN", ts: "1.0", text: "x" } });
+    await bolt.message({ type: "message", subtype: "message_deleted", hidden: true, channel: "C1", ts: "1.3", deleted_ts: "1.0" });
+    await bolt.message({ type: "message", subtype: "pinned_item", hidden: true, channel: "C1", user: "U_ADRIAN", ts: "1.35", text: "pinned" });
     await bolt.message({ type: "message", user: "U_ADRIAN", ts: "1.4", text: "no channel" });
     await bolt.message({} as never);
     expect(events).toEqual([]);
+  });
+
+  it("delivers a repeated event once, and each distinct edit once, with bounded memory", async () => {
+    const { bolt, socket, events } = setup();
+    await socket.start();
+    await bolt.message({ ...ownPost, ts: "7.1" });
+    await bolt.message({ ...ownPost, ts: "7.1" });   // socket redelivery after a reconnect
+    const edit = (evtTs: string) => bolt.message({ type: "message", subtype: "message_changed", hidden: true, channel: "C1", ts: evtTs, message: { user: "U_ADRIAN", ts: "7.1", text: evtTs } });
+    await edit("7.2"); await edit("7.2"); await edit("7.3");
+    expect(events.map(e => e.type)).toEqual(["message", "message_changed", "message_changed"]);
+    for (let i = 0; i < 2_100; i++) await bolt.message({ ...ownPost, ts: `8.${i}` });
+    await bolt.message({ ...ownPost, ts: "7.1" });   // evicted long ago: allowed again, memory stayed bounded
+    expect(events.length).toBe(3 + 2_100 + 1);
   });
 
   it("filters by channel and isolates throwing listeners", async () => {
@@ -114,7 +128,7 @@ describe("SlackSocket connection", () => {
     const bolt = makeFakeBolt();
     bolt.app.start.mockRejectedValueOnce(new Error("invalid_auth xapp-SECRET-app")).mockRejectedValueOnce(new Error("net")).mockResolvedValue(undefined);
     const sleeps: number[] = [];
-    const socket = new SlackSocket({ getTokens: async () => tokens, makeApp: () => bolt.app, initialBackoffMs: 100, maxBackoffMs: 250, sleep: async ms => { sleeps.push(ms); } });
+    const socket = new SlackSocket({ getIdentity, getTokens: async () => tokens, makeApp: () => bolt.app, initialBackoffMs: 100, maxBackoffMs: 250, sleep: async ms => { sleeps.push(ms); } });
     expect(await socket.start()).toBe(false);
     await vi.waitFor(() => expect(socket.isConnected()).toBe(true));
     expect(sleeps).toHaveLength(2);
@@ -126,7 +140,7 @@ describe("SlackSocket connection", () => {
     let calls = 0;
     const bolt = makeFakeBolt();
     let release!: () => void;
-    const socket = new SlackSocket({ getTokens: async () => (calls++ === 0 ? null : tokens), makeApp: () => bolt.app, sleep: () => new Promise<void>(r => { release = r; }) });
+    const socket = new SlackSocket({ getIdentity, getTokens: async () => (calls++ === 0 ? null : tokens), makeApp: () => bolt.app, sleep: () => new Promise<void>(r => { release = r; }) });
     expect(await socket.start()).toBe(false);
     await socket.stop();
     release();
@@ -139,7 +153,7 @@ describe("SlackSocket connection", () => {
     const bolt = makeFakeBolt();
     bolt.app.start.mockRejectedValueOnce(new Error("bad xapp-SECRET-app"));
     const events: SlackMessageEvent[] = [];
-    const socket = new SlackSocket({ getTokens: async () => tokens, makeApp: () => bolt.app, sleep: async () => undefined });
+    const socket = new SlackSocket({ getIdentity, getTokens: async () => tokens, makeApp: () => bolt.app, sleep: async () => undefined });
     socket.onMessage(e => events.push(e));
     await socket.start();
     await vi.waitFor(() => expect(socket.isConnected()).toBe(true));
@@ -151,9 +165,66 @@ describe("SlackSocket connection", () => {
   });
 });
 
+describe("connection robustness", () => {
+  it("restarts with its own backoff when the SDK reports the client dead", async () => {
+    const apps = [makeFakeBolt(), makeFakeBolt()];
+    let n = 0;
+    const socket = new SlackSocket({ getIdentity, getTokens: async () => tokens, makeApp: () => apps[n++].app, sleep: async () => undefined });
+    await socket.start();
+    expect(socket.isConnected()).toBe(true);
+    apps[0].die();
+    await vi.waitFor(() => expect(n).toBe(2));
+    await vi.waitFor(() => expect(socket.isConnected()).toBe(true));
+    expect(apps[0].app.stop).toHaveBeenCalled();
+    await socket.stop();
+  });
+
+  it("stop() cancels an attempt in flight and drops its events", async () => {
+    const bolt = makeFakeBolt();
+    let finish!: () => void;
+    bolt.app.start.mockImplementation(() => new Promise<undefined>(r => { finish = () => r(undefined); }));
+    const socket = new SlackSocket({ getIdentity, getTokens: async () => tokens, makeApp: () => bolt.app, sleep: async () => undefined });
+    const events: SlackMessageEvent[] = [];
+    socket.onMessage(e => events.push(e));
+    const started = socket.start();
+    await vi.waitFor(() => expect(bolt.app.start).toHaveBeenCalled());
+    await socket.stop();
+    expect(bolt.app.stop).toHaveBeenCalled();
+    finish();
+    expect(await started).toBe(false);
+    await bolt.message({ ...ownPost, ts: "9.9" });   // superseded generation
+    expect(events).toEqual([]);
+    expect(socket.isConnected()).toBe(false);
+  });
+
+  it("reconnecting counts as disconnected", async () => {
+    const { bolt, socket } = setup();
+    const seen: boolean[] = [];
+    socket.onConnection(c => seen.push(c));
+    await socket.start();
+    bolt.connection(false);   // the SDK's "reconnecting" state is wired to false by createBoltApp
+    expect(socket.isConnected()).toBe(false);
+  });
+});
+
 describe("createBoltApp", () => {
-  it("builds the real Bolt app in Socket Mode without any network I/O", () => {
-    const app = createBoltApp(tokens);
+  it("does no network I/O and leaves no unhandled rejection at construction", async () => {
+    const calls: unknown[] = [];
+    const unhandled: unknown[] = [];
+    const onUnhandled = (e: unknown) => unhandled.push(e);
+    process.on("unhandledRejection", onUnhandled);
+    const orig = globalThis.fetch;
+    globalThis.fetch = (async (...a: unknown[]) => { calls.push(a); throw new Error("no network in unit tests"); }) as never;
+    try {
+      createBoltApp(tokens, identity);
+      await new Promise(r => setTimeout(r, 100));
+    } finally { globalThis.fetch = orig; process.off("unhandledRejection", onUnhandled); }
+    expect(calls).toEqual([]);
+    expect(unhandled).toEqual([]);
+  });
+
+  it("builds the real Bolt app in Socket Mode", () => {
+    const app = createBoltApp(tokens, identity);
     expect(typeof app.start).toBe("function");
     expect(typeof app.client.users.info).toBe("function");
     expect(() => app.action("nexus.approve", async () => undefined)).not.toThrow();

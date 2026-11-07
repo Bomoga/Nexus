@@ -60,6 +60,8 @@ export interface CreateSlackServiceOptions {
   getBotTokens: BotTokenProvider;
   /** approvals.resolve in the host. */
   resolve: ResolveApproval;
+  /** The stored approval; a button click is accepted only on the card its slackMessage names. */
+  getApproval: (approvalId: string) => ApprovalRequest | undefined | Promise<ApprovalRequest | undefined>;
   getReview?: (approvalId: string) => SwarmReview | undefined;
   /** Test seams, passed through. */
   webOptions?: Pick<WebClientOptions, "makeApi" | "now" | "botMembershipTtlMs">;
@@ -73,17 +75,19 @@ export function createSlackService(opts: CreateSlackServiceOptions): ComposedSla
   const socket = new SlackSocket({
     ...opts.socketOptions,
     getTokens: opts.getBotTokens,
-    configure: app => registerInteractivity(app, { resolve: opts.resolve, bot, botUserId: async () => (await bot.identity()).userId, getReview: opts.getReview }),
+    getIdentity: () => bot.identity(),
+    configure: app => registerInteractivity(app, { resolve: opts.resolve, bot, botIdentity: () => bot.identity(), getApproval: opts.getApproval, getReview: opts.getReview }),
   });
   // SlackWebClient needs the bot's user id up front (Channel.botIsMember), so it is built on first use, once the bot token has answered.
+  // While the bot token cannot answer, one client without a bot id is reused (so its caches survive); it is replaced once, when the id is known.
   let built: UserSlack | undefined;
+  let withoutBot: UserSlack | undefined;
   const build = async (): Promise<UserSlack> => {
     if (built) return built;
     let botUserId: string | undefined;
     try { botUserId = (await bot.identity()).userId; } catch { /* no bot token yet: botIsMember reads false */ }
-    const client = new SlackWebClient({ getToken: opts.getUserToken, botUserId, ...opts.webOptions });
-    if (botUserId) built = client;
-    return client;
+    if (!botUserId) return (withoutBot ??= new SlackWebClient({ getToken: opts.getUserToken, ...opts.webOptions }));
+    return (built = new SlackWebClient({ getToken: opts.getUserToken, botUserId, ...opts.webOptions }));
   };
   const web: UserSlack = {
     postAsUser: async o => (await build()).postAsUser(o),

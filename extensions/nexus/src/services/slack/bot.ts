@@ -10,7 +10,7 @@ export type BotTokenProvider = () => Promise<BotTokens | null>;
 
 /** The slice of @slack/web-api's WebClient the bot calls; tests inject a fake. */
 export interface BotApi {
-  auth: { test(): Promise<{ user_id?: string; user?: string; bot_id?: string }> };
+  auth: { test(): Promise<{ user_id?: string; user?: string; bot_id?: string; team_id?: string }> };
   chat: {
     postMessage(a: { channel: string; text: string; thread_ts?: string; blocks?: unknown[] }): Promise<{ ts?: string; message?: SlackMsg }>;
     update(a: { channel: string; ts: string; text: string; blocks?: unknown[] }): Promise<{ ts?: string; message?: SlackMsg }>;
@@ -23,7 +23,8 @@ export interface BotOptions {
   makeApi?: (botToken: string) => BotApi;
 }
 
-export interface BotIdentity { userId: string; name: string }
+/** The bot's own identity from auth.test: its user id, bot id and workspace (team) id. */
+export interface BotIdentity { userId: string; name: string; botId?: string; teamId?: string }
 
 export class SlackBot {
   private api: BotApi | undefined;
@@ -39,7 +40,7 @@ export class SlackBot {
     let r;
     try { r = await api.auth.test(); } catch (e) { throw safeError(e, "auth.test"); }
     if (!r.user_id) throw new Error("slack auth.test returned no bot user");
-    const me = { userId: r.user_id, name: r.user ?? r.user_id };
+    const me: BotIdentity = { userId: r.user_id, name: r.user ?? r.user_id, ...(r.bot_id ? { botId: r.bot_id } : {}), ...(r.team_id ? { teamId: r.team_id } : {}) };
     if (this.api === api) this.me = me;
     return me;
   }

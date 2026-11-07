@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { SlackStatus } from "../../contracts";
-import { BOT_USER, makeFakeBolt, users } from "./fake-bolt.test-util";
+import { BOT_USER, TEAM, makeFakeBolt, users } from "./fake-bolt.test-util";
 import { APPROVE_ACTION_ID } from "./interactivity";
 import { createSlackService } from "./slack-service";
 import type { SlackMessageEvent, SlackService } from "./types";
@@ -23,14 +23,16 @@ function build() {
     chat: { postMessage: vi.fn(async () => ({ ts: "9.1", message: { text: "from me" } })) },
   };
   const botApi = {
-    auth: { test: vi.fn(async () => ({ user_id: BOT_USER, user: "nexus" })) },
+    auth: { test: vi.fn(async () => ({ user_id: BOT_USER, user: "nexus", bot_id: "B1", team_id: TEAM })) },
     chat: { postMessage: vi.fn(async () => ({ ts: "9.2" })), update: vi.fn(async (a: { ts: string; text: string }) => ({ ts: a.ts })) },
   };
+  const approval = { id: "ap-1", sessionId: "s", action: { kind: "run_command" as const, command: "x" }, reason: "r", requestedAt: "2026-11-07T04:00:00.000Z", slackMessage: { channelId: "C1", ts: "9.2" } };
+  const getApproval = vi.fn(() => approval);
   const resolve = vi.fn(async () => ({ won: true, approval: { id: "ap-1", sessionId: "s", action: { kind: "run_command" as const, command: "x" }, reason: "r", requestedAt: "2026-11-07T04:00:00.000Z", decision: "approved" as const, decidedBy: { via: "slack" as const, userId: "U_ADRIAN" } } }));
   const svc = createSlackService({
     getUserToken: async () => ({ token: "xoxp-SECRET", source: "manual" }),
     getBotTokens: async () => tokens,
-    resolve,
+    resolve, getApproval,
     webOptions: { makeApi: () => userApi as unknown as SlackApi },
     makeBotApi: () => botApi as unknown as BotApi,
     socketOptions: { makeApp: () => bolt.app, sleep: async () => undefined },
@@ -84,10 +86,10 @@ describe("createSlackService", () => {
   it("wires the approval buttons: a human click resolves and edits the card via the bot", async () => {
     const { svc, bolt, resolve, botApi } = build();
     await svc.start();
-    await bolt.click(APPROVE_ACTION_ID, { body: { user: { id: "U_ADRIAN" }, container: { channel_id: "C1", message_ts: "9.2" } }, action: { value: "ap-1" } });
+    await bolt.click(APPROVE_ACTION_ID, { body: { team: { id: TEAM }, user: { id: "U_ADRIAN" }, container: { channel_id: "C1", message_ts: "9.2" }, message: { ts: "9.2", user: BOT_USER, bot_id: "B1" } }, action: { block_id: "nexus.approval", value: "ap-1" } });
     expect(resolve).toHaveBeenCalledWith("ap-1", "approved", { via: "slack", userId: "U_ADRIAN" });
     expect(botApi.chat.update).toHaveBeenCalledWith(expect.objectContaining({ channel: "C1", ts: "9.2" }));
-    await bolt.click(APPROVE_ACTION_ID, { body: { user: { id: BOT_USER }, container: { channel_id: "C1", message_ts: "9.2" } }, action: { value: "ap-1" } });
+    await bolt.click(APPROVE_ACTION_ID, { body: { team: { id: TEAM }, user: { id: BOT_USER }, container: { channel_id: "C1", message_ts: "9.2" }, message: { ts: "9.2", user: BOT_USER, bot_id: "B1" } }, action: { block_id: "nexus.approval", value: "ap-1" } });
     expect(resolve).toHaveBeenCalledTimes(1);
     await svc.stop();
   });
@@ -99,8 +101,16 @@ describe("createSlackService", () => {
     expect(call[0].blocks.at(-1)?.type).toBe("actions");
   });
 
+  it("reuses one web client while the bot token cannot answer, instead of rebuilding per call", async () => {
+    const { userApi } = build();
+    const makeApi = vi.fn(() => userApi as unknown as SlackApi);
+    const svc = createSlackService({ getUserToken: async () => ({ token: "xoxp-SECRET", source: "manual" }), getBotTokens: async () => null, resolve: vi.fn(), getApproval: () => undefined, webOptions: { makeApi } });
+    await svc.channels(); await svc.channels(); await svc.history("C1");
+    expect(makeApi).toHaveBeenCalledTimes(2);   // one reader and one poster, built once
+  });
+
   it("no token reaches an error", async () => {
-    const svc = createSlackService({ getUserToken: async () => null, getBotTokens: async () => null, resolve: vi.fn() });
+    const svc = createSlackService({ getUserToken: async () => null, getBotTokens: async () => null, resolve: vi.fn(), getApproval: () => undefined });
     const errs: string[] = [];
     await svc.channels().catch(e => errs.push(String(e)));
     await svc.postAsBot({ channelId: "C", text: "x" }).catch(e => errs.push(String(e)));

@@ -1,4 +1,4 @@
-import type { AgentEvent, AgentSession, ApprovalRequest, DecidedBy, NexusEvent, Task, Thread } from "../contracts";
+import type { AgentEvent, AgentSession, ApprovalRequest, DecidedBy, NexusEvent, SwarmReview, Task, TaskPlan, Thread } from "../contracts";
 import type { AgentReqOut, AgentResIn } from "../agent/process-host";
 
 // What Lane 1's controllers need from the rest of the extension host. These are narrow, Lane-1-owned ports: Lane 2's
@@ -31,6 +31,11 @@ export interface StorePort {
   /** Conditional update: sets the decision only while it is still undecided (first human answer wins, on any machine). */
   decideApproval(id: string, decision: "approved" | "rejected", decidedBy: DecidedBy, at: string): Promise<DecideResult>;
   putNexusEvent(event: NexusEvent): Promise<void>;
+  putReview(review: SwarmReview): Promise<void>;
+  /** The latest review for an approval, if any. */
+  getReviewForApproval(approvalId: string): Promise<SwarmReview | undefined>;
+  putPlan(plan: TaskPlan): Promise<void>;
+  getPlan(id: string): Promise<TaskPlan | undefined>;
 }
 
 export interface SessionWorktree {

@@ -3,7 +3,7 @@ import type { ApprovalRequest } from "../contracts";
 import { safeCommandUi, safeMessageUi, safeNotifyPort } from "./notify-safe";
 
 const EVIL = "[APPROVE](command:workbench.action.quit)";
-const noBrackets = (s: string) => expect(s).not.toMatch(/[\[\]]/);
+const noBrackets = (s: string) => expect(s).not.toMatch(/[[\]]/);
 
 function recordingPort() {
   const calls: Array<{ kind: string; text: string }> = [];

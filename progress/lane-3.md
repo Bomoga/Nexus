@@ -44,8 +44,8 @@
 - L3-10 review: Lane 2 marks EVERY bot author as sentVia "bot" and keeps its blocks (web-client.ts:306-307). Any other Slack app/webhook in the channel could post a fake "NEXUS" message with nexus.approve/nexus.reject buttons carrying a real pending approval id, so a human might approve a risky action on spoofed text. A human still decides and the write is conditional, but the context is spoofed. Fix: Lane 2 only marks the Nexus bot's own bot_id as "bot"; Lane 3 shows buttons only for approval ids found in approvals.list and shows the stored ApprovalRequest.action instead of the block text.
 - Snippets posted by Share to Slack (and slack.post generally) aren't escaped for Slack's `&`, `<`, `>` — `Map<string, number>` gets mangled and `<!channel>` would ping. Should be escaped in Lane 2's slack.post.
 - Lane 2's webview host (src/bridge/host.ts) renders a plain <body>; the task editor needs <body data-task-id="…"> (ask Brandon).
-- Lead merge checklist now includes a NUL-byte scan (literal NULs slipped in twice and make git treat files as binary).
-- style.test.tsx is ready (13 tests, pass with css enabled) and parked at C:\dev\nexus-hello\pending\ until vitest.config.ts has `test.css: true`
+- Lead merge checklist now includes a NUL-byte scan (literal NULs slipped in twice and make git treat files as binary). The earlier `grep -P` scan silently errored in the Git Bash locale; it now uses `tr -d '\000' | cmp` and was verified to catch a NUL. A full rescan found 0 files with NUL in webviews/, src/features/, contributes/ and scripts/.
+- Poll at ~T+11: merged origin/main (Lane 1 PR #8: Nexus branding, tab-less nexus.home editor, startup defaults, extension build, @types/react-dom, `test.css: true`). The only conflict was the generated package.json. Resolved by taking main's copy and regenerating it from the fragments (`npm run contributes`), with no hand edits. 861 tests / 58 files, typechecks, lint, build, contributes:check green. Then added webviews/shared/style.test.tsx (the L3-01 §6 style test, 13 tests pass).
 
 ## Follow-ups (from reviews, not yet scheduled)
 - Fake bridge live streams don't echo the fake's own writes (approvals.resolve, slack.post, tasks.*); slack.subscribe ignores channelIds.
@@ -60,8 +60,7 @@
 ## Blocked
 - Opening links from webviews: no contract request for external URLs (ui.openTarget only takes commit/session/thread). Asked Lane 1 for e.g. ui.openExternal; chat links render as buttons that do nothing until then.
 - Slack avatars: remote images are blocked by the webview CSP; initials are shown. Asked Lane 2 to hand avatars over as data: URIs.
-- @types/react-dom is not a dependency; webviews use a local ambient declaration until Lane 1 adds it.
-- style.test.tsx (L3-01 acceptance) needs `test.css: true` in extensions/nexus/vitest.config.ts — Vitest replaces every .css import (including ?raw) with an empty string otherwise, so the test would run against nothing. That file is Lane 1's; asked Adrian.
+- (resolved ~T+11) @types/react-dom and `test.css: true` landed on main via Lane 1. Small follow-up: drop the ambient `react-dom/client` declaration in webviews/shared/env.d.ts now that the real types exist (typecheck passes either way).
 
 ## Decisions
 T+0 = 22:00 ET, 2026-11-06 (as recorded by lane-2; team chat showed 22:02)

@@ -78,6 +78,12 @@
         ],
         "priority": "option"
       }
+    ],
+    "commands": [
+      {
+        "command": "nexus.dev.reseedDemoRepo",
+        "title": "Nexus (dev): Re-seed demo repo"
+      }
     ]
   }
 }

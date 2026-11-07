@@ -22,7 +22,7 @@ export interface SessionEvents {
 
 /** The approvals controller as the agent's `approval.request` sees it. */
 export interface ApprovalRequester {
-  request(input: { sessionId: string; action: ApprovalAction; reason: string }): Promise<{ approval: ApprovalRequest; decision: "approved" | "rejected" }>;
+  request(input: { sessionId: string; action: ApprovalAction; reason: string; diffPreview?: string }): Promise<{ approval: ApprovalRequest; decision: "approved" | "rejected" }>;
   /** The session is over: release whatever is still waiting and refuse later decisions (a cancelled session's APPROVE must run nothing). */
   sessionEnded?(sessionId: string, how: "cancelled" | "failed" | "done"): Promise<void>;
 }

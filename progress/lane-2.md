@@ -1,10 +1,11 @@
 ## Done
+- L2-08 LocalStore + search merged to lane-2 (three disputes; lead applied the last fix). Adrian's controllers shadowed into it: 1,069 writes, 0 refused
+- L2-01 router + host merged to lane-2 (lead applied the final fixes; panels retained, reused ids replace)
+- Wave 1 launch check on lane-2: nexus.nexus activated, no extension host errors
 - L2-02 Slack web client merged to lane-2 (lead applied the last two fixes after a third dispute; not run against live Slack)
 - Interface drops merged to lane-2: gate types, L2-02 slack interface + fake, L2-08 store interface + fake, L2-01 bridge interface + fake
 
 ## In flight
-- L2-08 LocalStore + search: built, in review
-- L2-01 router + host: phase 2 starting
 
 ## Blocked
 
@@ -23,6 +24,11 @@ T+0 = 22:00 ET, 2026-11-06
 - 2026-11-07 Slack: an xoxp post made through the Nexus app stores user + bot_id + app_id + bot_profile and no client_msg_id (checked on a real message in #nexus-build). bot_id does NOT mean bot. Trust users.info is_bot; use bot_id only if the lookup failed. L2-03 needs the same rule.
 - 2026-11-07 Launch check before the interface-drop PR: fork activated nexus.nexus, no extension host errors (isolated profile, --disable-workspace-trust).
 - 2026-11-07 decodeCodeRef in contracts can throw URIError on a malformed escape. Callers guard for now; a contracts PR is Adrian's and the team's call.
+- 2026-11-07 LocalStore refuses anything the contract schemas reject, and rejects the put. Callers must supply ISO times (L2-07: use %cI), integer exitCode (L2-13: map a killed process to an integer), 40-char lowercase SHAs, nexus/agent-<id> branches, no extra keys. Real Clock and GitPort adapters: ids matching [A-Za-z0-9_-]+, non-empty baseBranch.
+- 2026-11-07 For L2-10: after a crash between the two appends, a ghost outbox line identical to an older journal line is not dropped (waived by Brandon's lead-fix call). The fix is writing the outbox id into journal lines.
+- 2026-11-07 Bridge wiring still to do in src/register/lane-2.ts: one shared NexusBridgeRouter with a real containsSecret, log and redact (needs src/shared/redact.ts on main), declare nexus.t0 in contributes/lane-2.json, key the store directory by folder path.
+- 2026-11-07 Elkin: host loads media/<entry>.js as a classic script; the planned Vite output may differ. A reloaded page must resubscribe with fromSeq.
+- 2026-11-07 Adrian: lane-1 hang paths on store I/O failure: approvals-controller.ts:218-223, sessions-controller.ts:159-160 and 166-167.
 
 ## Next
-- Finish L2-01, L2-02, L2-08, then wave 2
+- PR lane-2 to main with wave 1, then wave 2: L2-13 gate, L2-03 socket, L2-05 git

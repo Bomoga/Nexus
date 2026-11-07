@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { decodeCodeRef, encodeCodeRef } from "../../contracts";
 import { fromUri, normalizeNexusUri, UriRouter } from "./uri-handler";
 
 describe("UriRouter", () => {
@@ -63,6 +64,23 @@ describe("UriRouter", () => {
     expect(new URL(seen[0]).searchParams.get("code")).toBe("abc");
     expect(fromUri({ scheme: "nexus", authority: "other.ext", path: "/auth/x", query: "" })).toBeNull();
     expect(fromUri({ scheme: "nexus", authority: "nexus.nexus", path: "/", query: "" })).toBeNull();
+  });
+
+  it("decodes a code ref the same from a decoded vscode.Uri as from the link text", async () => {
+    const r = new UriRouter();
+    const seen: string[] = [];
+    r.registerRoute("coderef", u => { seen.push(u); return true; });
+    const sha = "a".repeat(40);
+    for (const file of ["100%.ts", "a%41.ts", "dir/x?y.ts", "sp ace/é.ts"]) {
+      const link = encodeCodeRef({ workspaceId: "ws-1", commit: sha, path: file, startLine: 1, endLine: 2 });
+      // what URI.parse(link) exposes: the path percent-decoded once, the query (none here) apart
+      const decodedPath = `/coderef/ws-1/${sha}/1-2/${file}`;
+      seen.length = 0;
+      expect(await r.handle(link)).toBe(true);
+      expect(await r.handle({ scheme: "nexus", authority: "nexus.nexus", path: decodedPath, query: "" })).toBe(true);
+      expect(decodeCodeRef(seen[1])).toEqual(decodeCodeRef(seen[0]));
+      expect(decodeCodeRef(seen[1])?.path).toBe(file);
+    }
   });
 
   it("does not let a look-alike route reach a registered one", async () => {

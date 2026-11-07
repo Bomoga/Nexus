@@ -1,7 +1,7 @@
 // Lane 2's services and bridge handlers, built without vscode so the wiring itself is unit-tested. register/lane-2.ts
 // supplies the editor pieces (secrets, settings, the repo root, openExternal) and returns what Lane 1 consumes.
-import type { ApprovalRequest, DecidedBy, Req } from "../contracts";
-import type { BridgeRouter } from "../bridge/types";
+import { decodeCodeRef, type ApprovalRequest, type CodeRef, type DecidedBy, type ErrorCode, type Req } from "../contracts";
+import { BridgeError, type BridgeRouter } from "../bridge/types";
 import type { Disposable } from "../bridge/types";
 import type { ApprovalHook } from "../features/approvals/approvals-controller";
 import type { Lane2Services } from "./lane-1-features";
@@ -9,7 +9,10 @@ import type { EventStore } from "../services/events/store";
 import { createGate } from "../services/gate/gate";
 import type { ApprovalsHook } from "../services/gate/types";
 import type { GitService } from "../services/git/types";
+import { CodeRefError, createCodeRef } from "../services/coderef/create";
 import { registerOpenExternal } from "../services/coderef/open-external";
+import { registerOpenTarget } from "../services/coderef/open-target";
+import { openCodeRef } from "../services/coderef/resolve";
 import { createSlackService, type ComposedSlackService, type CreateSlackServiceOptions } from "../services/slack/slack-service";
 import { SlackCache } from "../services/slack/cache";
 import type { SlackService } from "../services/slack/types";
@@ -40,8 +43,33 @@ export interface Lane2Inputs {
   slackCacheDir?: string;
   /** The git watcher's change source (a FileSystemWatcher on .git refs) and this machine's id; no watcher when omitted. */
   watcher?: { watch: (onChange: () => void) => () => void; machineId: string };
+  /** vscode.commands.executeCommand, for ui.openTarget (the commit, session and Slack views are Lane 3's commands). Without it ui.openTarget is not served. */
+  executeCommand?: (id: string, ...args: unknown[]) => Promise<unknown>;
+  /** The editor side of opening a code reference; without it (or without git) coderef.open is not served. */
+  codeRefEditor?: CodeRefEditor;
   /** Test seams for the Slack service. */
   slackSeams?: Pick<CreateSlackServiceOptions, "webOptions" | "makeBotApi" | "socketOptions">;
+}
+
+/** Opens files for a code reference; all lines are 1-based and inclusive. */
+export interface CodeRefEditor {
+  /** The working-copy file, with the lines selected. */
+  openLive(path: string, startLine: number, endLine: number): Promise<void>;
+  /** The file as it was at `commit`, read-only, with the lines selected. */
+  openAtCommit(commit: string, path: string, startLine: number, endLine: number): Promise<void>;
+  /** After a stale open: offers "Open Current Version", which opens the working-copy file. Must not block. */
+  offerCurrent(path: string, startLine: number, endLine: number): void;
+}
+
+/** What the code-ref flows report to a caller: a code and a message fit to show the user. */
+const CODEREF_BRIDGE_CODE: Record<CodeRefError["code"], ErrorCode> = {
+  invalid_path: "invalid_request", invalid_range: "invalid_request", foreign_workspace: "invalid_request", dirty: "conflict", not_found: "not_found",
+};
+async function asBridgeError<T>(work: Promise<T>): Promise<T> {
+  try { return await work; } catch (e) {
+    if (e instanceof CodeRefError) throw new BridgeError(CODEREF_BRIDGE_CODE[e.code], e.message);
+    throw e;
+  }
 }
 
 export interface Lane2Built extends Pick<Lane2Services, "approvalHooks"> {
@@ -53,6 +81,12 @@ export interface Lane2Built extends Pick<Lane2Services, "approvalHooks"> {
   watcherReady: Promise<void>;
   git?: GitService;
   makeGate?: Lane2Services["makeGate"];
+  /** Code references, when there is a repository and an editor: the nexus.openCodeRef command and the coderef URI route. */
+  codeRefs?: {
+    open(ref: CodeRef): Promise<{ opened: "at_commit" | "current"; stale: boolean }>;
+    /** Opens a nexus:// code-ref link; false when the text is not one. Throws CodeRefError for a link that cannot be opened. */
+    openLink(link: string): Promise<boolean>;
+  };
   /** Lane 1 calls this with its approvals controller's resolve once it exists. Until then a Slack click is refused. */
   setApprovalResolver(resolve: SlackApprovalResolver): void;
   /** True when a bot and app token are configured, so Socket Mode can start. */
@@ -107,6 +141,7 @@ export function buildLane2(i: Lane2Inputs): Lane2Built {
 
     registerOpenExternal(r, i.openExternal),
   );
+  if (i.executeCommand) parts.push(registerOpenTarget(r, { executeCommand: i.executeCommand }));
 
   if (i.git) {
     const git = i.git;
@@ -114,7 +149,31 @@ export function buildLane2(i: Lane2Inputs): Lane2Built {
       r.handle("git.commit.show", (q: Req<"git.commit.show">) => git.show(q.sha)),
       r.handle("git.branches", () => git.branches()),
       r.handle("git.mergeAgentBranch", (q: Req<"git.mergeAgentBranch">) => git.mergeAgentBranch(q.sessionId)),
+      r.handle("coderef.create", (q: Req<"coderef.create">) => asBridgeError(createCodeRef({ git }, q.path, q.startLine, q.endLine))),
     );
+  }
+
+  // Opening a code reference: the live file when HEAD still has those exact lines, otherwise the file at its commit.
+  let codeRefs: Lane2Built["codeRefs"];
+  if (i.git && i.codeRefEditor) {
+    const git = i.git;
+    const editor = i.codeRefEditor;
+    const open = (ref: CodeRef) => openCodeRef({
+      git,
+      openLive: (p, s, e) => editor.openLive(p, s, e),
+      openAtCommit: (c, p, s, e) => editor.openAtCommit(c, p, s, e),
+      offerCurrent: () => editor.offerCurrent(ref.path, ref.startLine, ref.endLine),
+    }, ref);
+    codeRefs = {
+      open,
+      openLink: async link => {
+        const ref = decodeCodeRef(link);
+        if (!ref) return false;
+        await open(ref);
+        return true;
+      },
+    };
+    parts.push(r.handle("coderef.open", (q: Req<"coderef.open">) => asBridgeError(open(q.ref))));
   }
 
   // The git watcher turns commits, merges, branches and tags into globe events. Agent attribution needs a session the store knows.
@@ -168,6 +227,7 @@ export function buildLane2(i: Lane2Inputs): Lane2Built {
       git: i.git,
       makeGate: (hook: ApprovalsHook) => createGate({ git: i.git!, approvals: hook, allowlist: i.allowlist, redact: i.redact }),
     } : {}),
+    ...(codeRefs ? { codeRefs } : {}),
     setApprovalResolver: fn => { resolver = fn; },
     hasBotTokens: async () => !!((await fromSecretOrEnv(SLACK_SECRET_KEYS.bot, "SLACK_BOT_TOKEN")) && (await fromSecretOrEnv(SLACK_SECRET_KEYS.app, "SLACK_APP_TOKEN"))),
     dispose: () => {

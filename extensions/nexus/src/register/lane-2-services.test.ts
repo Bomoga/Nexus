@@ -23,14 +23,16 @@ function setup(over: Partial<Lane2Inputs> = {}, secrets: Record<string, string> 
   const store = new FakeEventStore();
   const api = bot();
   const opened: string[] = [];
+  const commands: unknown[][] = [];
   const built = buildLane2({
     router, store, redact: t => t.replaceAll("SECRET", "[R]"),
     secret: async k => secrets[k], env: {}, allowlist: () => [],
     openExternal: async u => { opened.push(u); return true; }, log: () => {},
+    executeCommand: async (id, ...args) => { commands.push([id, ...args]); },
     slackSeams: { makeBotApi: () => api as unknown as BotApi, socketOptions: { makeApp: () => { throw new Error("no socket in unit tests"); }, sleep: () => new Promise(() => undefined) } },
     ...over,
   });
-  return { router, store, built, api, opened };
+  return { router, store, built, api, opened, commands };
 }
 
 describe("buildLane2", () => {
@@ -122,5 +124,46 @@ describe("buildLane2", () => {
     await store.putTask({ ...fx.task, source: { kind: "manual" } });
     await built.approvalHooks[0].onCreated({ ...fx.approval, sessionId: fx.session.id });
     expect(api.chat.postMessage).not.toHaveBeenCalled();
+  });
+
+  it("routes ui.openTarget to Lane 3's view commands with only the validated fields", async () => {
+    const { router, commands } = setup();
+    await router.call("ui.openTarget", { type: "commit", sha: "c".repeat(40) });
+    await router.call("ui.openTarget", { type: "thread", channelId: "C1", threadTs: "1.000100" });
+    expect(commands).toEqual([["nexus.openCommit", "c".repeat(40)], ["nexus.openSlack", { channelId: "C1", threadTs: "1.000100" }]]);
+  });
+
+  it("does not serve ui.openTarget without a command executor", async () => {
+    const { router } = setup({ executeCommand: undefined });
+    await expect(router.call("ui.openTarget", { type: "commit", sha: "c".repeat(40) })).rejects.toMatchObject({ code: "not_found" });
+  });
+
+  it("creates code refs at HEAD, opens fresh ones live and stale ones at their commit, and maps refusals to bridge codes", async () => {
+    const git = new FakeGit();
+    const head = await git.headOf();
+    git.setFile(head, "src/a.ts", "one\ntwo\nthree\n");
+    const editor: string[] = [];
+    const codeRefEditor = {
+      openLive: async (p: string, s: number, e: number) => { editor.push(`live ${p} ${s}-${e}`); },
+      openAtCommit: async (c: string, p: string, s: number, e: number) => { editor.push(`at ${c.slice(0, 6)} ${p} ${s}-${e}`); },
+      offerCurrent: (p: string, s: number, e: number) => { editor.push(`offer ${p} ${s}-${e}`); },
+    };
+    const { router, built } = setup({ git, codeRefEditor });
+    const created = await router.call("coderef.create", { path: "src/a.ts", startLine: 2, endLine: 3 });
+    expect([created.ref.commit, created.snippet]).toEqual([head, "two\nthree"]);
+    expect(await router.call("coderef.open", { ref: created.ref })).toEqual({ opened: "current", stale: false });
+    git.setDirty("src/a.ts");
+    await expect(router.call("coderef.create", { path: "src/a.ts", startLine: 1, endLine: 1 })).rejects.toMatchObject({ code: "conflict" });
+    expect(await built.codeRefs!.openLink(created.link)).toBe(true);
+    expect(await built.codeRefs!.openLink("nexus://nexus.nexus/coderef/garbage")).toBe(false);
+    await expect(router.call("coderef.open", { ref: { ...created.ref, workspaceId: "ws_other" } })).rejects.toMatchObject({ code: "invalid_request" });
+    await expect(router.call("coderef.open", { ref: { ...created.ref, path: "src/none.ts" } })).rejects.toMatchObject({ code: "not_found" });
+    expect(editor).toEqual(["live src/a.ts 2-3", `at ${head.slice(0, 6)} src/a.ts 2-3`, "offer src/a.ts 2-3"]);
+  });
+
+  it("serves coderef.open only with both a repository and an editor", async () => {
+    const { router, built } = setup({ git: new FakeGit() });
+    expect(built.codeRefs).toBeUndefined();
+    await expect(router.call("coderef.open", { ref: fx.codeRef })).rejects.toMatchObject({ code: "not_found" });
   });
 });

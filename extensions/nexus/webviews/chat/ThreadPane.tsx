@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ChatMessage } from "../../src/contracts";
 import { Button, EmptyState, StatusLine, getBridge } from "../shared";
 import type { BridgeClient } from "../shared";
-import { Composer, FailedBar } from "./Composer";
-import { mergeMessages, useOutbox, usePostsAs, useSlackLive, useUsers } from "./live";
+import { Composer, EchoBar, echoClass } from "./Composer";
+import { mergeMessages, usePostsAs, useSlackLive, useUsers } from "./live";
+import { useOutboxRows, useOutboxStore } from "./outbox";
 import { MessageRow } from "./MessageRow";
 
 export type ThreadCommand = "nexus.makeTaskFromThread";
@@ -27,31 +28,34 @@ type Make = "idle" | "working" | "done" | "failed";
 
 export function ThreadPane({ bridge, channelId, threadTs, onClose, onOpenLink, runCommand }: ThreadPaneProps) {
   const client = bridge ?? getBridge();
+  // Slack's copies only; open sends come from the outbox (see useOutboxRows).
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [load, setLoad] = useState<Load>("loading");
   const [attempt, setAttempt] = useState(0);
-  const [make, setMake] = useState<Make>("idle");
+  // MAKE TASK state per thread: a result lands on the thread that asked, never on the one open later.
+  const [makes, setMakes] = useState<Record<string, Make>>({});
+  const threadKey = `${channelId}/${threadTs}`;
+  const make = makes[threadKey] ?? "idle";
   const scroller = useRef<HTMLDivElement>(null);
   const atBottom = useRef(true);
   const stick = useRef(true);
-  const users = useUsers(client, messages, `${channelId}/${threadTs}`);
   const self = usePostsAs(client);
-  const outbox = useOutbox(client, { channelId, threadTs }, setMessages, self, () => {
-    stick.current = true;
-  });
-  const { failedFor } = outbox;
+  const outbox = useOutboxStore(client);
+  const target = useMemo(() => ({ channelId, threadTs }), [channelId, threadTs]);
+  const { shown, rows } = useOutboxRows(outbox, target, messages, self);
+  const users = useUsers(client, shown, threadKey);
   const inThread = (m: ChatMessage) => m.threadTs === threadTs || m.ts === threadTs;
 
   useEffect(() => {
     let live = true;
-    setMessages(failedFor(channelId, threadTs));
+    setMessages([]);
     setLoad("loading");
-    setMake("idle");
     stick.current = true;
     client
       .request("slack.thread", { channelId, threadTs })
       .then((t) => {
         if (!live) return;
+        outbox.observe(t.messages);
         // Anything that arrived live while the thread was loading stays.
         setMessages((cur) => mergeMessages(t.messages, cur));
         setLoad("ready");
@@ -60,12 +64,13 @@ export function ThreadPane({ bridge, channelId, threadTs, onClose, onOpenLink, r
     return () => {
       live = false;
     };
-  }, [client, channelId, threadTs, attempt, failedFor]);
+  }, [client, channelId, threadTs, attempt, outbox]);
 
-  useSlackLive(client, channelId, (m, kind) => {
+  useSlackLive(client, channelId, (m) => {
+    outbox.observe([m]);
     if (!inThread(m)) return;
     if (atBottom.current) stick.current = true;
-    setMessages((l) => (kind === "message_changed" ? mergeMessages(l, [m]) : outbox.incoming(l, m)));
+    setMessages((l) => mergeMessages(l, [m]));
   });
 
   useLayoutEffect(() => {
@@ -73,19 +78,25 @@ export function ThreadPane({ bridge, channelId, threadTs, onClose, onOpenLink, r
     if (!el || !stick.current) return;
     stick.current = false;
     el.scrollTop = el.scrollHeight;
-  }, [messages]);
+  }, [rows]);
 
   const makeTask = useCallback(() => {
-    setMake("working");
+    const set = (v: Make) => setMakes((m) => ({ ...m, [threadKey]: v }));
+    set("working");
     const args = { channelId, threadTs };
     const run = runCommand
       ? Promise.resolve(runCommand("nexus.makeTaskFromThread", args))
       : client.request("tasks.createFromThread", args);
     run.then(
-      () => setMake("done"),
-      () => setMake("failed"),
+      () => set("done"),
+      () => set("failed"),
     );
-  }, [client, channelId, threadTs, runCommand]);
+  }, [client, channelId, threadTs, threadKey, runCommand]);
+
+  const send = (text: string) => {
+    stick.current = true;
+    outbox.send(target, text);
+  };
 
   return (
     <div className="chat-thread-pane">
@@ -110,20 +121,28 @@ export function ThreadPane({ bridge, channelId, threadTs, onClose, onOpenLink, r
           }}
         >
           {load === "loading" ? <StatusLine>loading</StatusLine> : null}
-          {messages.map((m) => (
-            <div key={m.id} className={m.failed ? "chat-failed" : undefined}>
+          {rows.map(({ message: m, entry }) => (
+            <div key={m.id} className={echoClass(entry?.state)}>
               <MessageRow
                 message={m}
                 displayName={users[m.author.id]?.displayName}
                 avatarUrl={users[m.author.id]?.avatarUrl}
                 onOpenLink={onOpenLink}
               />
-              {m.failed ? <FailedBar onRetry={() => outbox.retry(m)} /> : null}
+              {entry && entry.state !== "pending" ? <EchoBar state={entry.state} onRetry={() => outbox.retry(entry.clientId)} /> : null}
             </div>
           ))}
         </div>
       )}
-      {load === "failed" ? null : <Composer key={`${channelId}/${threadTs}`} onSend={outbox.send} placeholder="reply" />}
+      {load === "failed" ? null : (
+        <Composer
+          key={threadKey}
+          onSend={send}
+          placeholder="reply"
+          initialText={outbox.draftFor(target)}
+          onDraftChange={(text) => outbox.setDraft(target, text)}
+        />
+      )}
     </div>
   );
 }

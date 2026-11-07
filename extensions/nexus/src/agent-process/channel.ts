@@ -53,6 +53,11 @@ export class AgentChannel {
     });
   }
 
+  /** Sends a one-way event to the host (e.g. session.finished). */
+  notify(name: string, body: unknown): void {
+    if (!this.closed) writeLine(this.output, { t: "evt", name, body });
+  }
+
   /** Registers the single handler for host requests (session.start, session.cancel, health). */
   onHostRequest(handler: HostRequestHandler): void {
     this.hostHandler = handler;

@@ -5,6 +5,7 @@ import {
   AgentEnvelope, AgentRequests, HostEvents, HostRequests,
   type AgentRequestName, type HostRequestName,
 } from "../contracts";
+import { SESSION_FINISHED, SessionFinished } from "../agent-process/session-events";
 import { readLines, writeLine } from "../shared/jsonl";
 import { redact } from "../shared/redact";
 
@@ -43,6 +44,8 @@ export interface ProcessHostOptions {
   spawn: Spawner;
   handlers: AgentHandlers;
   log?: HostLogger;
+  /** Called when the agent reports that its session ended (done, failed or cancelled). */
+  onSessionFinished?: (outcome: SessionFinished) => void;
   /** Called with an "error" AgentEvent payload's message when the process dies under an active session. */
   onSessionError?: (sessionId: string, message: string, info: SessionErrorInfo) => void;
   /** Timeout for ordinary agent requests (default 30 s). cmd.run, git.commit and approval.request wait for humans and have none. */
@@ -195,7 +198,15 @@ export class ProcessHost {
     const msg = env.data;
     if (msg.t === "req") void this.serve(t, inflight, msg.id, msg.name, msg.body);
     else if (msg.t === "res") this.onChildResponse(msg.id, msg.ok, msg.body, msg.error);
-    else this.log("debug", "ignored agent event", { name: msg.name });
+    else this.onChildEvent(msg.name, msg.body);
+  }
+
+  private onChildEvent(name: string, body: unknown): void {
+    if (name !== SESSION_FINISHED) { this.log("debug", "ignored agent event", { name }); return; }
+    const parsed = SessionFinished.safeParse(body);
+    if (!parsed.success) { this.log("warn", "dropped an invalid session.finished event"); return; }
+    this.endSession(parsed.data.sessionId);
+    this.opts.onSessionFinished?.(parsed.data);
   }
 
   private onChildResponse(id: string, ok: boolean, body: unknown, error?: string): void {

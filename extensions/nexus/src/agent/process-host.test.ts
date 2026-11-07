@@ -449,3 +449,23 @@ describe("ProcessHost with a real child process", () => {
     expect(errors[1].restarted).toBe(false);
   }, 20_000);
 });
+
+describe("ProcessHost session.finished events", () => {
+  it("reports a valid session.finished, clears the active session, and ignores malformed ones", async () => {
+    const finished: unknown[] = [];
+    const raws: ReturnType<typeof rawTransport>[] = [];
+    const host = new ProcessHost({ spawn: () => { const r = rawTransport(); raws.push(r); return r.transport; }, handlers: {}, onSessionFinished: o => finished.push(o), onSessionError: () => { throw new Error("must not be blamed"); } });
+    hosts.push(host);
+    const p = host.startSession(startParams());
+    await vi.waitFor(() => expect(raws[0].sent).toHaveLength(1));
+    raws[0].push({ t: "res", id: raws[0].sent[0].id, ok: true, body: { accepted: true } });
+    await p;
+    raws[0].push({ t: "evt", name: "session.finished", body: { sessionId: "ses_01", outcome: "bogus", turns: 1 } });
+    raws[0].push({ t: "evt", name: "something.else", body: {} });
+    raws[0].push({ t: "evt", name: "session.finished", body: { sessionId: "ses_01", outcome: "done", turns: 5 } });
+    await vi.waitFor(() => expect(finished).toHaveLength(1));
+    expect(finished[0]).toEqual({ sessionId: "ses_01", outcome: "done", turns: 5 });
+    raws[0].exit(0);                                    // the session already ended, so this exit is not an error
+    expect(raws).toHaveLength(1);
+  });
+});

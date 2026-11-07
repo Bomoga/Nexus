@@ -7,7 +7,7 @@ import { FAKE_AGENT_SCRIPT, FakeProvider, keyFingerprint } from "../models/fake-
 import type { Provider, TurnEvent } from "../models/provider";
 import { AgentChannel } from "./channel";
 import { FakeGate } from "./fake-gate";
-import { AgentRuntime, MAX_TURNS, sanitizeForEvent, type SessionOutcome, type SessionStart } from "./runtime";
+import { AgentRuntime, MAX_TURNS, run as runEntryPoint, sanitizeForEvent, type SessionOutcome, type SessionStart } from "./runtime";
 import { MAX_TOOL_RESULT_BYTES, executeTool, truncateResult } from "./tools";
 
 const SECRET = "sk-ant-api03-SECRETSECRETSECRET1234567890";
@@ -278,5 +278,39 @@ describe("AgentRuntime over the real protocol (ProcessHost <-> AgentChannel)", (
     expect(finished[0].outcome).toBe("cancelled");
     host.dispose();
     expect(FAKE_AGENT_SCRIPT.length).toBe(5);
+  });
+});
+
+describe("run(channel) entry point", () => {
+  function wire(env: NodeJS.ProcessEnv, approvals: "auto" | "manual" = "auto") {
+    const hostToChild = new PassThrough();
+    const childToHost = new PassThrough();
+    const channel = new AgentChannel(hostToChild, childToHost);
+    const gate = new FakeGate({ files: { "src/cart.ts": "old" }, approvals });
+    const finished: Array<{ sessionId: string; outcome: string; turns: number }> = [];
+    const names = ["fs.read", "fs.write", "fs.list", "cmd.run", "git.diff", "git.commit", "approval.request", "slack.progress", "credentials.get", "event.emit"] as const;
+    const handlers = Object.fromEntries(names.map(n => [n, (b: unknown) => gate.request(n, b as never)])) as unknown as AgentHandlers;
+    const transport: Transport = { stdin: hostToChild, stdout: childToHost, kill: () => channel.close(), onExit: () => {} };
+    const host = new ProcessHost({ spawn: () => transport, handlers, onSessionFinished: o => finished.push(o) });
+    return { channel, gate, finished, host, runEntry: () => runEntryPoint(channel, env) };
+  }
+
+  it("with NEXUS_FAKE_PROVIDER=1 runs the whole scripted fix and reports session.finished to the host", async () => {
+    const w = wire({ NEXUS_FAKE_PROVIDER: "1" });
+    await w.runEntry();
+    await expect(w.host.startSession(start())).resolves.toEqual({ accepted: true });
+    await vi.waitFor(() => expect(w.finished).toHaveLength(1));
+    expect(w.finished[0]).toMatchObject({ sessionId: "ses_01", outcome: "done", turns: 5 });
+    expect(w.gate.files.get("src/cart.ts")).toBe("<fixed cart.ts>");
+    w.host.dispose();
+  });
+
+  it("reports a failure when the provider is not available in this process", async () => {
+    const w = wire({ NEXUS_FAKE_PROVIDER: "0" });
+    await w.runEntry();
+    await w.host.startSession(start({ session: { ...start().session, model: { provider: "google", modelId: "x" } } }));
+    await vi.waitFor(() => expect(w.finished).toHaveLength(1));
+    expect(w.finished[0].outcome).toBe("failed");
+    w.host.dispose();
   });
 });

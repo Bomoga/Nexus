@@ -1,7 +1,9 @@
 import { frame } from "../agent/prompt-framing";
 import type { Provider, ToolCall, TurnMessage } from "../models/provider";
+import { createProviders } from "../models/registry";
 import { redact } from "../shared/redact";
 import type { AgentChannel, HostReqOut } from "./channel";
+import { SESSION_FINISHED } from "./session-events";
 import { TOOL_DEFS, executeTool, type Gate } from "./tools";
 
 // The provider-neutral tool loop that runs in the agent child process (PLAN L1-09).
@@ -178,4 +180,14 @@ export class AgentRuntime {
     }
     return fail(`turn limit (${maxTurns}) reached`);
   }
+}
+
+/** Entry used by main.ts: real (or fake, per NEXUS_FAKE_PROVIDER) providers, the channel as the gate, outcome reported to the host. */
+export async function run(channel: AgentChannel, env: NodeJS.ProcessEnv = process.env): Promise<void> {
+  const runtime = new AgentRuntime({
+    providers: createProviders(env),
+    gate: channel,
+    onFinished: outcome => channel.notify(SESSION_FINISHED, outcome),
+  });
+  runtime.attach(channel);
 }

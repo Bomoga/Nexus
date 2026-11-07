@@ -74,6 +74,10 @@
 - Needs Brandon: echo clientId on the slack.post reply and on the slack.subscribe copy, and make slack.post idempotent per clientId. Until then a post whose reply times out shows the real message beside a "not confirmed" row, and RETRY would double-post (the label now warns).
 - Non-blocking follow-ups from the review: MAKE TASK can be sent twice if the pane is closed and reopened mid-request; no DISMISS for failed/unconfirmed rows (an open subscription stays while one exists); the outbox subscription isn't closed on App unmount; the thread pane may not open scrolled to the bottom (pre-existing); confirmedTs is effectively unused.
 
+## PR #24 lane-3 → main (L3-09b): OPEN (https://github.com/Bomoga/Nexus/pull/24), merge after nexus-ci `extension` passes
+- Merged main first (Lane 2: live Slack via Socket Mode, bot posts and approval buttons; agent gate; git service read side; extension.ts now passes Lane 2's real NexusBridgeRouter to Lanes 1 and 3). Launch check passes on the merged tree: Nexus activates with no errors and the globe home opens with no tab. Views now attach to the shared router; "no handler for events.query" remains until Lane 2 registers its event store on the router (Brandon).
+- Tell Brandon: on Windows, 15 tests in src/services/gate/gate.test.ts and src/services/git/git-cli.test.ts fail (also in Elkin's real terminal, not only the sandbox): symlink creation needs Developer Mode/admin (EPERM), and some tests expect POSIX results (exit code 137, /tmp paths, PATH lookup). They likely pass on Linux CI; they should skip or adapt on win32. Lane 3's own tests are all green (1176 pass).
+
 ## In flight
 - (none). Hourly polls turned off at Elkin's request. Waiting on: PR #9 (Brandon's approval), the shared router in extension.ts (Adrian), panel body-data and the bot-only/escaping fixes (Brandon), Lane 2's git service (for L3-15). Next per the playbook: wave 6 (L3-06 activity strip, L3-14 task-plan review, L3-16 empty/error states). L3-06 and L3-14 have only a header line in PLAN and depend on Lane 2/Lane 1 work in the same wave.
 

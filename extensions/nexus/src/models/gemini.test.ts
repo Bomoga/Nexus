@@ -148,7 +148,17 @@ describe("toContents", () => {
       { role: "user", parts: [{ text: "go" }] },
       { role: "model", parts: [{ text: "ok" }, { functionCall: { id: "a", name: "read_file", args: { path: "x" } }, thoughtSignature: "sig" }, { functionCall: { id: "b", name: "list_files", args: {} } }] },
       { role: "user", parts: [{ functionResponse: { id: "a", name: "read_file", response: { output: "A" } } }, { functionResponse: { id: "b", name: "list_files", response: { error: "denied" } } }] },
-      { role: "model", parts: [{ text: "" }] },
+      { role: "model", parts: [{ text: "(no output)" }] },
     ]);
+  });
+});
+
+describe("gemini provider: call ids", () => {
+  it("synthetic ids stay unique across turns of the same provider", async () => {
+    const p = createGeminiProvider(fakeClient({ chunks: [callChunk()] }).factory);
+    const first = await collectTurn(p.turn(req(), "k"));
+    const second = await collectTurn(p.turn(req(), "k"));
+    expect(first.toolCalls[0].id).toBe("gemini_call_1");
+    expect(second.toolCalls[0].id).toBe("gemini_call_2");
   });
 });

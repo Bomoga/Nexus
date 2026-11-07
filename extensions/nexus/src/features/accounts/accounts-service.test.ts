@@ -113,8 +113,23 @@ describe("AccountsService.list / test / models", () => {
     expect(s.service.models()).toEqual([]);
   });
 
-  it("test() on an unknown account throws", async () => {
-    await expect(setup().service.test("acc_nope")).rejects.toThrow("Unknown account");
+  it("test() on an unknown account throws, including names that exist on every object", async () => {
+    const s = setup();
+    await expect(s.service.test("acc_nope")).rejects.toThrow("Unknown account");
+    for (const name of ["constructor", "__proto__", "toString", "hasOwnProperty"]) {
+      await expect(s.service.test(`acc_${name}`), name).rejects.toThrow("Unknown account");
+      await expect(s.service.connect(name, "k"), name).rejects.toThrow("cannot be connected yet");
+    }
+    expect(s.secrets.map.size).toBe(0);
+  });
+
+  it("an account that could not be reached at startup is verified again on the next list(), not stuck as missing", async () => {
+    let online = false;
+    const flaky: Provider = { id: "anthropic", turn: new FakeProvider().turn.bind(new FakeProvider()), listModels: async () => { if (!online) throw new Error("ENOTFOUND"); return [{ provider: "anthropic", modelId: "m", displayName: "M", supportsTools: true }]; } };
+    const s = setup({ providers: { anthropic: flaky }, secrets: { [secretKeyFor("anthropic")]: KEY } });
+    expect((await s.service.list())[0].status).toBe("missing");
+    online = true;
+    expect((await s.service.list())[0].status).toBe("connected");
   });
 
   it("models() returns only connected accounts' models and never offers Swarms for the agent role", async () => {

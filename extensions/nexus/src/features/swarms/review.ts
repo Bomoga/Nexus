@@ -79,7 +79,7 @@ export class SwarmReviewService implements ApprovalHook {
     await this.review(approval);
   }
 
-  /** Runs a review; never throws and never touches the approval's decision. */
+  /** Runs a review. A Swarms failure becomes an `unavailable` review, never an exception; only a failing store can throw. It never touches the approval's decision. */
   async review(approval: ApprovalRequest): Promise<SwarmReview> {
     const { clock } = this.deps;
     const started = Date.now();

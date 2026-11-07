@@ -65,7 +65,7 @@ export class AccountsService {
 
   /** Stores the key, verifies it with a real listing, and drops it again if the provider rejects it. */
   async connect(provider: string, key: string, opts: { billingEnabled?: boolean } = {}): Promise<ProviderAccount> {
-    if (!this.deps.providers[provider]) throw new Error(`${LABELS[provider] ?? provider} cannot be connected yet.`);
+    if (!Object.hasOwn(this.deps.providers, provider)) throw new Error(`${LABELS[provider] ?? provider} cannot be connected yet.`);
     const trimmed = key.trim();
     if (trimmed.length === 0) throw new Error("The API key is empty.");
     if (provider === "google") await this.deps.state.update(billingStateKey, opts.billingEnabled === true);
@@ -83,7 +83,8 @@ export class AccountsService {
   /** Re-runs listModels for one account and records the outcome. Throws only when the provider could not be reached. */
   async test(accountId: string): Promise<ProviderAccount> {
     const provider = providerOf(accountId);
-    const impl = this.deps.providers[provider];
+    // Own properties only: "acc_constructor" or "acc___proto__" must not resolve to something inherited.
+    const impl = Object.hasOwn(this.deps.providers, provider) ? this.deps.providers[provider] : undefined;
     if (!impl) throw new Error(`Unknown account ${accountId}.`);
     const key = await this.getKey(provider);
     if (!key) {
@@ -110,7 +111,8 @@ export class AccountsService {
     for (const provider of this.supportedProviders()) {
       const id = accountIdFor(provider);
       if (this.cache.get(id) === undefined) {
-        try { await this.test(id); } catch { this.cache.recordFailure(id, "missing"); }
+        // Offline at startup must not be remembered: leave it unknown (reported as "missing") so the next list() asks again.
+        try { await this.test(id); } catch { /* not reachable right now */ }
       }
       out.push(this.describe(provider));
     }

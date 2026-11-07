@@ -60,7 +60,7 @@ export function toContents(messages: readonly TurnMessage[]): Content[] {
         const sig = (c.providerMeta as { thoughtSignature?: string } | undefined)?.thoughtSignature;
         parts.push({ functionCall: { id: c.id, name: c.name, args: c.args ?? {} }, ...(sig ? { thoughtSignature: sig } : {}) });
       }
-      out.push({ role: "model", parts: parts.length > 0 ? parts : [{ text: "" }] });
+      out.push({ role: "model", parts: parts.length > 0 ? parts : [{ text: "(no output)" }] });
     } else {
       const part: GeminiPart = { functionResponse: { id: m.toolCallId, name: nameById.get(m.toolCallId) ?? "unknown_tool", response: m.isError ? { error: m.content } : { output: m.content } } };
       const last = out[out.length - 1];
@@ -79,6 +79,8 @@ function isAuthError(e: unknown): boolean {
 }
 
 export function createGeminiProvider(factory: GeminiClientFactory = defaultFactory): Provider {
+  // Gemini does not always give function calls an id; ours must stay unique across every turn of a session.
+  let callSeq = 0;
   return {
     id: "google",
 
@@ -104,7 +106,6 @@ export function createGeminiProvider(factory: GeminiClientFactory = defaultFacto
       const usage = { inputTokens: 0, outputTokens: 0 };
       let sawToolCall = false;
       let finish: string | undefined;
-      let callSeq = 0;
       try {
         const stream = await factory(apiKey).models.generateContentStream({
           model: req.modelId,

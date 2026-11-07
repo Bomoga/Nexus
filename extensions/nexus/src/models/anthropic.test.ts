@@ -141,8 +141,29 @@ describe("toApiMessages", () => {
       { role: "user", content: "go" },
       { role: "assistant", content: [{ type: "text", text: "ok" }, { type: "tool_use", id: "a", name: "read_file", input: { path: "x" } }, { type: "tool_use", id: "b", name: "list_files", input: {} }] },
       { role: "user", content: [{ type: "tool_result", tool_use_id: "a", content: "A" }, { type: "tool_result", tool_use_id: "b", content: "B", is_error: true }] },
-      { role: "assistant", content: "" },
+      { role: "assistant", content: [{ type: "text", text: "(no output)" }] },
     ]);
+  });
+});
+
+describe("anthropic provider: incomplete streams", () => {
+  it("a stream that ends without a stop signal is an error, not a clean finish with a dropped tool call", async () => {
+    const cut = toolStream(['{"path": "src/a.ts"}']).filter(e => e.type !== "message_delta" && e.type !== "message_stop");
+    const r = await collectTurn(createAnthropicProvider(fakeClient({ stream: cut }).factory).turn(req(), "k"));
+    expect(r.error).toMatch(/ended before it was complete/);
+    expect(r.done).toBeUndefined();
+  });
+
+  it("a tool block that never closes is an error even if a stop arrives", async () => {
+    const open = toolStream(['{"path": "src/a.ts"}']).filter(e => e.type !== "content_block_stop" || e.index !== 1);
+    const r = await collectTurn(createAnthropicProvider(fakeClient({ stream: open }).factory).turn(req(), "k"));
+    expect(r.error).toMatch(/ended before it was complete/);
+  });
+
+  it("message_stop alone counts as a finish", async () => {
+    const ok = await collectTurn(createAnthropicProvider(fakeClient({ stream: [{ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "hi" } }, { type: "message_stop" }] }).factory).turn(req(), "k"));
+    expect(ok.error).toBeUndefined();
+    expect(ok.done?.stopReason).toBe("end_turn");
   });
 });
 

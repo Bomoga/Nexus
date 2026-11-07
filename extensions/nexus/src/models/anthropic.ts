@@ -46,7 +46,8 @@ export function toApiMessages(messages: readonly TurnMessage[]): ApiMessage[] {
       const blocks: ApiContentBlock[] = [];
       if (m.content.length > 0) blocks.push({ type: "text", text: m.content });
       for (const c of m.toolCalls ?? []) blocks.push({ type: "tool_use", id: c.id, name: c.name, input: c.args ?? {} });
-      out.push({ role: "assistant", content: blocks.length > 0 ? blocks : "" });
+      // The API rejects an assistant turn with no content, so an empty one is sent as a placeholder.
+      out.push({ role: "assistant", content: blocks.length > 0 ? blocks : [{ type: "text", text: "(no output)" }] });
     } else {
       const block: ApiContentBlock = { type: "tool_result", tool_use_id: m.toolCallId, content: m.content, ...(m.isError ? { is_error: true } : {}) };
       const last = out[out.length - 1];
@@ -88,6 +89,7 @@ export function createAnthropicProvider(factory: ClientFactory = defaultFactory)
     async *turn(req: TurnRequest, apiKey: string): AsyncIterable<TurnEvent> {
       const usage = { inputTokens: 0, outputTokens: 0 };
       let stopReason: string | null | undefined;
+      let sawStop = false;                                      // a stream that ends without a stop signal was cut off
       const toolBlocks = new Map<number, { id: string; name: string; json: string }>();
       try {
         const stream = await factory(apiKey).messages.create({
@@ -122,7 +124,10 @@ export function createAnthropicProvider(factory: ClientFactory = defaultFactory)
             }
           } else if (e.type === "message_delta") {
             stopReason = e.delta?.stop_reason ?? stopReason;
+            if (e.delta?.stop_reason) sawStop = true;
             usage.outputTokens = e.usage?.output_tokens ?? usage.outputTokens;
+          } else if (e.type === "message_stop") {
+            sawStop = true;
           }
         }
       } catch (e) {
@@ -134,6 +139,10 @@ export function createAnthropicProvider(factory: ClientFactory = defaultFactory)
         return;
       }
 
+      if (!sawStop || toolBlocks.size > 0) {
+        yield { type: "error", message: "The Anthropic response ended before it was complete." };
+        return;
+      }
       if (stopReason === "refusal") { yield { type: "error", message: "the model refused the request" }; return; }
       if (stopReason === "model_context_window_exceeded") { yield { type: "error", message: "the conversation no longer fits the model's context window" }; return; }
       yield { type: "done", usage, stopReason: STOP[stopReason ?? ""] ?? "end_turn" };

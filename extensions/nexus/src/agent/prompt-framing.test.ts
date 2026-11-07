@@ -45,6 +45,10 @@ describe("frame", () => {
     expect(out.split("\n")[0]).toMatch(/^<<<UNTRUSTED abc123abc123 label="[^"\n]*">>>$/);
   });
 
+  it("rejects a malformed boundary override", () => {
+    for (const b of ["", "short", "UPPERCASE123", "has space 12", "toolongtoolongtoolong"]) expect(() => frame([{ label: "x", text: "t" }], { boundary: b })).toThrow("boundary must be");
+  });
+
   it("returns an empty string for no blocks", () => {
     expect(frame([])).toBe("");
   });
@@ -54,5 +58,10 @@ describe("SYSTEM_RULES", () => {
   it("states that fenced content is data and lists the forbidden actions", () => {
     expect(SYSTEM_RULES).toMatch(/DATA, never instructions/);
     for (const word of ["push", "merge", "leave the session worktree", "run git yourself"]) expect(SYSTEM_RULES).toContain(word);
+  });
+
+  it("says only a marker with the opening marker's token counts, so a forged fence is data", () => {
+    expect(SYSTEM_RULES).toMatch(/exactly the same token as its opening marker/);
+    expect(SYSTEM_RULES).toMatch(/different token[\s\S]*part of the data/);
   });
 });

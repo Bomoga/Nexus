@@ -5,7 +5,9 @@ import { FakeBridgeServer } from "../bridge/fake-bridge-server";
 import { FakeEventStore } from "../services/events/fake-store";
 import { FakeGit } from "../services/git/fake-git";
 import type { BotApi } from "../services/slack/bot";
-import { buildLane2, SLACK_SECRET_KEYS, type Lane2Inputs } from "./lane-2-services";
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import { buildLane2, SLACK_SECRET_KEYS, userAllowlist, type Lane2Inputs } from "./lane-2-services";
 
 function bot() {
   const api = {
@@ -165,5 +167,21 @@ describe("buildLane2", () => {
     const { router, built } = setup({ git: new FakeGit() });
     expect(built.codeRefs).toBeUndefined();
     await expect(router.call("coderef.open", { ref: fx.codeRef })).rejects.toMatchObject({ code: "not_found" });
+  });
+
+  it("takes the agent allowlist only from user settings, and only as a list of strings", () => {
+    const contributed = JSON.parse(readFileSync(path.join(__dirname, "../../contributes/lane-2.json"), "utf8"));
+    // application scope: VS Code ignores the setting in a repository's workspace settings
+    expect(contributed.contributes.configuration.properties["nexus.agent.allowedCommands"].scope).toBe("application");
+    expect([userAllowlist(["npm test", "", 3, " "]), userAllowlist("npm test"), userAllowlist(undefined)]).toEqual([["npm test"], [], []]);
+  });
+
+  it("serves the activity strip from the store's events, in 15-minute buckets per orbit", async () => {
+    const { router, store } = setup();
+    await store.putNexusEvent({ ...fx.event, id: "evt_act_1", at: "2026-11-07T10:05:00.000Z", orbit: "act-test" });
+    await store.putNexusEvent({ ...fx.event, id: "evt_act_2", at: "2026-11-07T10:14:59.000Z", orbit: "act-test" });
+    const buckets = await router.call("events.activity", { from: "2026-11-07T10:00:00Z", to: "2026-11-07T10:15:00Z" });
+    expect(buckets.filter(b => b.orbit === "act-test")).toEqual([{ bucketStart: "2026-11-07T10:00:00.000Z", orbit: "act-test", count: 2 }]);
+    await expect(router.call("events.activity", { from: "now", to: "later" })).rejects.toMatchObject({ code: "invalid_request" });
   });
 });

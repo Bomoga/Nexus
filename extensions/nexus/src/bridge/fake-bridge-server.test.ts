@@ -99,7 +99,7 @@ describe("FakeBridgeServer subscriptions", () => {
   it("honours fromSeq on empty replay, held and live paths", async () => {
     const b = new FakeBridgeServer();
     b.onSubscribe("agent.subscribe", async () => {
-      b.publish("agent.subscribe", agentEvt("s1", 3));   // held, below fromSeq
+      b.publish("agent.subscribe", agentEvt("s1", 4));   // held, just below fromSeq
       b.publish("agent.subscribe", agentEvt("s1", 5));   // held
       await tick();
     });
@@ -109,6 +109,14 @@ describe("FakeBridgeServer subscriptions", () => {
     b.publish("agent.subscribe", agentEvt("s1", 5));     // live, duplicate
     b.publish("agent.subscribe", agentEvt("s1", 6));
     expect(seqs).toEqual([5, 6]);
+  });
+
+  it("honours fromSeq with no subscribe handler", async () => {
+    const b = new FakeBridgeServer();
+    const seqs: number[] = [];
+    await b.subscribe("agent.subscribe", { sessionId: "s1", fromSeq: 2 }, e => seqs.push(e.seq));
+    for (const seq of [1, 2, 2, 3]) b.publish("agent.subscribe", agentEvt("s1", seq));
+    expect(seqs).toEqual([2, 3]);
   });
 
   it("drops a live repeat of a replayed seq with no handler delay", async () => {

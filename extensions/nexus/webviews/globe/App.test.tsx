@@ -76,6 +76,26 @@ describe("globe App activity strip", () => {
     expect(live - sceneNow()).toBeLessThan(60_000);
   });
 
+  test("picking a search result newer than the pinned time returns to live and tracks it (no 'outside' notice)", async () => {
+    const recent: NexusEvent = { ...fx.event, id: "recent", title: "recent event", at: new Date().toISOString() };
+    const h = setup(() => [recent], recent);
+    const { container } = render(<App bridge={h.bridge} />);
+    const svg = (await waitFor(() => {
+      const el = container.querySelector("svg.globe-activity-svg");
+      if (!el) throw new Error("no strip yet");
+      return el;
+    })) as SVGSVGElement;
+    svg.getBoundingClientRect = () => ({ left: 0, width: 1000, top: 0, height: 30, right: 1000, bottom: 30, x: 0, y: 0, toJSON: () => ({}) });
+    fireEvent.click(svg, { clientX: 1 });
+    await screen.findByRole("button", { name: "BACK TO LIVE" });
+    fireEvent.change(screen.getByRole("combobox", { name: "Search events" }), { target: { value: "recent" } });
+    const list = await screen.findByRole("listbox", { name: "Search results" }, { timeout: 2000 });
+    fireEvent.mouseDown(within(list).getByRole("option"));
+    await screen.findByRole("button", { name: /STOP TRACKING/ });
+    expect(screen.queryByRole("button", { name: "BACK TO LIVE" })).toBeNull();
+    expect(screen.queryByText(/outside the 30d window/)).toBeNull();
+  });
+
   test("a window change re-queries the activity", async () => {
     const h = setup(() => []);
     render(<App bridge={h.bridge} />);

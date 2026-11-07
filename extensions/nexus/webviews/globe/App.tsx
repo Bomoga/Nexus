@@ -144,6 +144,11 @@ export function App({ bridge: injected }: AppProps = {}) {
   const onSearchPick = useCallback(
     (event: NexusEvent) => {
       setSelected(event);
+      // An event newer than the pinned time can't be shown from the past: go back to live first.
+      if (pinnedRef.current !== undefined && Date.parse(event.at) > pinnedRef.current) {
+        pinnedRef.current = undefined;
+        setPinnedNow(undefined);
+      }
       const choice = chooseWindow(Date.parse(event.at), pinnedRef.current ?? driftNow(), windowRef.current);
       if (choice.kind === "outside") {
         setTracked(undefined);

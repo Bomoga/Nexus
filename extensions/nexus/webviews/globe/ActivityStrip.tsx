@@ -32,7 +32,8 @@ export function ActivityStrip({ bridge, now, window: w, families, onPin }: Activ
 
   useEffect(() => {
     let live = true;
-    const from = new Date(anchor - windowMs(w)).toISOString();
+    // One bucket of slack on the left: a pin or unpin under 15 minutes away does not refetch, so the edge column stays filled.
+    const from = new Date(anchor - windowMs(w) - BUCKET_MS).toISOString();
     const to = new Date(anchor + BUCKET_MS).toISOString();
     bridge
       .request("events.activity", { from, to })
@@ -47,7 +48,9 @@ export function ActivityStrip({ bridge, now, window: w, families, onPin }: Activ
     };
   }, [bridge, w, anchor, attempt]);
 
-  const model = useMemo(() => buildActivity(buckets ?? [], families, now, windowMs(w)), [buckets, families, now, w]);
+  // Columns only change when "now" crosses a bucket boundary: rebuild then, not on every 5 s tick (30d is ~2,900 columns).
+  const nowBucket = Math.floor(now / BUCKET_MS);
+  const model = useMemo(() => buildActivity(buckets ?? [], families, now, windowMs(w)), [buckets, families, nowBucket, w]);
   const order = useMemo(() => {
     const extra = [...new Set((buckets ?? []).map((b) => b.orbit))].filter((o) => !families.includes(o));
     return [...families, ...extra.sort((a, b) => a.localeCompare(b, "en", { numeric: true }))];

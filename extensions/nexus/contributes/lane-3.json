@@ -1,5 +1,13 @@
 {
   "contributes": {
+    "commands": [
+      { "command": "nexus.shareSelectionToSlack", "title": "Nexus: Share to Slack" }
+    ],
+    "menus": {
+      "editor/context": [
+        { "command": "nexus.shareSelectionToSlack", "when": "editorHasSelection", "group": "nexus" }
+      ]
+    },
     "views": {
       "nexus": [
         { "type": "webview", "id": "nexus.chat", "name": "Slack" },

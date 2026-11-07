@@ -37,3 +37,15 @@ html, body, #root { height: 100%; }
 button.chat-replies { cursor: pointer; }
 button.chat-replies:hover { color: var(--nx-accent-hi); }
 .chat-link { border: 0; background: transparent; padding: 0; font: inherit; color: var(--nx-accent-hi); text-decoration: underline; cursor: pointer; }
+
+.chat-coderefs { display: inline-flex; flex-wrap: wrap; gap: var(--nx-gap-1); margin-left: var(--nx-gap-1); vertical-align: middle; }
+.chat-coderef { border: 0; background: transparent; padding: 0; margin: 0; font: inherit; color: inherit; cursor: pointer; }
+.chat-coderef .nx-chip { height: 18px; color: var(--nx-accent-hi); }
+.chat-coderef:hover .nx-chip { border-color: var(--nx-accent); }
+.chat-coderef:focus-visible { outline: var(--nx-border-w) solid var(--nx-focus); outline-offset: 1px; }
+.chat-coderef--stale .nx-chip { border-style: dashed; background: transparent; color: var(--nx-muted); }
+.chat-bot { border-left: 2px solid var(--nx-accent); padding-left: var(--nx-gap-1); }
+.chat-bot-label { color: var(--nx-accent-hi); font-size: 10px; text-transform: uppercase; }
+.chat-bot-section { color: var(--nx-muted); }
+.chat-approval { display: flex; align-items: center; gap: var(--nx-gap-1); margin-top: var(--nx-gap-1); }
+.chat-approval-error { color: var(--nx-error); }

@@ -1,7 +1,10 @@
 ## Done
+- Interface drops merged to lane-2: gate types, L2-02 slack interface + fake, L2-08 store interface + fake, L2-01 bridge interface + fake
 
 ## In flight
-- L2-01, L2-02, L2-08 interface drops (workers, started T+2:45)
+- L2-08 LocalStore + search: built, in review
+- L2-02 web client: disputed twice, with Brandon for a decision (CLAUDE.md section 11)
+- L2-01 router + host: phase 2 starting
 
 ## Blocked
 
@@ -17,6 +20,9 @@ T+0 = 22:00 ET, 2026-11-06
 - 2026-11-07 Worker branches are `lane-2-wt/<id>`, not `lane-2/<id>`: git cannot create `lane-2/x` while branch `lane-2` exists, so the naming in CLAUDE.md sections 10 and 11 cannot work. Needs a CLAUDE.md fix (Lane 1 owns that file). Sparse worktrees work: 2.1 MB plus 375 MB node_modules; max 3 workers.
 - 2026-11-07 EventStore, SlackService and Gate use the method names in Lane 1's `src/features/ports.ts` (decideApproval, agentEvents, getThread, request) where PLAN 5.2 differs, so Lane 1 needs no adapters.
 - 2026-11-07 `src/shared/redact.ts` is on lane-1, not on main. Until it lands, LocalStore and the bridge take the redactor as a required injected argument with no pass-through default.
+- 2026-11-07 Slack: an xoxp post made through the Nexus app stores user + bot_id + app_id + bot_profile and no client_msg_id (checked on a real message in #nexus-build). bot_id does NOT mean bot. Trust users.info is_bot; use bot_id only if the lookup failed. L2-03 needs the same rule.
+- 2026-11-07 Launch check before the interface-drop PR: fork activated nexus.nexus, no extension host errors (isolated profile, --disable-workspace-trust).
+- 2026-11-07 decodeCodeRef in contracts can throw URIError on a malformed escape. Callers guard for now; a contracts PR is Adrian's and the team's call.
 
 ## Next
-- Merge the interface drops, launch check, PR to main; then workers finish L2-01, L2-02, L2-08
+- Finish L2-01, L2-02, L2-08, then wave 2

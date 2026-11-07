@@ -32,6 +32,13 @@
   - After the merges: 375 tests, both typechecks, eslint, build of chat/globe/session/task, contributes:check green; 0 fixture strings; 0 NUL bytes. Not checked in a browser or the fork.
 - Lead adjustments used in wave 4 (no contract changes): approve/reject buttons and CANCEL use the existing bridge requests approvals.resolve / agent.cancel instead of running nexus.approve/reject/cancelSession commands (no command bridge exists); receipt OPEN is a disabled button until a bridge path exists; nexus.searchEvents can't push "focus" into the webview (no host→webview message in the protocol), so the box takes "/" and Ctrl+F.
 
+- Poll at ~T+12: merged origin/main (Lane 1 PR #10: swarm review reads the council's judge turns, auth callback routed to the extension id). Clean, with no shared-file changes. 878 tests / 59 files, typechecks, build, contributes:check green; pushed.
+
+## NEEDS ELKIN: Lane 1 contracts change waiting (branch origin/lane-1-contracts, commit 322a386a, Adrian)
+- It adds an optional `clientId` on ChatMessage (the host echoes the sender's id) and `ui.openExternal` {url: https only}, which are our two asks. It also moves nexus:// links to the `nexus.nexus` authority (old links are still read), makes decodeCodeRef non-throwing, and maps `lane-N-wt/<id>` branches to orbit lane-N.
+- Contract PRs need both other engineers' approval (CODEOWNERS), so Elkin has to review and approve it. I couldn't check whether a PR is open (gh isn't on this shell's PATH).
+- Once it's on main, it unblocks: L3-09's robust fix (match pending echoes by clientId instead of guessing; makes options B/C viable), chat links opening via ui.openExternal, and receipt OPEN (the Prune verify URL).
+
 ## In flight
 - (none) after wave 4. Wave 5 (L3-12 approvals view, L3-07 timeline fallback, L3-15 git views) is HELD: after wave 4 the 5-hour usage window was at 61% (resets 11:10 ET), and a full wave costs about a third of it. The lane is ahead of plan (wave 5 is scheduled T+16-22), so the remaining usage is kept for Elkin's morning cp-1 work: the webview host fix and the src/register/lane-3.ts wiring below. Hourly polls hold wave 5 while the window is above ~60%, and resume it after the reset or when Elkin says so.
 

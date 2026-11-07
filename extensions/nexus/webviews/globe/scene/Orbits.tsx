@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useEffect, useMemo } from "react";
 import { BufferGeometry, Line, LineBasicMaterial, Vector3 } from "three";
 import { GLOBE_RADIUS } from "../model";
 import type { OrbitSpec } from "../model";
@@ -21,6 +21,9 @@ export function Orbits({ layout }: { layout: readonly OrbitSpec[] }) {
   const outer = layout.length ? layout[layout.length - 1].radius : 2;
   const rings = useMemo(() => layout.map((o) => ({ id: o.id, tilt: o.tilt, line: new Line(circle(o.radius, 160), ringMaterial) })), [layout]);
   const nowLine = useMemo(() => new Line(new BufferGeometry().setFromPoints([new Vector3(0, 0, GLOBE_RADIUS), new Vector3(0, 0, outer + 0.8)]), nowMaterial), [outer]);
+  // Geometries are ours (materials are module-level and shared): release them when the layout changes or on unmount.
+  useEffect(() => () => rings.forEach((r) => r.line.geometry.dispose()), [rings]);
+  useEffect(() => () => nowLine.geometry.dispose(), [nowLine]);
   return (
     <group>
       {rings.map((r) => (

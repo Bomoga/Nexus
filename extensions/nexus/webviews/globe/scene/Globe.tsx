@@ -1,4 +1,4 @@
-import { useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { useFrame } from "@react-three/fiber";
 import { BufferGeometry, Line, LineBasicMaterial, Vector3 } from "three";
 import type { Group } from "three";
@@ -15,10 +15,12 @@ function ringPoints(r: number, y: number, segments: number): Vector3[] {
 }
 
 /** Wireframe planet: latitude rings and meridians, slowly rotating. A depth-only sphere hides lines behind it. */
+const globeMaterial = new LineBasicMaterial({ color: PURPLE });
+
 export function Globe() {
   const group = useRef<Group>(null);
   const lines = useMemo(() => {
-    const mat = new LineBasicMaterial({ color: PURPLE });
+    const mat = globeMaterial;
     const out: Line[] = [];
     for (const d of [-60, -30, 0, 30, 60]) {
       const t = (d * Math.PI) / 180;
@@ -32,6 +34,14 @@ export function Globe() {
     }
     return out;
   }, []);
+
+  useEffect(
+    () => () => {
+      const seen = new Set<BufferGeometry>();
+      for (const l of lines) if (!seen.has(l.geometry)) { seen.add(l.geometry); l.geometry.dispose(); }
+    },
+    [lines],
+  );
 
   useFrame((_, dt) => {
     if (group.current) group.current.rotation.y += Math.min(dt, 0.05) * 0.05;

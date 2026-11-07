@@ -151,6 +151,8 @@ async function assertSliceOutcome(t: Built, taskId: string, sessionId: string, h
 }
 
 describe("composeLane1 on the real Lane 2 pieces, in a temp git repo", () => {
+  // Real git processes: slow on Windows and under a parallel suite, so the default 5 s is too tight.
+  vi.setConfig({ testTimeout: 60_000 });
   it("runs thread -> task -> agent -> commit approval by a human in the app, and a second answer loses", async () => {
     put(repo, "wip.txt", "uncommitted\n");                                   // the user's own work in progress must survive
     const headBefore = sh(repo, "rev-parse", "HEAD");

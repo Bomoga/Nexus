@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
+import { plainNotificationText } from "../shared/plain-text";
 import { join } from "node:path";
 import * as vscode from "vscode";
 import { AccountsService, secretKeyFor } from "../features/accounts/accounts-service";
@@ -44,9 +45,9 @@ function registerAuth(context: vscode.ExtensionContext): Auth0Session {
     vscode.commands.registerCommand("nexus.signIn", async () => {
       try {
         const status = await auth.signIn();
-        void vscode.window.showInformationMessage(`Signed in to Nexus as ${status.name ?? status.auth0UserId}.`);
+        void vscode.window.showInformationMessage(`Signed in to Nexus as ${plainNotificationText(String(status.name ?? status.auth0UserId))}.`);
       } catch (e) {
-        void vscode.window.showErrorMessage(e instanceof Error ? e.message : "Sign-in failed.");
+        void vscode.window.showErrorMessage(plainNotificationText(e instanceof Error ? e.message : "Sign-in failed."));
       }
     }),
     vscode.commands.registerCommand("nexus.signOut", async () => {

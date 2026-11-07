@@ -1,4 +1,5 @@
 import type { AccountsService } from "./accounts-service";
+import { plainNotificationText } from "../../shared/plain-text";
 
 // `Nexus: Connect provider` (PLAN L1-06): pick a provider, paste the key into a password box, verify it.
 // The UI is a port so the flow is testable; register/lane-1.ts adapts it to vscode.window.
@@ -61,6 +62,6 @@ export async function connectProvider(deps: { accounts: AccountsService; ui: Con
       ui.error(`${label}: no key found.`);
     }
   } catch (e) {
-    ui.error(e instanceof Error ? e.message : "Could not connect the provider.");
+    ui.error(plainNotificationText(e instanceof Error ? e.message : "Could not connect the provider."));
   }
 }

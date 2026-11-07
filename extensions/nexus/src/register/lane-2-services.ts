@@ -16,6 +16,7 @@ import { registerOpenTarget } from "../services/coderef/open-target";
 import { openCodeRef } from "../services/coderef/resolve";
 import { createSlackService, type ComposedSlackService, type CreateSlackServiceOptions } from "../services/slack/slack-service";
 import { SlackCache } from "../services/slack/cache";
+import { createProgressMessages, type ProgressMessages } from "../services/slack/progress-message";
 import type { SlackService } from "../services/slack/types";
 import { GitWatcher } from "../services/git/watcher";
 
@@ -53,6 +54,8 @@ export interface Lane2Inputs {
   executeCommand?: (id: string, ...args: unknown[]) => Promise<unknown>;
   /** The editor side of opening a code reference; without it (or without git) coderef.open is not served. */
   codeRefEditor?: CodeRefEditor;
+  /** Each person's own Slack user token from Auth0 Token Vault (L2-15); the pasted one is the fallback. */
+  tokenVault?: { getUserToken(): Promise<{ token: string; source: "token_vault" } | null> };
   /** The shared store's client for the activity strip's continuous aggregate; counted from the local copy without it. */
   activityQuery?: ActivityQueryClient;
   /** Test seams for the Slack service. */
@@ -95,6 +98,13 @@ export interface Lane2Built extends Pick<Lane2Services, "approvalHooks"> {
     /** Opens a nexus:// code-ref link; false when the text is not one. Throws CodeRefError for a link that cannot be opened. */
     openLink(link: string): Promise<boolean>;
   };
+  /**
+   * The store Lane 1 should use: the given one, observed so the session's Slack progress message starts when a thread task's
+   * session runs, follows its agent events, and closes when it ends. Without a repository it is the given store unchanged.
+   */
+  observedStore: EventStore;
+  /** The session's single Slack progress message; `update` is Lane 1's ProgressPort. Needs a repository (for link ids). */
+  progress?: Pick<ProgressMessages, "update">;
   /** Lane 1 calls this with its approvals controller's resolve once it exists. Until then a Slack click is refused. */
   setApprovalResolver(resolve: SlackApprovalResolver): void;
   /** True when a bot and app token are configured, so Socket Mode can start. */
@@ -109,6 +119,11 @@ export function buildLane2(i: Lane2Inputs): Lane2Built {
   let resolver: SlackApprovalResolver | undefined;
   const slack = createSlackService({
     getUserToken: async () => {
+      // Token Vault first (signed in and Slack connected in Auth0); any failure falls back to the pasted token.
+      try {
+        const vaulted = await i.tokenVault?.getUserToken();
+        if (vaulted) return vaulted;
+      } catch { i.log("Token Vault did not give a Slack token; using the pasted one if there is one"); }
       const token = await fromSecretOrEnv(SLACK_SECRET_KEYS.user, "SLACK_USER_TOKEN");
       return token ? { token, source: "manual" } : null;
     },
@@ -204,6 +219,20 @@ export function buildLane2(i: Lane2Inputs): Lane2Built {
     parts.push({ dispose: () => watcher?.dispose() });
   }
 
+  // The session's Slack progress message, driven by what Lane 1 writes to the store (it needs git for the code-ref link ids).
+  let progress: ProgressMessages | undefined;
+  let observedStore: EventStore = i.store;
+  if (i.git) {
+    const git = i.git;
+    const pm = createProgressMessages({
+      slack, redact: i.redact, workspaceId: () => git.workspaceId(),
+      getTask: id => i.store.getTask(id), getSession: id => i.store.getSession(id), putSession: s => i.store.putSession(s),
+      log: m => i.log(`slack progress: ${m}`),
+    });
+    progress = pm;
+    observedStore = observeForProgress(i.store, pm, m => i.log(`slack progress: ${m}`));
+  }
+
   // The Slack approval card: posted in the task's own thread, its ts stored on the approval (a click is accepted only on
   // that card), and re-rendered without buttons once the approval is decided on any surface.
   const slackApprovalHook: ApprovalHook = {
@@ -233,6 +262,8 @@ export function buildLane2(i: Lane2Inputs): Lane2Built {
     served,
     watcherReady,
     approvalHooks: [slackApprovalHook],
+    observedStore,
+    ...(progress ? { progress: { update: (s: Parameters<ProgressMessages["update"]>[0], text: string) => progress!.update(s, text) } } : {}),
     ...(i.git ? {
       git: i.git,
       makeGate: (hook: ApprovalsHook) => createGate({ git: i.git!, approvals: hook, allowlist: i.allowlist, redact: i.redact }),
@@ -245,4 +276,35 @@ export function buildLane2(i: Lane2Inputs): Lane2Built {
       void slack.stop().catch(() => undefined);
     },
   };
+}
+
+const TERMINAL_SESSION = new Set(["done", "failed", "cancelled"]);
+
+/**
+ * The store with session writes and agent events also fed to the progress message: a running session starts it, a terminal
+ * one finishes it, and every agent event updates it. The write itself always completes first and is never failed by Slack.
+ */
+export function observeForProgress(store: EventStore, pm: Pick<ProgressMessages, "start" | "onAgentEvent" | "finish">, log: (m: string) => void): EventStore {
+  const quietly = (work: () => Promise<unknown> | void) => {
+    try { void Promise.resolve(work()).catch(() => log("could not update the progress message")); } catch { log("could not update the progress message"); }
+  };
+  return new Proxy(store, {
+    get(target, key, receiver) {
+      if (key === "putSession") {
+        return async (session: Parameters<EventStore["putSession"]>[0]) => {
+          await target.putSession(session);
+          if (session.status === "running" && !session.slackProgress) quietly(() => pm.start(session));
+          else if (TERMINAL_SESSION.has(session.status)) quietly(() => pm.finish(session));
+        };
+      }
+      if (key === "appendAgentEvent") {
+        return async (event: Parameters<EventStore["appendAgentEvent"]>[0]) => {
+          await target.appendAgentEvent(event);
+          quietly(() => pm.onAgentEvent(event));
+        };
+      }
+      const value = Reflect.get(target, key, receiver);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
 }

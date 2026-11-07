@@ -184,4 +184,32 @@ describe("buildLane2", () => {
     expect(buckets.filter(b => b.orbit === "act-test")).toEqual([{ bucketStart: "2026-11-07T10:00:00.000Z", orbit: "act-test", count: 2 }]);
     await expect(router.call("events.activity", { from: "now", to: "later" })).rejects.toMatchObject({ code: "invalid_request" });
   });
+
+  it("reads Slack as the user with the Token Vault token first, and falls back to the pasted one", async () => {
+    const used: string[] = [];
+    // record which token each Slack call was built with; every call then fails, which is fine for this check
+    const webOptions = { makeApi: (token: string) => { used.push(token); return new Proxy({}, { get: () => new Proxy({}, { get: () => async () => { throw new Error("offline"); } }) }); } };
+    const vault = { getUserToken: vi.fn(async () => ({ token: "xoxp-vault", source: "token_vault" as const })) };
+    await setup({ tokenVault: vault, slackSeams: { webOptions } as never }, { [SLACK_SECRET_KEYS.user]: "xoxp-pasted" }).built.served.status();
+    expect(used.length).toBeGreaterThan(0);
+    expect(new Set(used)).toEqual(new Set(["xoxp-vault"]));
+    used.length = 0;
+    await setup({ tokenVault: { getUserToken: async () => { throw new Error("vault down"); } }, slackSeams: { webOptions } as never }, { [SLACK_SECRET_KEYS.user]: "xoxp-pasted" }).built.served.status();
+    expect(new Set(used)).toEqual(new Set(["xoxp-pasted"]));
+  });
+
+  it("starts one Slack progress message when a thread task's session runs, and closes it when the session ends", async () => {
+    const { store, built, api } = setup({ git: new FakeGit() }, { [SLACK_SECRET_KEYS.bot]: "xoxb-1", [SLACK_SECRET_KEYS.app]: "xapp-1" });
+    const task = { ...fx.task, source: { kind: "thread" as const, channelId: "C9", threadTs: "40.000100" } };
+    await store.putTask(task);
+    const session = { ...fx.session, taskId: task.id, status: "running" as const, slackProgress: undefined };
+    await built.observedStore.putSession(session);
+    await vi.waitFor(() => expect(api.chat.postMessage).toHaveBeenCalledTimes(1));
+    expect(api.chat.postMessage).toHaveBeenCalledWith(expect.objectContaining({ channel: "C9", thread_ts: "40.000100" }));
+    await vi.waitFor(async () => expect((await store.getSession(session.id))?.slackProgress).toMatchObject({ channelId: "C9", threadTs: "40.000100" }));
+    expect(await built.progress!.update(session, "running the tests")).toBe(true);
+    await built.observedStore.putSession({ ...session, status: "done" });
+    await vi.waitFor(() => expect(api.chat.update).toHaveBeenCalled());
+    expect(api.chat.postMessage).toHaveBeenCalledTimes(1);   // one message per session, edited in place
+  });
 });

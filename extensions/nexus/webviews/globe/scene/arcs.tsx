@@ -2,7 +2,7 @@ import { useEffect, useMemo } from "react";
 import { BufferAttribute, BufferGeometry, Line, LineBasicMaterial } from "three";
 import { useFrame } from "@react-three/fiber";
 import type { NexusEvent, TimeWindow } from "../../../src/contracts";
-import { ARC_SEGMENTS, arcControl, arcPoint, eventPointInto } from "../model/arcs";
+import { ARC_SEGMENTS, arcControl, mergeKey, arcPoint, eventPointInto } from "../model/arcs";
 import type { Vec3 } from "../model/arcs";
 import { windowMs } from "../model";
 import type { OrbitSpec } from "../model";
@@ -50,6 +50,8 @@ function writeArc(arc: Arc, now: number, wms: number): void {
 
 /** Merge events as bezier arcs from fromOrbit's ring to the merge's orbit ring, redrawn every frame as time drifts. */
 export function Arcs({ events, layout, now, window }: ArcsProps) {
+  // Keyed on the arcs themselves: the 5 s tick re-filters `events` without changing any merge.
+  const key = mergeKey(events);
   const arcs = useMemo<Arc[]>(() => {
     const byId = new Map(layout.map((o) => [o.id, o]));
     const out: Arc[] = [];
@@ -70,7 +72,7 @@ export function Arcs({ events, layout, now, window }: ArcsProps) {
     }
     return out;
     // Initial shape only; useFrame redraws afterwards, so `now` is deliberately not a dependency.
-  }, [events, layout, window]);
+  }, [key, layout, window]);
   // Geometries are ours (the material is shared): release them when the arcs change or on unmount.
   useEffect(() => () => arcs.forEach((a) => a.line.geometry.dispose()), [arcs]);
 

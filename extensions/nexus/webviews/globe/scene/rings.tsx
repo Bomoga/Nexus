@@ -3,7 +3,7 @@ import { BoxGeometry, BufferGeometry, Line, LineBasicMaterial, MeshBasicMaterial
 import type { Group } from "three";
 import { useFrame } from "@react-three/fiber";
 import type { NexusEvent, TimeWindow } from "../../../src/contracts";
-import { ACTIVITY_OFFSET, activityPoint, shapeOf } from "../model/arcs";
+import { ACTIVITY_OFFSET, activityKey, activityPoint, shapeOf } from "../model/arcs";
 import type { OrbitSpec } from "../model";
 import { PURPLE_HI } from "./colors";
 import { applyDrift, liveScale, useDriftNow } from "./live";
@@ -46,6 +46,8 @@ interface Placed {
 
 /** Agent sessions (green cubes) and Slack tasks (pink diamonds) on a faint activity ring just outside each orbit. */
 export function Activity({ events, layout, now, window }: ActivityProps) {
+  // Keyed on the activity events themselves: the 5 s tick re-filters `events` without changing any of them.
+  const key = activityKey(events);
   const placed = useMemo<Placed[]>(() => {
     const byId = new Map(layout.map((o) => [o.id, o]));
     const out: Placed[] = [];
@@ -59,7 +61,7 @@ export function Activity({ events, layout, now, window }: ActivityProps) {
     }
     return out;
     // Initial positions only; useFrame owns them afterwards, so `now` is deliberately not a dependency.
-  }, [events, layout, window]);
+  }, [key, layout, window]);
 
   const withActivity = useMemo(() => new Set(placed.map((p) => p.event.orbit)), [placed]);
   const rings = useMemo(

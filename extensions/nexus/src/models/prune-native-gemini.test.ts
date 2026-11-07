@@ -3,7 +3,7 @@ import type { ModelCallReceipt } from "../contracts";
 import { FakeProvider } from "./fake-provider";
 import type { PruneConfig } from "./prune-adapter";
 import { DEFAULT_MAX_OUTPUT_TOKENS } from "./gemini";
-import { wrapGeminiNative } from "./prune-native-gemini";
+import { toRouteMessages, wrapGeminiNative } from "./prune-native-gemini";
 import type { PruneMetadata } from "./prune-receipt";
 import { collectTurn, type TurnRequest } from "./provider";
 
@@ -53,7 +53,7 @@ describe("request", () => {
       tools: [{ name: "fs_read", description: "read", inputSchema: { type: "object" } }],
       messages: [
         { role: "user", content: "go" },
-        { role: "assistant", content: "", toolCalls: [{ id: "c1", name: "fs_read", args: { path: "a.ts" } }] },
+        { role: "assistant", content: "reading" },
         { role: "tool", toolCallId: "c1", content: `out ${SECRET}` },
       ],
     }), PROVIDER_KEY));
@@ -153,32 +153,29 @@ describe("model pinning and failures", () => {
 const ARGS_SECRET = "ANTHROPIC_API_KEY=sk-ant-api03-TESTTESTTESTTEST1234567890";
 
 describe("replay and redaction", () => {
-  it("redacts tool call arguments, tool results, system and user text", async () => {
+  it("redacts tool results, system, user and assistant text", async () => {
     const s = setup(() => json(200, gemini([{ text: "ok" }])));
     await collectTurn(s.provider.turn(req({
       system: `sys ${ARGS_SECRET}`,
       messages: [
         { role: "user", content: `u ${ARGS_SECRET}` },
-        { role: "assistant", content: `a ${ARGS_SECRET}`, toolCalls: [{ id: "c1", name: "cmd_run", args: { command: `export ${ARGS_SECRET}`, nested: { k: [ARGS_SECRET] } } }] },
+        { role: "assistant", content: `a ${ARGS_SECRET}` },
         { role: "tool", toolCallId: "c1", content: `t ${ARGS_SECRET}` },
       ],
     }), PROVIDER_KEY));
     expect(JSON.stringify(s.sent[0]!.body)).not.toContain("sk-ant-api03-TESTTEST");
   });
 
-  it("carries a saved thoughtSignature on the replayed tool_call as extra_content.google.thought_signature", async () => {
+  it("throws a clear unsupported error when replaying tool calls, and sends nothing", async () => {
     const s = setup(() => json(200, gemini([{ text: "ok" }])));
-    await collectTurn(s.provider.turn(req({
-      messages: [
-        { role: "user", content: "go" },
-        { role: "assistant", content: "", toolCalls: [{ id: "c1", name: "fs_read", args: {}, providerMeta: { thoughtSignature: "sig-1" } }, { id: "c2", name: "fs_list", args: {} }] },
-        { role: "tool", toolCallId: "c1", content: "a" },
-        { role: "tool", toolCallId: "c2", content: "b" },
-      ],
-    }), PROVIDER_KEY));
-    const calls = s.sent[0]!.body.messages[2].tool_calls;
-    expect(calls[0].extra_content).toEqual({ google: { thought_signature: "sig-1" } });
-    expect(calls[1].extra_content).toBeUndefined();
+    const messages: TurnRequest["messages"] = [
+      { role: "user", content: "go" },
+      { role: "assistant", content: "", toolCalls: [{ id: "c1", name: "fs_read", args: {}, providerMeta: { thoughtSignature: "sig-1" } }] },
+      { role: "tool", toolCallId: "c1", content: "a" },
+    ];
+    expect(() => toRouteMessages("sys", messages)).toThrow(/unsupported/);
+    await expect(collectTurn(s.provider.turn(req({ messages }), PROVIDER_KEY))).rejects.toThrow(/unsupported/);
+    expect(s.sent).toEqual([]);
   });
 
   it("always sends a max token cap", async () => {

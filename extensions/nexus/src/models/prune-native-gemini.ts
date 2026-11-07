@@ -1,7 +1,7 @@
 import { redact } from "../shared/redact";
 import { DEFAULT_MAX_OUTPUT_TOKENS } from "./gemini";
 import { inScope, templateIdFor, type PruneConfig } from "./prune-adapter";
-import { baseOf, cancelled, checkServedModel, postToPrune, redactDeep } from "./prune-native-shared";
+import { baseOf, cancelled, checkServedModel, postToPrune } from "./prune-native-shared";
 import type { PruneMetadata } from "./prune-receipt";
 import type { Provider, StopReason, TurnEvent, TurnMessage, TurnRequest } from "./provider";
 
@@ -11,9 +11,10 @@ import type { Provider, StopReason, TurnEvent, TurnMessage, TurnRequest } from "
 // an OpenAI-style request and maps the Gemini-native response, the way gemini.ts does. Same safety rules as
 // prune-adapter.ts. Not wired into the registry or optimizer; the lead decides.
 //
-// Thought signatures: a replayed function call carries its saved signature in the tool_call's
-// `extra_content.google.thought_signature`, the place Google's OpenAI-compatibility docs define. That Prune forwards
-// the field to Gemini is NOT verified live.
+// Tool-call replay is UNSUPPORTED: Gemini needs a saved thought signature sent back with a replayed function call, and
+// the field path Prune forwards for it is not documented (extra_content.google.thought_signature was a guess and is
+// removed). toRouteMessages therefore throws on any replayed assistant tool call, so this adapter is text-only for
+// multi-turn use; tools may still be offered on a first turn.
 
 interface GeminiPart {
   text?: string;
@@ -29,7 +30,7 @@ interface GeminiBody {
   prune_metadata?: PruneMetadata;
 }
 
-interface OaiToolCall { id: string; type: "function"; function: { name: string; arguments: string }; extra_content?: { google: { thought_signature: string } } }
+interface OaiToolCall { id: string; type: "function"; function: { name: string; arguments: string }; }
 type OaiMessage =
   | { role: "system" | "user"; content: string }
   | { role: "assistant"; content: string | null; tool_calls?: OaiToolCall[] }
@@ -42,14 +43,8 @@ export function toRouteMessages(system: string, messages: readonly TurnMessage[]
   for (const m of messages) {
     if (m.role === "user") out.push({ role: "user", content: redact(m.content) });
     else if (m.role === "assistant") {
-      const calls = (m.toolCalls ?? []).map((c): OaiToolCall => {
-        const sig = (c.providerMeta as { thoughtSignature?: string } | undefined)?.thoughtSignature;
-        return {
-          id: c.id, type: "function", function: { name: c.name, arguments: JSON.stringify(redactDeep(c.args ?? {})) },
-          ...(sig ? { extra_content: { google: { thought_signature: sig } } } : {}),
-        };
-      });
-      out.push({ role: "assistant", content: m.content.length > 0 ? redact(m.content) : null, ...(calls.length > 0 ? { tool_calls: calls } : {}) });
+      if ((m.toolCalls ?? []).length > 0) throw new Error("Replaying Gemini tool calls through Prune is unsupported: the thought-signature field Prune forwards is not documented. Use the direct Gemini provider for tool-calling turns.");
+      out.push({ role: "assistant", content: m.content.length > 0 ? redact(m.content) : null });
     } else out.push({ role: "tool", tool_call_id: m.toolCallId, content: redact(m.content) });
   }
   return out;

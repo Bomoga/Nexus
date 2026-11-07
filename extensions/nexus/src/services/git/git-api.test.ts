@@ -14,6 +14,11 @@ describe("git-api", () => {
     expect(await getGitApi(disabled)).toBeUndefined();
   });
 
+  it("returns undefined when activation rejects", async () => {
+    const vs: VscodeLike = { ...vscodeWith({ repositories: [] }), extensions: { getExtension: () => ({ isActive: false, exports: { getAPI: () => ({ repositories: [] }) }, activate: async () => { throw new Error("boom"); } }) } };
+    expect(await getGitApi(vs)).toBeUndefined();
+  });
+
   it("activates the extension when needed", async () => {
     const activate = vi.fn(async () => undefined);
     const vs: VscodeLike = { ...vscodeWith({ repositories: [] }), extensions: { getExtension: () => ({ isActive: false, exports: { getAPI: () => ({ repositories: [] }) }, activate }) } };

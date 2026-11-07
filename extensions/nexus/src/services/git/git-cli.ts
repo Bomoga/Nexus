@@ -3,6 +3,7 @@
 // validated, paths are checked and follow `--`, and output is bounded. The write half belongs to L2-06.
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
+import { devNull } from "node:os";
 import path from "node:path";
 import type { BranchInfo, CommitDetail, FullSha, GitService, LogEntry, MergeResult, RefInfo, SessionWorktree } from "./types";
 
@@ -11,6 +12,9 @@ const MAX_LOG_ENTRIES = 20000;
 const MAX_FILES = 2000;
 const SHA_RE = /^[0-9a-f]{40}$/;
 const SESSION_ID_RE = /^[A-Za-z0-9_-]+$/;
+const ISO_RE = /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d+)?(Z|[+-]\d\d:\d\d)$/;
+const NUL = "\0";
+/** Field separator for ref listings only: git refuses control characters in ref names, so it cannot appear in one. */
 const US = "\x1f";
 
 /** Throws unless `sha` is a full 40-char lowercase hex SHA. */
@@ -18,34 +22,56 @@ export function assertSha(sha: string): void {
   if (typeof sha !== "string" || !SHA_RE.test(sha)) throw new Error("invalid commit sha: expected 40 lowercase hex characters");
 }
 
-/** Throws unless `p` is a non-empty repo-relative path with no `..` segment, no NUL and no drive or root prefix. */
+/** Throws unless `p` is a repo-relative path: no empty, "." or ".." segment, no NUL, no drive or root prefix. */
 export function assertRelativePath(p: string): void {
   if (typeof p !== "string" || p.length === 0) throw new Error("invalid path: empty");
   if (p.includes("\0")) throw new Error("invalid path: contains NUL");
   if (path.posix.isAbsolute(p) || path.win32.isAbsolute(p) || /^[A-Za-z]:/.test(p)) throw new Error("invalid path: must be relative to the repository root");
-  if (p.split(/[\\/]/).includes("..")) throw new Error("invalid path: must not contain '..'");
+  if (p.split(/[\\/]/).some(seg => seg === "" || seg === "." || seg === "..")) throw new Error("invalid path: must not contain empty, '.' or '..' segments");
 }
 
 function assertRef(ref: string): void {
-  if (typeof ref !== "string" || ref.length === 0 || ref.startsWith("-") || [...ref].some(c => c <= " " || c === "\x7f" || "~^:?*[\\".includes(c)) || ref.includes("..")) throw new Error("invalid ref name");
+  if (typeof ref !== "string" || ref.length === 0 || ref.startsWith("-") || ref.includes("..") || ref.includes("@{")
+    || [...ref].some(c => c <= " " || c === "\x7f" || "~^:?*[\\".includes(c))) throw new Error("invalid ref name");
+}
+
+function isIso(value: string): boolean {
+  return typeof value === "string" && ISO_RE.test(value) && !Number.isNaN(Date.parse(value));
 }
 
 function assertIso(value: string): void {
-  if (typeof value !== "string" || Number.isNaN(Date.parse(value))) throw new Error("invalid time: expected an ISO 8601 date");
+  if (!isIso(value)) throw new Error("invalid time: expected an ISO 8601 date with an offset");
+}
+
+/** Optional hooks for the git service. */
+export interface GitCliOptions {
+  /** Where truncation warnings go. The frozen contract shapes carry no "partial" flag, so partial results are reported here. */
+  logger?: { warn(message: string): void };
+  /** Ignore the user's and the system's git config (tests). */
+  isolatedConfig?: boolean;
 }
 
 interface RunResult { stdout: string; code: number }
 
 export class GitCli implements GitService {
-  constructor(private readonly repoRoot: string) {}
+  constructor(private readonly repoRoot: string, private readonly options: GitCliOptions = {}) {}
+
+  /** The child environment: every inherited GIT_* override is dropped (GIT_DIR, GIT_WORK_TREE, GIT_INDEX_FILE, GIT_CONFIG*, GIT_EXEC_PATH...), then ours is set. */
+  private env(): NodeJS.ProcessEnv {
+    const env: NodeJS.ProcessEnv = {};
+    for (const [k, v] of Object.entries(process.env)) if (!k.toUpperCase().startsWith("GIT_")) env[k] = v;
+    Object.assign(env, { LC_ALL: "C", GIT_TERMINAL_PROMPT: "0", GIT_OPTIONAL_LOCKS: "0", GIT_LITERAL_PATHSPECS: "1" });
+    if (this.options.isolatedConfig) Object.assign(env, { GIT_CONFIG_GLOBAL: devNull, GIT_CONFIG_SYSTEM: devNull, GIT_CONFIG_NOSYSTEM: "1" });
+    return env;
+  }
 
   private run(args: string[], options: { allowExit?: number[] } = {}): Promise<RunResult> {
     return new Promise((resolve, reject) => {
-      execFile("git", ["-c", "core.quotepath=off", ...args], {
+      execFile("git", ["-c", "core.quotepath=off", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=", ...args], {
         cwd: this.repoRoot,
         maxBuffer: MAX_OUTPUT,
         encoding: "utf8",
-        env: { ...process.env, LC_ALL: "C", GIT_TERMINAL_PROMPT: "0", GIT_OPTIONAL_LOCKS: "0", GIT_LITERAL_PATHSPECS: "1" },
+        env: this.env(),
       }, (error, stdout, stderr) => {
         if (!error) return resolve({ stdout, code: 0 });
         const code = typeof (error as { code?: unknown }).code === "number" ? (error as { code: number }).code : -1;
@@ -56,7 +82,18 @@ export class GitCli implements GitService {
     });
   }
 
+  /** True if `ref` resolves to a commit. */
+  private async resolves(ref: string): Promise<boolean> {
+    const { stdout } = await this.run(["rev-parse", "--verify", "--quiet", "--end-of-options", `${ref}^{commit}`], { allowExit: [1] });
+    return SHA_RE.test(stdout.trim());
+  }
+
+  /**
+   * sha1 of the first root commit reachable from HEAD (roots sorted, smallest first, so it is stable). A shallow clone or
+   * an orphan checkout has a different root than the full repository and so gets a different id.
+   */
   async workspaceId(): Promise<string> {
+    if (!await this.resolves("HEAD")) throw new Error("repository has no commits");
     const { stdout } = await this.run(["rev-list", "--max-parents=0", "HEAD"]);
     const roots = stdout.split("\n").filter(l => SHA_RE.test(l)).sort();
     if (!roots.length) throw new Error("repository has no commits");
@@ -64,8 +101,12 @@ export class GitCli implements GitService {
   }
 
   async log(options: { since?: string } = {}): Promise<LogEntry[]> {
-    const args = ["log", "--branches", "--tags", "--remotes", `--max-count=${MAX_LOG_ENTRIES}`, "-z",
-      `--format=%H${US}%P${US}%an${US}%cI${US}%s${US}%(trailers:key=Nexus-Agent,valueonly,unfold,separator=%x1e)`];
+    // Fields are NUL-separated and git cannot emit NUL inside commit data, so a forged \x1f, newline or fake date in a
+    // subject or author name cannot shift fields: every record is exactly FIELDS fields.
+    const FIELDS = 6;
+    const args = ["log", "--no-show-signature", ...(await this.resolves("HEAD") ? ["HEAD"] : []), "--branches", "--tags", "--remotes",
+      `--max-count=${MAX_LOG_ENTRIES + 1}`, "-z",
+      "--format=%H%x00%P%x00%an%x00%cI%x00%s%x00%(trailers:key=Nexus-Agent,valueonly,unfold,separator=%x1e)"];
     let sinceMs = -Infinity;
     if (options.since !== undefined) {
       assertIso(options.since);
@@ -74,27 +115,34 @@ export class GitCli implements GitService {
     }
     args.push("--");
     const { stdout } = await this.run(args);
+    const fields = stdout.split(NUL);
+    if (fields[fields.length - 1] === "") fields.pop();
+    if (fields.length % FIELDS !== 0) throw new Error("unexpected git log output");
     const entries: LogEntry[] = [];
-    for (const record of stdout.split("\0")) {
-      if (!record.trim()) continue;
-      const [sha, parents, authorName, committedAt, subject, trailer = ""] = record.replace(/^\n/, "").split(US);
-      if (!SHA_RE.test(sha) || Number.isNaN(Date.parse(committedAt))) continue;
+    for (let i = 0; i < fields.length; i += FIELDS) {
+      const [sha, parents, authorName, committedAt, subject, trailer] = fields.slice(i, i + FIELDS);
+      if (!SHA_RE.test(sha) || !isIso(committedAt)) continue;
       if (Date.parse(committedAt) < sinceMs) continue;
       const entry: LogEntry = { sha, parents: parents.split(" ").filter(p => SHA_RE.test(p)), authorName, committedAt, subject };
-      const session = trailer.split("\x1e").map(s => s.trim()).find(s => SESSION_ID_RE.test(s));
+      const session = trailer.split("\x1e").map(t => t.trim()).find(t => SESSION_ID_RE.test(t));
       if (session) entry.agentSessionId = session;
       entries.push(entry);
+    }
+    if (entries.length > MAX_LOG_ENTRIES) {
+      this.options.logger?.warn(`git log truncated to ${MAX_LOG_ENTRIES} entries: the result is partial`);
+      entries.length = MAX_LOG_ENTRIES;
     }
     return entries.sort((a, b) => Date.parse(b.committedAt) - Date.parse(a.committedAt));
   }
 
   async show(sha: FullSha): Promise<CommitDetail> {
     assertSha(sha);
-    const { stdout } = await this.run(["show", "--no-patch", "--no-show-signature", `--format=%H${US}%P${US}%an${US}%cI${US}%s${US}%b`, sha, "--"]);
-    const [full, parentsRaw, author, at, subject, ...bodyParts] = stdout.split(US);
-    if (!SHA_RE.test(full)) throw new Error("unexpected git show output");
+    // NUL-separated; the body (free text, last) is the sixth field.
+    const { stdout } = await this.run(["show", "--no-patch", "--no-show-signature", "--format=%H%x00%P%x00%an%x00%cI%x00%s%x00%b", sha, "--"]);
+    const [full, parentsRaw, author, at, subject, ...bodyParts] = stdout.split(NUL);
+    if (!SHA_RE.test(full) || !isIso(at) || bodyParts.length !== 1) throw new Error("unexpected git show output");
     const parents = parentsRaw.split(" ").filter(p => SHA_RE.test(p));
-    const body = bodyParts.join(US).replace(/\s+$/, "");
+    const body = bodyParts[0].replace(/\s+$/, "");
     return { sha: full, subject, body, author, at, parents, files: await this.changedFiles(sha, parents[0]) };
   }
 
@@ -117,7 +165,7 @@ export class GitCli implements GitService {
     }
     const files: CommitDetail["files"] = [];
     const s = names.stdout.split("\0");
-    for (let i = 0; i < s.length && files.length < MAX_FILES; i++) {
+    for (let i = 0; i < s.length; i++) {
       const code = s[i];
       if (!code) continue;
       const letter = code[0];
@@ -126,6 +174,10 @@ export class GitCli implements GitService {
       i += isTwoPath ? 2 : 1;
       if (file === undefined) break;
       const status = letter === "A" || letter === "C" ? "A" : letter === "D" ? "D" : letter === "R" ? "R" : "M";
+      if (files.length >= MAX_FILES) {
+        this.options.logger?.warn(`git show ${sha} truncated to ${MAX_FILES} files: the file list is partial`);
+        break;
+      }
       files.push({ path: file, status, ...(counts.get(file) ?? { additions: 0, deletions: 0 }) });
     }
     return files;
@@ -166,6 +218,7 @@ export class GitCli implements GitService {
 
   async branchesContaining(sha: FullSha): Promise<string[]> {
     assertSha(sha);
+    if (!await this.resolves(sha)) return [];
     const { stdout } = await this.run(["for-each-ref", `--contains=${sha}`, "--format=%(refname)", "refs/heads"]);
     return stdout.split("\n").filter(Boolean).map(r => r.replace(/^refs\/heads\//, ""));
   }
@@ -181,6 +234,7 @@ export class GitCli implements GitService {
   async contains(sha: FullSha, ref = "HEAD"): Promise<boolean> {
     assertSha(sha);
     const target = await this.headOf(ref);
+    if (!await this.resolves(sha)) return false;
     const { code } = await this.run(["merge-base", "--is-ancestor", sha, target], { allowExit: [1] });
     return code === 0;
   }
@@ -188,15 +242,17 @@ export class GitCli implements GitService {
   async fileAt(commit: FullSha, file: string): Promise<string | undefined> {
     assertSha(commit);
     assertRelativePath(file);
-    const normalized = file.replace(/\\/g, "/").replace(/^(\.\/)+/, "").replace(/\/+$/, "");
-    const { stdout } = await this.run(["ls-tree", "-z", commit, "--", normalized]);
-    const m = /^(\d+) (\w+) ([0-9a-f]{40})\t/.exec(stdout.split("\0")[0] ?? "");
-    if (!m || m[2] !== "blob") return undefined;
-    const blob = await this.run(["cat-file", "blob", m[3]]);
+    const { stdout } = await this.run(["ls-tree", "-z", commit, "--", file]);
+    // Require the entry's path to be exactly the requested one: never a directory listing or a pathspec expansion.
+    const entry = /^(\d+) (\w+) ([0-9a-f]{40})\t([^\0]*)$/s.exec(stdout.split(NUL)[0] ?? "");
+    if (!entry || entry[4] !== file || entry[2] !== "blob") return undefined;
+    const blob = await this.run(["cat-file", "blob", entry[3]]);
     return blob.stdout;
   }
 
   async isDirty(file: string): Promise<boolean> {
+    // Trust model: this runs `git status` in the user's checkout, so a clean/smudge filter configured by the repo can still
+    // run, exactly as with the built-in git extension. fsmonitor and hooks are disabled for every call; filters are not.
     assertRelativePath(file);
     const { stdout } = await this.run(["status", "--porcelain=v1", "-z", "--untracked-files=all", "--", file]);
     return stdout.length > 0;

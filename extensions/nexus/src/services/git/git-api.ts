@@ -28,7 +28,9 @@ export interface VscodeLike {
 export async function getGitApi(vscode: VscodeLike): Promise<GitApiLike | undefined> {
   const ext = vscode.extensions.getExtension("vscode.git");
   if (!ext) return undefined;
-  if (!ext.isActive) await ext.activate();
+  if (!ext.isActive) {
+    try { await ext.activate(); } catch { return undefined; }
+  }
   const exports = ext.exports;
   if (!exports || typeof exports.getAPI !== "function") return undefined;
   try { return exports.getAPI(1); } catch { return undefined; }   // throws when the extension is disabled

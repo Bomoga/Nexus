@@ -13,6 +13,18 @@ describe("fakeBridge", () => {
     for (const e of events) expect(NexusEvent.safeParse(e).success).toBe(true);
   });
 
+  test("answers events.activity with the scripted events bucketed per orbit in 15-minute buckets", async () => {
+    const c = client();
+    const from = "2026-11-07T00:00:00Z";
+    const to = "2026-11-09T00:00:00Z";
+    const events = await c.request("events.query", { from, to });
+    const buckets = await c.request("events.activity", { from, to });
+    expect(buckets.length).toBeGreaterThan(1);
+    expect(buckets.reduce((s, b) => s + b.count, 0)).toBe(events.length);
+    for (const b of buckets) expect(Date.parse(b.bucketStart) % (15 * 60_000)).toBe(0);
+    expect(new Set(buckets.map((b) => b.orbit)).size).toBeGreaterThan(1);
+  });
+
   test("answers slack.channels with schema-valid channels", async () => {
     const channels = await client().request("slack.channels", {});
     expect(channels.length).toBeGreaterThan(0);

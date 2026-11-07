@@ -1,6 +1,6 @@
 // Live events and per-frame drift for the globe scene. Hooks here never set React state per frame:
 // time advances through refs and imperative three updates (CLAUDE.md §7).
-import { useEffect, useLayoutEffect, useRef } from "react";
+import { createContext, useContext, useEffect, useLayoutEffect, useRef } from "react";
 import type { Object3D } from "three";
 import type { NexusEvent, TimeWindow } from "../../../src/contracts";
 import { subscribe } from "../../shared";
@@ -30,13 +30,20 @@ export function useLiveEvents(onEvent: (event: NexusEvent) => void, enabled = tr
 
 /** A "now" that keeps advancing between prop updates: base + wall time elapsed since the base was set. */
 export function useDriftNow(now: number): () => number {
-  const base = useRef({ now, perf: performance.now() });
-  const read = useRef(() => base.current.now + (performance.now() - base.current.perf));
+  const frozen = useContext(DriftFrozen);
+  const base = useRef({ now, perf: performance.now(), frozen });
+  const read = useRef(() => (base.current.frozen ? base.current.now : base.current.now + (performance.now() - base.current.perf)));
   useLayoutEffect(() => {
-    base.current = { now, perf: performance.now() };
-  }, [now]);
+    base.current = { now, perf: performance.now(), frozen };
+  }, [now, frozen]);
   return read.current;
 }
+
+/**
+ * True inside the scene while the globe is pinned to a past time (activity strip): drift stops, so markers stay where
+ * that time puts them. Provided inside the Canvas (React context does not cross the r3f Canvas boundary).
+ */
+export const DriftFrozen = createContext(false);
 
 // Arrival times (performance.now) of live markers still scaling in. Empty almost always, so the per-frame check is free.
 const arrivals = new Map<string, number>();

@@ -1,9 +1,11 @@
+import { SocketModeClient } from "@slack/socket-mode";
+import { WebAPIPlatformError } from "@slack/web-api/dist/errors.js";
 import { describe, expect, it, vi } from "vitest";
 import { ChatMessage } from "../../contracts";
 import { encodeCodeRef } from "../../contracts";
 import { fx } from "../../contracts/fixtures";
 import { getIdentity, identity, makeFakeBolt } from "./fake-bolt.test-util";
-import { SlackSocket, createBoltApp } from "./socket";
+import { SlackSocket, createBoltApp, hardenReconnect } from "./socket";
 import type { SlackMessageEvent } from "./types";
 
 const tokens = { botToken: "xoxb-SECRET-bot", appToken: "xapp-SECRET-app" };
@@ -228,5 +230,63 @@ describe("createBoltApp", () => {
     expect(typeof app.start).toBe("function");
     expect(typeof app.client.users.info).toBe("function");
     expect(() => app.action("nexus.approve", async () => undefined)).not.toThrow();
+  });
+});
+
+describe("the SDK reconnect path (real SocketModeClient)", () => {
+  const platformError = (code: string) => Object.assign(new (WebAPIPlatformError as unknown as new (m: string) => Error)(code), { data: { ok: false, error: code } });
+  function client(codes: string[]) {
+    const c = new SocketModeClient({ appToken: "xapp-fake", clientPingTimeout: 5, logLevel: undefined });
+    let n = 0;
+    (c as unknown as { webClient: { apps: { connections: { open: () => Promise<never> } } } }).webClient.apps.connections.open = async () => {
+      throw platformError(codes[Math.min(n++, codes.length - 1)]);
+    };
+    hardenReconnect(c, 3);
+    return { c, calls: () => n };
+  }
+  const unhandled: unknown[] = [];
+  const onUnhandled = (e: unknown) => { unhandled.push(e); };
+
+  it("settles start() when a recoverable error turns unrecoverable, with no unhandled rejection", async () => {
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      const { c } = client(["internal_error", "invalid_auth"]);
+      await expect(c.start()).rejects.toMatchObject({ data: { error: "invalid_auth" } });
+      await new Promise(r => setTimeout(r, 20));
+      expect(unhandled).toEqual([]);
+    } finally { process.off("unhandledRejection", onUnhandled); }
+  });
+
+  it("stops retrying a recoverable error after the cap and rejects", async () => {
+    const { c, calls } = client(["internal_error"]);
+    await expect(c.start()).rejects.toThrow(/too many reconnect attempts/);
+    expect(calls()).toBe(4);   // the first try plus 3 reconnects
+  });
+
+  it("rejects instead of hanging when shut down during a reconnect wait", async () => {
+    const c = new SocketModeClient({ appToken: "xapp-fake", clientPingTimeout: 50 });
+    (c as unknown as { webClient: { apps: { connections: { open: () => Promise<never> } } } }).webClient.apps.connections.open = async () => { throw platformError("internal_error"); };
+    hardenReconnect(c, 3);
+    const started = c.start();
+    (c as unknown as { shuttingDown: boolean }).shuttingDown = true;
+    await expect(started).rejects.toThrow(/shutting down/);
+  });
+});
+
+describe("SlackSocket first connect", () => {
+  it("gives up on a connect that never settles, and stop() abandons one at once", async () => {
+    const bolt = makeFakeBolt();
+    bolt.app.start.mockImplementation(() => new Promise(() => undefined));
+    const timed = new SlackSocket({ getIdentity, getTokens: async () => tokens, makeApp: () => bolt.app, connectTimeoutMs: 30, sleep: () => new Promise(() => undefined) });
+    expect(await timed.start()).toBe(false);
+    await timed.stop();
+
+    const stuck = new SlackSocket({ getIdentity, getTokens: async () => tokens, makeApp: () => bolt.app, connectTimeoutMs: 60_000, sleep: () => new Promise(() => undefined) });
+    const pending = stuck.start();
+    await new Promise(r => setTimeout(r, 10));
+    const t0 = Date.now();
+    await stuck.stop();
+    expect(await pending).toBe(false);
+    expect(Date.now() - t0).toBeLessThan(1000);
   });
 });

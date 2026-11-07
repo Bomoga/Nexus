@@ -176,6 +176,27 @@ describe("approval buttons", () => {
     delete users.U_X;
   });
 
+  it("refuses the bot's own user id even if users.info calls it a human", async () => {
+    const saved = users[BOT_USER];
+    users[BOT_USER] = { id: BOT_USER, team_id: TEAM, name: "nexus", is_bot: false };
+    try {
+      const { bolt, resolve } = setup();
+      await bolt.click(APPROVE_ACTION_ID, click(APPROVE_ACTION_ID, BOT_USER));
+      expect(resolve).not.toHaveBeenCalled();
+    } finally { users[BOT_USER] = saved; }
+  });
+
+  it("fails closed when no team id is known anywhere", async () => {
+    users.U_NOTEAM = { id: "U_NOTEAM", name: "x", is_bot: false };
+    try {
+      const { bolt, resolve } = setup(undefined, { botIdentity: async () => ({ ...identity, teamId: undefined }) });
+      const c = click(APPROVE_ACTION_ID, "U_NOTEAM");
+      delete (c.body as { team?: unknown }).team;
+      await bolt.click(APPROVE_ACTION_ID, c);
+      expect(resolve).not.toHaveBeenCalled();
+    } finally { delete users.U_NOTEAM; }
+  });
+
   it("refuses everything when the bot's own workspace is unknown", async () => {
     const { bolt, resolve } = setup(undefined, { botIdentity: async () => ({ ...identity, teamId: undefined }) });
     await bolt.click(APPROVE_ACTION_ID, click(APPROVE_ACTION_ID, "U_ADRIAN"));

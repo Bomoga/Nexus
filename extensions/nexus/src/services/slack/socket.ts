@@ -56,6 +56,44 @@ const SILENT_LOGGER = {
 /** Connection retries for apps.connections.open: short, so a bad token fails fast and SlackSocket's own backoff takes over. */
 const CONNECT_RETRY = { retries: 2, factor: 1.5, minTimeout: 500, maxTimeout: 3_000 };
 
+/** Reconnect attempts the SDK itself may make before giving up, after which SlackSocket's own backoff takes over. */
+export const MAX_SDK_RECONNECTS = 5;
+
+interface ReconnectingClient {
+  numOfConsecutiveReconnectionFailures: number;
+  clientPingTimeoutMS: number;
+  reconnectionTimer?: ReturnType<typeof setTimeout>;
+  shuttingDown: boolean;
+  emit(event: string, ...args: unknown[]): boolean;
+  delayReconnectAttempt(cb: () => Promise<unknown>): Promise<unknown>;
+}
+
+/**
+ * Replaces the SocketModeClient's delayReconnectAttempt on this instance. The SDK's version (socket-mode
+ * SocketModeClient.js) runs `cb.apply(this).then(res)`: a rejection is never handled, its promise never settles, and a
+ * recoverable error is retried without limit. This one forwards failures, caps attempts, and rejects when shutting down,
+ * so start() always settles and a dead client is always reported.
+ */
+export function hardenReconnect(client: unknown, maxAttempts = MAX_SDK_RECONNECTS): void {
+  const c = client as ReconnectingClient;
+  c.delayReconnectAttempt = function (this: ReconnectingClient, cb: () => Promise<unknown>) {
+    this.numOfConsecutiveReconnectionFailures += 1;
+    if (this.numOfConsecutiveReconnectionFailures > maxAttempts) return Promise.reject(new Error("socket mode: too many reconnect attempts"));
+    const ms = this.clientPingTimeoutMS * this.numOfConsecutiveReconnectionFailures;
+    return new Promise((res, rej) => {
+      this.reconnectionTimer = setTimeout(() => {
+        this.reconnectionTimer = undefined;
+        if (this.shuttingDown) { rej(new Error("socket mode: shutting down")); return; }
+        this.emit("reconnecting");
+        cb.apply(this).then(res, rej);
+      }, ms);
+    });
+  };
+}
+
+/** How long our first connect may take before SlackSocket gives up on it and falls back to its own backoff. */
+export const FIRST_CONNECT_TIMEOUT_MS = 30_000;
+
 /**
  * The real Bolt App in Socket Mode with the app-level token. Construction does no network I/O: token verification is off and the
  * bot's ids come from our own auth.test, so Bolt never calls auth.test itself (and cannot leave an unhandled rejection).
@@ -73,6 +111,7 @@ export function createBoltApp(tokens: BotTokens, identity: BotIdentity): BoltLik
   // The SDK reconnects by calling client.start() from a timer and drops the promise, so a failure there is an unhandled rejection and a
   // silently dead client. Wrap start: the first connect still rejects to the caller; later failures are caught and reported as "dead".
   const client = receiver.client;
+  hardenReconnect(client);
   const originalStart = client.start.bind(client);
   const deadListeners: (() => void)[] = [];
   let everConnected = false;
@@ -112,6 +151,8 @@ export interface SocketOptions {
   /** Registers more handlers (approval buttons) on the app before it starts. */
   configure?: (app: BoltLike) => void;
   initialBackoffMs?: number;
+  /** Test seam; defaults to FIRST_CONNECT_TIMEOUT_MS. */
+  connectTimeoutMs?: number;
   maxBackoffMs?: number;
   sleep?: (ms: number) => Promise<void>;
   now?: () => number;
@@ -128,6 +169,7 @@ export class SlackSocket {
   private running = false;
   private connected = false;
   private generation = 0;
+  private abandon: (() => void) | undefined;
   private readonly listeners = new Set<Listener>();
   private readonly connectionListeners = new Set<(connected: boolean) => void>();
   private readonly users = new Map<string, { user?: SlackUser; at: number }>();
@@ -154,6 +196,7 @@ export class SlackSocket {
   async stop(): Promise<void> {
     this.running = false;
     this.generation++;
+    this.abandon?.();
     const apps = [this.app, this.starting];
     this.app = undefined;
     this.starting = undefined;
@@ -192,7 +235,16 @@ export class SlackSocket {
       app.onDead(() => { void this.onDead(gen, mine); });
       this.opts.configure?.(app);
       this.starting = app;
-      await app.start();
+      // Bounded: a connect that neither succeeds nor fails (a stuck SDK path) is abandoned, and stop() abandons it at once.
+      const connectTimeout = this.opts.connectTimeoutMs ?? FIRST_CONNECT_TIMEOUT_MS;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([
+          app.start(),
+          new Promise((_, rej) => { timer = setTimeout(() => rej(new Error("socket mode: connect timed out")), connectTimeout); }),
+          new Promise((_, rej) => { this.abandon = () => rej(new Error("socket mode: stopped")); }),
+        ]);
+      } finally { clearTimeout(timer); this.abandon = undefined; }
     } catch {
       if (this.starting === app) this.starting = undefined;
       try { await app?.stop(); } catch { /* never started */ }

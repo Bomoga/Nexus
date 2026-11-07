@@ -6,6 +6,8 @@ import { createLoopbackClient } from "../features/gitviews/loopback";
 import { mergeAgentBranch } from "../features/gitviews/merge-agent-branch";
 import { openCommit } from "../features/gitviews/open-commit";
 import type { DiffSide } from "../features/gitviews/open-commit";
+import { openReceipt } from "../features/receipts/open-receipt";
+import type { ReceiptSource } from "../features/receipts/open-receipt";
 
 // Lane 3 wiring: webview views and panels, and the commands that open them.
 // The router must be the one every lane serves its handlers on; until extension.ts passes it in, a local router is
@@ -27,7 +29,12 @@ function standInRouter(): NexusBridgeRouter {
   });
 }
 
-export function registerLane3(context: vscode.ExtensionContext, router?: NexusBridgeRouter): Lane3Views {
+/** What Lane 1 can hand Lane 3 from extension.ts (its OptimizerService serves openReceipt). */
+export interface Lane3FromLane1 {
+  receipts?: ReceiptSource;
+}
+
+export function registerLane3(context: vscode.ExtensionContext, router?: NexusBridgeRouter, lane1: Lane3FromLane1 = {}): Lane3Views {
   const shared = router ?? standInRouter();
   if (!router) console.warn("Nexus: lane 3 views are on a stand-in router; pass the shared router from extension.ts.");
   const views = new Lane3Views({
@@ -38,6 +45,22 @@ export function registerLane3(context: vscode.ExtensionContext, router?: NexusBr
   }).register();
   context.subscriptions.push(views);
   registerGitViews(context, shared);
+  context.subscriptions.push(
+    vscode.commands.registerCommand("nexus.openReceipt", (receiptId?: unknown, sessionId?: unknown) =>
+      openReceipt(
+        {
+          receipts: lane1.receipts,
+          askReceiptId: async () => vscode.window.showInputBox({ prompt: "Prune receipt id", placeHolder: "rcpt_…" }),
+          copy: (text) => Promise.resolve(vscode.env.clipboard.writeText(text)),
+          openExternal: (url) => Promise.resolve(vscode.env.openExternal(vscode.Uri.parse(url, true))),
+          info: (m) => void vscode.window.showInformationMessage(m),
+          error: (m) => void vscode.window.showErrorMessage(m),
+        },
+        receiptId,
+        sessionId,
+      ),
+    ),
+  );
   return views;
 }
 

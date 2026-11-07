@@ -2,6 +2,7 @@
 // is testable without the real vscode module; src/register/lane-3.ts supplies the real ones.
 import type * as vscode from "vscode";
 import type { Channel, ChatMessage, CodeRef } from "../../contracts";
+import { plainNotificationText } from "../../shared/plain-text";
 
 export interface EditorSelection {
   /** Workspace-relative path. */
@@ -90,9 +91,10 @@ export async function shareSelection(deps: ShareDeps): Promise<void> {
     }
     await deps.post({ channelId: channel.channelId, text: formatShareText(link, snippet), threadTs, clientId: newClientId() });
     deps.revealChat(channel.channelId, threadTs);
-    deps.showInfo(`Shared ${sel.path}:${sel.startLine}-${sel.endLine} to ${channel.label}.`);
+    // Channel names (Slack), paths and error text are untrusted: a notification renders [label](command:...) as a runnable link.
+    deps.showInfo(plainNotificationText(`Shared ${sel.path}:${sel.startLine}-${sel.endLine} to ${channel.label}.`));
   } catch (e) {
-    deps.showError(`Nexus: could not share to Slack: ${messageOf(e)}`);
+    deps.showError(plainNotificationText(`Nexus: could not share to Slack: ${messageOf(e)}`));
   }
 }
 

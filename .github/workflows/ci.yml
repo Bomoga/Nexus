@@ -1,0 +1,22 @@
+name: nexus-ci
+
+on:
+  pull_request:
+
+jobs:
+  extension:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: extensions/nexus
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            extensions/nexus
+            .nvmrc
+          sparse-checkout-cone-mode: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+      - run: npm run ci

@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import type { Channel, ChatMessage } from "../../src/contracts";
-import { EmptyState, getBridge } from "../shared";
+import { EmptyState, StoreStatusLine, getBridge } from "../shared";
 import type { BridgeClient } from "../shared";
 import { ChannelList } from "./ChannelList";
 import { History } from "./History";
@@ -19,12 +19,14 @@ function openLink(url: string): void {
 
 export function App({ bridge }: AppProps) {
   const [selectedId, setSelectedId] = useState<string | undefined>();
+  const [names, setNames] = useState<Record<string, string>>({});
   const [thread, setThread] = useState<{ channelId: string; threadTs: string } | undefined>();
   // One outbox for the page: sends and drafts outlive the history and thread views (not a webview reload).
   const outbox = useMemo(() => createOutbox(bridge ?? getBridge()), [bridge]);
   return (
     <OutboxContext.Provider value={outbox}>
       <div className="chat-app">
+        <StoreStatusLine bridge={bridge} />
         <div className="chat-panes">
           <aside className="chat-left">
             <ChannelList
@@ -34,7 +36,10 @@ export function App({ bridge }: AppProps) {
                 setSelectedId(c.id);
                 setThread(undefined);
               }}
-              onLoaded={(cs) => setSelectedId((cur) => cur ?? cs[0]?.id)}
+              onLoaded={(cs) => {
+                setNames(Object.fromEntries(cs.map((c) => [c.id, c.name])));
+                setSelectedId((cur) => cur ?? cs[0]?.id);
+              }}
             />
           </aside>
           <main className="chat-right">
@@ -42,6 +47,7 @@ export function App({ bridge }: AppProps) {
               <History
                 bridge={bridge}
                 channelId={selectedId}
+                channelName={names[selectedId]}
                 onOpenLink={openLink}
                 onOpenThread={(m: ChatMessage) => setThread({ channelId: m.channelId, threadTs: m.threadTs ?? m.ts })}
               />

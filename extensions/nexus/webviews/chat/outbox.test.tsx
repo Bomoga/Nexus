@@ -145,7 +145,7 @@ describe("post results reach the view showing the message now (failure 3)", () =
     send("round trip");
     await screen.findByText("round trip");
     await selectChannel("nexus-build");
-    await screen.findByText("no messages yet");
+    await screen.findByText("no messages in #nexus-build yet");
     host.release();
     await settle();
     await selectChannel("nexus-demo");
@@ -204,7 +204,7 @@ describe("thread replies and drafts outlive the pane (failure 4)", () => {
     expect(box("reply").value).toBe("thread draft");
     expect(box("message").value).toBe("channel draft");
     await selectChannel("nexus-build");
-    await screen.findByText("no messages yet");
+    await screen.findByText("no messages in #nexus-build yet");
     expect(box("message").value).toBe("");
     expect(screen.queryByLabelText("reply")).toBeNull();
     await selectChannel("nexus-demo");

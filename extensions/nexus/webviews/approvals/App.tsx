@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ApprovalRequest, SwarmReview } from "../../src/contracts";
-import { BridgeError, Button, Chip, EmptyState, KeyValueList, KeyValueRow, StatusLine, getBridge } from "../shared";
+import { BridgeError, Button, Chip, EmptyState, KeyValueList, KeyValueRow, PendingNote, StatusLine, StoreStatusLine, friendlyError, getBridge, useNow } from "../shared";
 import type { BridgeClient, Tone } from "../shared";
 import { formatEventTime } from "../globe/model/picking";
 
@@ -11,7 +11,6 @@ const DECISION_TONE: Record<Decision, Tone> = { approved: "ok", rejected: "error
 const VERDICT_TONE: Record<Verdict, Tone> = { looks_good: "ok", concerns: "pending", do_not_merge: "error" };
 const VIA_LABEL: Record<NonNullable<ApprovalRequest["decidedBy"]>["via"], string> = { slack: "slack", app: "app", auth0_push: "auth0 push" };
 
-const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
 const timeOf = (iso: string | undefined) => (iso ? Date.parse(iso) : Number.NaN);
 const tplus = (iso: string | undefined) => formatEventTime(timeOf(iso));
 
@@ -115,11 +114,12 @@ interface RowProps {
   busy: boolean;
   rerunBusy: boolean;
   names: ReadonlyMap<string, string>;
+  now: number;
   onResolve: (id: string, decision: Decision) => void;
   onRerun: (id: string) => void;
 }
 
-function ApprovalRow({ approval, review, busy, rerunBusy, names, onResolve, onRerun }: RowProps) {
+function ApprovalRow({ approval, review, busy, rerunBusy, names, now, onResolve, onRerun }: RowProps) {
   const by = approval.decidedBy;
   const who = by ? (by.via === "slack" ? names.get(by.userId) ?? by.userId : by.userId) : "";
   return (
@@ -138,10 +138,13 @@ function ApprovalRow({ approval, review, busy, rerunBusy, names, onResolve, onRe
       {approval.decision ? (
         <div className="ap-decided nx-data">{by ? `decided by ${who} via ${VIA_LABEL[by.via]} ${tplus(approval.decidedAt)}` : `decided ${tplus(approval.decidedAt)}`}</div>
       ) : (
-        <div className="ap-line">
-          <Button variant="primary" disabled={busy} onClick={() => onResolve(approval.id, "approved")}>APPROVE</Button>
-          <Button disabled={busy} onClick={() => onResolve(approval.id, "rejected")}>REJECT</Button>
-        </div>
+        <>
+          <PendingNote requestedAt={approval.requestedAt} now={now} />
+          <div className="ap-line">
+            <Button variant="primary" disabled={busy} onClick={() => onResolve(approval.id, "approved")}>APPROVE</Button>
+            <Button disabled={busy} onClick={() => onResolve(approval.id, "rejected")}>REJECT</Button>
+          </div>
+        </>
       )}
     </div>
   );
@@ -154,6 +157,13 @@ export function App({ bridge = getBridge() }: { bridge?: BridgeClient }) {
   const [busy, setBusy] = useState<ReadonlySet<string>>(new Set());
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string | undefined>();
+  // A failed load: shown with a RETRY that re-runs it.
+  const [loadError, setLoadError] = useState<string | undefined>();
+  const [reviewError, setReviewError] = useState<string | undefined>();
+  const [attempt, setAttempt] = useState(0);
+  const [reviewAttempt, setReviewAttempt] = useState(0);
+  // One clock for every pending row in the view.
+  const now = useNow();
   const askedReviews = useRef(new Set<string>());
   const askedUsers = useRef(new Set<string>());
 
@@ -173,12 +183,12 @@ export function App({ bridge = getBridge() }: { bridge?: BridgeClient }) {
         if (!live) return;
         list.forEach(putApproval);
         setLoaded(true);
-        setError(undefined);
+        setLoadError(undefined);
       },
       (e) => {
         if (!live) return;
         setLoaded(true);
-        setError(`approvals.list failed: ${message(e)}`);
+        setLoadError(friendlyError(e, "approvals"));
       },
     );
     return () => {
@@ -186,7 +196,7 @@ export function App({ bridge = getBridge() }: { bridge?: BridgeClient }) {
       unsubA();
       unsubR();
     };
-  }, [bridge, putApproval, putReview]);
+  }, [bridge, putApproval, putReview, attempt]);
 
   useEffect(() => {
     for (const a of approvals.values()) {
@@ -196,7 +206,7 @@ export function App({ bridge = getBridge() }: { bridge?: BridgeClient }) {
           (r) => (r ? putReview(r) : undefined),
           (e) => {
             askedReviews.current.delete(a.id);
-            setError(`swarms.review.get failed: ${message(e)}`);
+            setReviewError(friendlyError(e, "review"));
           },
         );
       }
@@ -212,7 +222,7 @@ export function App({ bridge = getBridge() }: { bridge?: BridgeClient }) {
         );
       }
     }
-  }, [approvals, bridge, putReview]);
+  }, [approvals, bridge, putReview, reviewAttempt]);
 
   const withBusy = useCallback(async (key: string, work: () => Promise<void>) => {
     setBusy((prev) => new Set(prev).add(key));
@@ -220,7 +230,7 @@ export function App({ bridge = getBridge() }: { bridge?: BridgeClient }) {
       await work();
       setError(undefined);
     } catch (e) {
-      setError(`${key.startsWith("rerun:") ? "swarms.review.rerun" : "approvals.resolve"} failed: ${message(e)}`);
+      setError(friendlyError(e, key.startsWith("rerun:") ? "review" : "approvals"));
     } finally {
       setBusy((prev) => {
         const next = new Set(prev);
@@ -252,6 +262,26 @@ export function App({ bridge = getBridge() }: { bridge?: BridgeClient }) {
 
   return (
     <div className="ap-app">
+      <StoreStatusLine bridge={bridge} />
+      {loadError ? (
+        <StatusLine tone="error">
+          {loadError} <Button onClick={() => setAttempt((n) => n + 1)}>RETRY</Button>
+        </StatusLine>
+      ) : null}
+      {reviewError ? (
+        <StatusLine tone="error">
+          {reviewError}{" "}
+          <Button
+            onClick={() => {
+              askedReviews.current.clear();
+              setReviewError(undefined);
+              setReviewAttempt((n) => n + 1);
+            }}
+          >
+            RETRY
+          </Button>
+        </StatusLine>
+      ) : null}
       {error ? <StatusLine tone="error">{error}</StatusLine> : null}
       {sorted.length === 0 ? (
         loaded ? <EmptyState message="No approvals" /> : null
@@ -264,6 +294,7 @@ export function App({ bridge = getBridge() }: { bridge?: BridgeClient }) {
             busy={busy.has(a.id)}
             rerunBusy={busy.has(`rerun:${a.id}`)}
             names={names}
+            now={now}
             onResolve={onResolve}
             onRerun={onRerun}
           />

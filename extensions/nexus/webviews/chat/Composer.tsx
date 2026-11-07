@@ -60,7 +60,7 @@ export function Composer({ onSend, placeholder = "message", initialText = "", on
         }}
         onKeyDown={onKeyDown}
       />
-      <Button variant="primary" onClick={submit} disabled={text.trim().length === 0}>
+      <Button variant="primary" kbd="↵" onClick={submit} disabled={text.trim().length === 0}>
         SEND
       </Button>
     </div>

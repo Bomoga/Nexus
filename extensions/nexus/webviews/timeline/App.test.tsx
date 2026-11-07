@@ -57,7 +57,7 @@ function setup(events: NexusEvent[] = EVENTS, answers: Answers = {}) {
         try {
           res = fn ? { t: "res", id: env.id, ok: true, body: fn(env.body as Record<string, unknown>) } : { t: "res", id: env.id, ok: false, error: { code: "not_found", message: env.name } };
         } catch (e) {
-          res = { t: "res", id: env.id, ok: false, error: { code: "internal", message: e instanceof Error ? e.message : String(e) } };
+          res = { t: "res", id: env.id, ok: false, error: { code: ((e as { code?: string }).code ?? "internal") as "internal", message: e instanceof Error ? e.message : String(e) } };
         }
         handlers.forEach((h) => h(res));
       });
@@ -176,6 +176,30 @@ describe("timeline view", () => {
     const { bridge } = setup(EVENTS, { "events.query": () => { throw new Error("store offline"); } });
     render(<App bridge={bridge} nowMs={NOW} />);
     expect(await screen.findByText(/store offline|not_found|internal/i)).toBeTruthy();
+  });
+
+  test("a not_found query shows the friendly line and RETRY re-requests", async () => {
+    let missing = true;
+    const { bridge, reqs } = setup(EVENTS, {
+      "events.query": () => {
+        if (missing) throw Object.assign(new Error("no handler for events.query"), { code: "not_found" });
+        return EVENTS;
+      },
+    });
+    render(<App bridge={bridge} nowMs={NOW} />);
+    expect(await screen.findByText("events isn't connected yet")).toBeTruthy();
+    expect(screen.queryByText(/no handler/)).toBeNull();
+    missing = false;
+    fireEvent.click(screen.getByRole("button", { name: "RETRY" }));
+    await loaded(4);
+    expect(reqs("events.query")).toHaveLength(2);
+    expect(screen.queryByText("events isn't connected yet")).toBeNull();
+  });
+
+  test("an empty window shows one line", async () => {
+    const { bridge } = setup([]);
+    render(<App bridge={bridge} nowMs={NOW} />);
+    expect(await screen.findByText("no events in this window")).toBeTruthy();
   });
 
   test("shows a truncated line when the query hit the limit", async () => {

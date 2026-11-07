@@ -6,6 +6,8 @@ import { createLoopbackClient } from "../features/gitviews/loopback";
 import { mergeAgentBranch } from "../features/gitviews/merge-agent-branch";
 import { openCommit } from "../features/gitviews/open-commit";
 import type { DiffSide } from "../features/gitviews/open-commit";
+import { openReceipt } from "../features/receipts/open-receipt";
+import type { ReceiptSource } from "../features/receipts/open-receipt";
 
 // Lane 3 wiring: webview views and panels, and the commands that open them.
 // The router must be the one every lane serves its handlers on; until extension.ts passes it in, a local router is
@@ -27,7 +29,12 @@ function standInRouter(): NexusBridgeRouter {
   });
 }
 
-export function registerLane3(context: vscode.ExtensionContext, router?: NexusBridgeRouter): Lane3Views {
+/** What Lane 1 can hand Lane 3 from extension.ts (its OptimizerService serves openReceipt). */
+export interface Lane3FromLane1 {
+  receipts?: ReceiptSource;
+}
+
+export function registerLane3(context: vscode.ExtensionContext, router?: NexusBridgeRouter, lane1: Lane3FromLane1 = {}): Lane3Views {
   const shared = router ?? standInRouter();
   if (!router) console.warn("Nexus: lane 3 views are on a stand-in router; pass the shared router from extension.ts.");
   const views = new Lane3Views({
@@ -38,13 +45,45 @@ export function registerLane3(context: vscode.ExtensionContext, router?: NexusBr
   }).register();
   context.subscriptions.push(views);
   registerGitViews(context, shared);
+  context.subscriptions.push(
+    vscode.commands.registerCommand("nexus.openReceipt", (receiptId?: unknown, sessionId?: unknown) =>
+      openReceipt(
+        {
+          receipts: lane1.receipts,
+          askReceiptId: async () => vscode.window.showInputBox({ prompt: "Prune receipt id", placeHolder: "the receipt signature from the session view" }),
+          copy: (text) => Promise.resolve(vscode.env.clipboard.writeText(text)),
+          openExternal: (url) => Promise.resolve(vscode.env.openExternal(vscode.Uri.parse(url, true))),
+          info: (m) => void vscode.window.showInformationMessage(m),
+          error: (m) => void vscode.window.showErrorMessage(m),
+        },
+        receiptId,
+        sessionId,
+      ),
+    ),
+  );
   return views;
 }
 
 /** The slice of the built-in git extension's API (extensions/git/src/api/git.d.ts) used for diff URIs. */
+interface GitRepo { getCommit(ref: string): Promise<{ hash: string }> }
 interface GitApi {
+  readonly state: "uninitialized" | "initialized";
+  onDidChangeState(listener: (state: "uninitialized" | "initialized") => void): vscode.Disposable;
   toGitUri(uri: vscode.Uri, ref: string): vscode.Uri;
-  getRepository(uri: vscode.Uri): { getCommit(ref: string): Promise<{ hash: string }> } | null;
+  getRepository(uri: vscode.Uri): GitRepo | null;
+  openRepository(root: vscode.Uri): Promise<GitRepo | null>;
+}
+
+/** Right after startup the git extension may not have scanned the folder yet: wait for it (up to 5 s), then open it if needed. */
+async function repositoryFor(git: GitApi, folder: vscode.Uri): Promise<GitRepo | null> {
+  if (git.state !== "initialized") {
+    await new Promise<void>((resolve) => {
+      const done = (): void => { clearTimeout(timer); sub.dispose(); resolve(); };
+      const timer = setTimeout(done, 5000);
+      const sub = git.onDidChangeState((s) => { if (s === "initialized") done(); });
+    });
+  }
+  return git.getRepository(folder) ?? (await git.openRepository(folder));
 }
 
 /** git empty tree: the git file system provider serves it as an empty, read-only file. */
@@ -75,8 +114,12 @@ function registerGitViews(context: vscode.ExtensionContext, router: NexusBridgeR
   async function resolveSha(sha: string): Promise<string | undefined> {
     const folder = vscode.workspace.workspaceFolders?.[0];
     if (!folder) return undefined;
-    const repo = (await getGitApi()).getRepository(folder.uri);
-    try { return (await repo?.getCommit(sha))?.hash.toLowerCase(); } catch { return undefined; }
+    try {
+      const repo = await repositoryFor(await getGitApi(), folder.uri);
+      return (await repo?.getCommit(sha))?.hash.toLowerCase();
+    } catch {
+      return undefined;
+    }
   }
 
   context.subscriptions.push(

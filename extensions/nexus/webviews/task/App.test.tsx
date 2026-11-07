@@ -160,6 +160,15 @@ describe("task panel", () => {
     expect(long.reqs("tasks.decompose")[0].body).toEqual({ taskId: "task_01" });
   });
 
+  test("the plan is shown under the editor after BREAK INTO SUBTASKS", async () => {
+    const long = setup({ "tasks.get": () => task(`${QUOTE}\n\n${"x".repeat(1201)}`) });
+    render(<App bridge={long.bridge} taskId="task_01" />);
+    fireEvent.click(await screen.findByRole("button", { name: "BREAK INTO SUBTASKS" }));
+    expect(await screen.findByText("Fix discount math")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "ACCEPT" })).toBeTruthy();
+    expect(screen.getByText(/plan plan_01 proposed: 3 subtasks/)).toBeTruthy();
+  });
+
   test("a not_found tasks.get shows the friendly line and RETRY re-requests", async () => {
     let missing = true;
     const { bridge, reqs } = setup({

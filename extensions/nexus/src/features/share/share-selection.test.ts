@@ -83,6 +83,19 @@ describe("shareSelection", () => {
     expect(d.revealChat).not.toHaveBeenCalled();
   });
 
+  test("notification text can't carry a runnable command link from a channel name or an error", async () => {
+    const evil = "[click](command:workbench.action.terminal.new)";
+    const d = deps({ listChannels: vi.fn(async () => [{ ...fx.channels[0], name: evil }]) });
+    await shareSelection(d);
+    const info = String(d.showInfo.mock.calls[0][0]);
+    expect(info).not.toContain("[click]");
+    expect(info).toContain("［click］");
+    const failing = deps({ post: vi.fn(async () => { throw new Error(`${evil}\nsecond line`); }) });
+    await shareSelection(failing);
+    const err = String(failing.showError.mock.calls[0][0]);
+    expect(err).not.toMatch(/\[|\]|\n/);
+  });
+
   test("registerShareSelection registers the command id", () => {
     const registerCommand = vi.fn(() => ({ dispose() {} }));
     const context = { subscriptions: [] as unknown[] };

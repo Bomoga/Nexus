@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { ModelInfo, OptimizerSetting, ProviderAccount, Task } from "../../src/contracts";
+import type { ModelInfo, OptimizerSetting, ProviderAccount, Task, TaskPlan } from "../../src/contracts";
 import { Button, Chip, EmptyState, Input, Select, StatusLine, friendlyError, getBridge } from "../shared";
 import type { BridgeClient } from "../shared";
+import { PlanReview } from "../plan/PlanReview";
 import { composeBrief, splitBrief } from "./brief";
 
 export const SUBTASK_THRESHOLD = 1200;
@@ -41,6 +42,7 @@ export function App({ bridge, taskId }: AppProps) {
   const [error, setError] = useState("");
   const [titleEmpty, setTitleEmpty] = useState(false);
   const [note, setNote] = useState("");
+  const [plan, setPlan] = useState<TaskPlan | undefined>();
   const [failure, setFailure] = useState("");
   const [modelsError, setModelsError] = useState("");
   // RETRY of each load re-runs only that load, so edits already typed into the task are never reset.
@@ -179,6 +181,7 @@ export function App({ bridge, taskId }: AppProps) {
         if (!ok) return;
         const p = await b.request("tasks.decompose", { taskId });
         setNote(`plan ${p.id} proposed: ${p.subtasks.length} subtasks`);
+        setPlan(p);
       })
       .catch((e) => setError(friendlyError(e, "task")))
       .finally(() => setBusy(""));
@@ -259,6 +262,7 @@ export function App({ bridge, taskId }: AppProps) {
       {!editable ? <StatusLine>{`task ${task.status}: editing and start are locked`}</StatusLine> : null}
       {error ? <StatusLine tone="error">{error}</StatusLine> : null}
       {note ? <StatusLine>{note}</StatusLine> : null}
+      {plan ? <PlanReview key={plan.id} plan={plan} bridge={b} /> : null}
     </div>
   );
 }

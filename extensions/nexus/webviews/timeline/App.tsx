@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { NexusEvent, TimeWindow } from "../../src/contracts";
-import { Button, Select, StatusLine, getBridge, isFakeMode } from "../shared";
+import { Button, EmptyState, Select, StatusLine, StoreStatusLine, friendlyError, getBridge, isFakeMode } from "../shared";
 import type { BridgeClient } from "../shared";
 import { DetailStrip } from "../globe/DetailStrip";
 import { Search } from "../globe/Search";
@@ -23,8 +23,6 @@ export interface AppProps {
   nowMs?: number;
 }
 
-const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
-
 /** The globe's fallback: same data flow as the globe (query per window, live inserts, search, detail strip), drawn as lanes. */
 export function App({ bridge: injected, nowMs }: AppProps) {
   const bridge = useMemo(() => injected ?? getBridge(), [injected]);
@@ -32,6 +30,8 @@ export function App({ bridge: injected, nowMs }: AppProps) {
   const [events, setEvents] = useState<NexusEvent[]>([]);
   const [truncated, setTruncated] = useState(false);
   const [error, setError] = useState<string | undefined>();
+  const [loaded, setLoaded] = useState(false);
+  const [attempt, setAttempt] = useState(0);
   // In fake mode "now" is pinned to the end of the scripted 36 h; fixtures load lazily so normal builds ship no demo data.
   const [now, setNow] = useState<number | null>(() => (nowMs !== undefined ? nowMs : isFakeMode() ? null : Date.now()));
   const ready = now !== null;
@@ -52,7 +52,7 @@ export function App({ bridge: injected, nowMs }: AppProps) {
           setNow(start);
           timer = setInterval(() => setNow(scriptedNow(start, performance.now() - t0)), NOW_TICK_MS);
         })
-        .catch((e: unknown) => live && setError(message(e)));
+        .catch((e: unknown) => live && setError(friendlyError(e, "events")));
       return () => {
         live = false;
         if (timer) clearInterval(timer);
@@ -85,14 +85,15 @@ export function App({ bridge: injected, nowMs }: AppProps) {
         eventsRef.current = next;
         setEvents(next);
         setTruncated(kept.truncated);
+        setLoaded(true);
         setError(undefined);
       })
-      .catch((e: unknown) => live && setError(message(e)));
+      .catch((e: unknown) => live && setError(friendlyError(e, "events")));
     return () => {
       live = false;
     };
     // Re-query only when the window changes (or "now" first becomes known); drift moves marks but does not refetch.
-  }, [window_, ready, bridge]);
+  }, [window_, ready, bridge, attempt]);
 
   const onWindow = useCallback(
     (value: string) => {
@@ -150,6 +151,7 @@ export function App({ bridge: injected, nowMs }: AppProps) {
 
   return (
     <div className="tl-app">
+      <StoreStatusLine bridge={bridge} />
       <div className="tl-bar">
         <Select aria-label="Time window" value={window_} options={OPTIONS} onChange={(e) => onWindow(e.target.value)} />
         <Search onPick={onSearchPick} search={search} />
@@ -157,7 +159,12 @@ export function App({ bridge: injected, nowMs }: AppProps) {
         <span className="nx-data">{visible.length} events</span>
       </div>
       {truncated ? <StatusLine tone="pending">{`truncated: showing newest ${events.length}`}</StatusLine> : null}
-      {error ? <StatusLine tone="error">{error}</StatusLine> : null}
+      {error ? (
+        <StatusLine tone="error">
+          {error} <Button onClick={() => setAttempt((n) => n + 1)}>RETRY</Button>
+        </StatusLine>
+      ) : null}
+      {loaded && !error && visible.length === 0 ? <EmptyState message="no events in this window" /> : null}
       {notice ? <StatusLine tone="pending">{notice}</StatusLine> : null}
       <div className="tl-stage">{now === null ? null : <Timeline events={visible} now={now} window={window_} selected={selected} onSelect={onSelect} reveal={reveal} />}</div>
       <DetailStrip event={selected} open={open} />

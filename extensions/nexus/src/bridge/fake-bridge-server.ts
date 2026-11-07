@@ -13,6 +13,10 @@ function toBridgeError(e: unknown): BridgeError {
   return e instanceof BridgeError ? e : new BridgeError("internal", e instanceof Error ? e.message : String(e));
 }
 
+function firstSeq(name: SubscriptionName, req: unknown): number {
+  return name === "agent.subscribe" ? (req as { fromSeq?: number }).fromSeq ?? 0 : 0;
+}
+
 export class FakeBridgeServer implements BridgeRouter {
   private readonly handlers = new Map<string, RequestHandler<RequestName>>();
   private readonly subHandlers = new Map<string, SubscribeHandler<SubscriptionName>>();
@@ -52,10 +56,16 @@ export class FakeBridgeServer implements BridgeRouter {
     return parsedRes.data as Res<N>;
   }
 
+  /** Test helper: live subscriptions, so a leak is observable. */
+  subscriptionCount(): number { return this.subs.size; }
+
   private deliver(s: Sub, evt: unknown): void {
     if (!s.active) return;
     const seq = (evt as { seq?: unknown }).seq;
-    if (s.name === "agent.subscribe" && typeof seq === "number") s.maxSeq = Math.max(s.maxSeq, seq);
+    if (s.name === "agent.subscribe" && typeof seq === "number") {
+      if (seq <= s.maxSeq) return;   // below fromSeq, or already delivered
+      s.maxSeq = seq;
+    }
     s.cb(evt);
   }
 
@@ -67,27 +77,32 @@ export class FakeBridgeServer implements BridgeRouter {
     const fn = this.subHandlers.get(name);
     const parsedReq = Subscriptions[name].req.safeParse(req);
     if (!parsedReq.success) throw new BridgeError("invalid_request", parsedReq.error.message);
-    const sub: Sub = { name, req: parsedReq.data, cb: cb as (evt: unknown) => void, active: true, ready: false, held: [], maxSeq: -1 };
+    const sub: Sub = { name, req: parsedReq.data, cb: cb as (evt: unknown) => void, active: true, ready: false, held: [], maxSeq: firstSeq(name, parsedReq.data) - 1 };
     const handle: Disposable = { dispose: () => { sub.active = false; this.subs.delete(sub); sub.cleanup?.dispose(); sub.cleanup = undefined; } };
     this.subs.add(sub);
     onHandle?.(handle);
-    // emit = replay only; swallowed once unsubscribed.
-    const emit = (evt: unknown) => this.deliver(sub, Subscriptions[name].evt.parse(evt));
+    // emit = replay only: inert once the handler has settled, swallowed once unsubscribed.
+    let settled = false;
+    const emit = (evt: unknown) => { if (!settled) this.deliver(sub, Subscriptions[name].evt.parse(evt)); };
     let cleanup: Disposable | void = undefined;
     try {
       if (fn) cleanup = await (fn as unknown as (r: unknown, e: (x: unknown) => void) => unknown)(parsedReq.data, emit) as Disposable | void;
     } catch (e) {
+      settled = true;
       this.subs.delete(sub); sub.active = false;
       throw toBridgeError(e);
     }
+    settled = true;
     if (!sub.active) { cleanup?.dispose(); return handle; }   // unsubscribed while the handler ran
     sub.cleanup = cleanup ?? undefined;
-    sub.ready = true;
-    for (const evt of sub.held.splice(0)) {
-      const seq = (evt as { seq?: unknown }).seq;
-      if (name === "agent.subscribe" && typeof seq === "number" && seq <= sub.maxSeq) continue;   // already replayed
-      this.deliver(sub, evt);
+    try {
+      // ready only once drained, so a publish from inside a subscriber queues behind the held events.
+      while (sub.active && sub.held.length) this.deliver(sub, sub.held.shift());
+    } catch (e) {
+      handle.dispose();
+      throw toBridgeError(e);
     }
+    if (sub.active) sub.ready = true;
     return handle;
   }
 }

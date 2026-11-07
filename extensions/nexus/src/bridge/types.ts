@@ -21,10 +21,14 @@ export type SubscribeHandler<N extends SubscriptionName> =
  * Extension-side surface. Lanes 1 and 2 register handlers and publish events through this.
  *
  * Subscription delivery rules (the real router and the fake both follow them):
- * - `emit` (passed to onSubscribe) is for REPLAY only, inside the handler. Live events go only through publish.
- * - The router owns ordering: live events published while onSubscribe is unresolved are held for that
- *   subscription, then delivered after the handler resolves. Held agent events whose seq was already delivered are dropped.
+ * - `emit` (passed to onSubscribe) is for REPLAY only, inside the handler. Once the handler settles it delivers nothing.
+ *   Live events go only through publish.
+ * - The router owns ordering: live events published while onSubscribe is unresolved are held for that subscription, in
+ *   order, and drained after the handler resolves. Events published during the drain queue behind the held ones.
+ * - agent.subscribe delivers each seq at most once and in rising order: a seq below fromSeq, or at or below the highest
+ *   already delivered, is dropped on every path (replay, held, live).
  * - After unsubscribe, emit delivers nothing, and a cleanup returned late is disposed immediately.
+ * - If a subscriber throws while held events drain, the subscription is removed and its cleanup disposed.
  * - A throwing handler removes the subscription; the error maps like a request error (BridgeError code kept, else "internal").
  * - publish reaches only subscriptions whose req matches the event (see matchesSubscription).
  */

@@ -25,14 +25,16 @@ export function createTigerListen(connectionString: string, ClientCtor: ListenCl
   return async (channel, onPayload, onClose) => {
     if (!/^[a-z_][a-z0-9_]*$/.test(channel)) throw new Error("invalid LISTEN channel");
     const client = new ClientCtor({ connectionString: url, ssl: { rejectUnauthorized: true }, connectionTimeoutMillis: 5000, keepAlive: true });
-    let closed = false;
-    const close = (err?: unknown) => { if (!closed) { closed = true; onClose?.(err); } };
+    let closed = false, opening = true;
+    // While opening, a drop is reported by the rejection below, never also through onClose (pg can emit "end" before connect settles).
+    const close = (err?: unknown) => { if (!closed && !opening) { closed = true; onClose?.(err); } };
     client.on("error", err => close(err));
     client.on("end", () => close());
     client.on("notification", msg => { if (!closed && msg.channel === channel && typeof msg.payload === "string") onPayload(msg.payload); });
     try {
       await client.connect();
       await client.query(`LISTEN ${channel}`);
+      opening = false;
     } catch (err) {
       closed = true;   // a failed open is reported by rejecting, not through onClose
       try { await client.end(); } catch { /* already gone */ }

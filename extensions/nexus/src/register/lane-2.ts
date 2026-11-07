@@ -101,10 +101,10 @@ export function registerLane2(context: vscode.ExtensionContext): Lane2Wiring {
     return i?.globalValue ?? i?.defaultValue;
   };
   const tokenVault = createTokenVault({
-    fetch: (url, init) => fetch(url, init),
+    fetch: (url, init) => fetch(url, { ...init, signal: AbortSignal.timeout(3000) }),   // a stalled Auth0 call never holds Slack
     config: () => {
       const domain = userSetting<string>("auth0.domain"), clientId = userSetting<string>("auth0.clientId"), slackConnection = userSetting<string>("slack.auth0Connection");
-      return domain && clientId && slackConnection ? { domain, clientId, slackConnection } : undefined;
+      return domain && clientId && slackConnection ? { domain: domain.trim().toLowerCase(), clientId, slackConnection } : undefined;
     },
     getRefreshToken: async () => (await context.secrets.get(REFRESH_SECRET_KEY)) || undefined,
     clock: () => Date.now(),

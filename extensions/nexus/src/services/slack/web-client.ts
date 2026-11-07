@@ -60,22 +60,37 @@ export function webClientOptions(kind: ApiKind): WebClientOptions_ {
 }
 type WebClientOptions_ = ConstructorParameters<typeof WebClient>[1];
 
-// Slack wraps links as <url|label>, so < > | end a link. `)` and `.` are legal unescaped URI characters, so they may be part of a path.
-const CODEREF_LINK = /nexus:\/\/coderef\/[^\s<>|]+/g;
+const MAX_LINK = 2048;
+// Slack-wrapped links, <link|label> or <link>: exactly up to "|" or ">", never trimmed. "<" is excluded so scanning stays linear.
+const WRAPPED_LINK = /<(nexus:\/\/coderef\/[^|<>\s]+)[|>]/g;
+// Bare links: only encodeURIComponent's output alphabet plus "/" and "%", so quotes, brackets, "&gt;" and "…" end the link.
+const BARE_LINK = /(?<!<)nexus:\/\/coderef\/[A-Za-z0-9\-_.!~*'()%/]+/g;
 
-function trimLink(link: string): string {
-  let l = link.replace(/[.,;:!?'*~]+$/, "");
-  // drop a trailing ")" only when unbalanced, so app/(auth)/page.tsx keeps its parentheses
-  while (l.endsWith(")") && (l.match(/\)/g) ?? []).length > (l.match(/\(/g) ?? []).length) l = l.slice(0, -1).replace(/[.,;:!?'*~]+$/, "");
-  return l;
+/** Trims sentence punctuation and an unbalanced closing ")" off a bare link in one linear pass. */
+function trimBare(link: string): string {
+  let opens = 0, closes = 0;
+  for (const ch of link) { if (ch === "(") opens++; else if (ch === ")") closes++; }
+  let end = link.length;
+  while (end > 0) {
+    const ch = link[end - 1];
+    if (ch === ")" && closes > opens) { closes--; end--; }
+    else if (".!~*'".includes(ch)) end--;
+    else break;
+  }
+  return link.slice(0, end);
 }
 
 /** Extracts every valid nexus://coderef link in the text. Never throws: the text is untrusted. Text itself is never altered. */
 export function extractCodeRefs(text: string): CodeRef[] {
+  const candidates: { at: number; link: string }[] = [];
+  for (const m of text.matchAll(WRAPPED_LINK)) candidates.push({ at: m.index, link: m[1] });
+  for (const m of text.matchAll(BARE_LINK)) candidates.push({ at: m.index, link: trimBare(m[0]) });
+  candidates.sort((a, b) => a.at - b.at);
   const refs: CodeRef[] = [];
-  for (const raw of text.match(CODEREF_LINK) ?? []) {
+  for (const { link } of candidates) {
+    if (link.length > MAX_LINK) continue;
     try {
-      const ref = decodeCodeRef(trimLink(raw));
+      const ref = decodeCodeRef(link);
       if (ref) refs.push(ref);
     } catch { /* malformed percent escape */ }
   }
@@ -93,7 +108,7 @@ async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promis
   return out;
 }
 
-/** Follows next_cursor until it is empty, repeats, or MAX_PAGES is reached. */
+/** Follows next_cursor until it is empty, repeats, or MAX_PAGES is reached. Page-capped results are partial. */
 async function paginate<R extends Paged>(fetchPage: (cursor?: string) => Promise<R>, onPage: (r: R) => boolean | void): Promise<void> {
   const seen = new Set<string>();
   let cursor: string | undefined;
@@ -107,9 +122,14 @@ async function paginate<R extends Paged>(fetchPage: (cursor?: string) => Promise
 }
 
 function safeError(e: unknown, what: string): Error {
-  // Slack errors carry a short code in data.error; never forward anything that could include request headers.
-  const code = (e as { data?: { error?: unknown } })?.data?.error;
-  return new Error(`slack ${what} failed${typeof code === "string" ? `: ${code}` : ""}`);
+  // Only a short Slack error code, a rate-limit hint or "timeout" is forwarded; never the original message, which could echo headers.
+  const err = e as { code?: unknown; data?: { error?: unknown }; retryAfter?: unknown; original?: { name?: unknown; code?: unknown } } | null;
+  const parts: string[] = [];
+  if (typeof err?.data?.error === "string") parts.push(err.data.error);
+  else if (err?.code === "slack_webapi_rate_limited_error") parts.push(typeof err.retryAfter === "number" ? `rate_limited (retry after ${err.retryAfter}s)` : "rate_limited");
+  else if (/timeout|timedout|abort/i.test(String(err?.original?.name ?? "") + String(err?.original?.code ?? "") + String(err?.code ?? ""))) parts.push("timeout");
+  else if (typeof err?.code === "string" && /^slack_webapi_[a-z_]+$/.test(err.code)) parts.push(err.code);
+  return new Error(`slack ${what} failed${parts.length ? `: ${parts[0]}` : ""}`);
 }
 
 export class SlackWebClient implements UserSlack {
@@ -128,7 +148,8 @@ export class SlackWebClient implements UserSlack {
   async status(): Promise<Pick<SlackStatus, "postsAs" | "userTokenSource">> {
     const api = await this.tryApi();
     if (!api) return { postsAs: null, userTokenSource: "none" };
-    try { return { postsAs: await this.identity(api.reader), userTokenSource: this.source }; }
+    const source = this.source;
+    try { return { postsAs: await this.identity(api.reader), userTokenSource: source }; }
     catch { return { postsAs: null, userTokenSource: this.source }; }
   }
 
@@ -155,15 +176,17 @@ export class SlackWebClient implements UserSlack {
     catch (e) { throw safeError(e, "conversations.history"); }
     const messages = await this.mapMessages(api, channelId, r.messages ?? []);
     const next = r.response_metadata?.next_cursor || undefined;
+    if (next === cursor) return { messages, fromCache: false };   // a cursor that repeats would loop the caller
     return { messages, ...(next ? { nextCursor: next } : {}), fromCache: false };
   }
 
   async getThread(channelId: string, threadTs: string): Promise<Thread> {
     const api = (await this.requireApi()).reader;
     const raw: SlackMsg[] = [];
+    const seenTs = new Set<string>();
     try {
       await paginate(cursor => api.conversations.replies({ channel: channelId, ts: threadTs, limit: 200, cursor }),
-        r => { raw.push(...(r.messages ?? [])); });
+        r => { for (const m of r.messages ?? []) if (m.ts && !seenTs.has(m.ts)) { seenTs.add(m.ts); raw.push(m); } });
     } catch (e) { throw safeError(e, "conversations.replies"); }
     return { channelId, threadTs, messages: await this.mapMessages(api, channelId, raw) };
   }
@@ -199,7 +222,8 @@ export class SlackWebClient implements UserSlack {
   // ---- internals ----
 
   private async tryApi(): Promise<{ reader: SlackApi; poster: SlackApi } | null> {
-    const t = await this.opts.getToken();
+    let t;
+    try { t = await this.opts.getToken(); } catch { t = null; }   // the provider's message is never forwarded
     if (!t) { this.reader = undefined; this.poster = undefined; this.apiToken = undefined; this.self = undefined; this.source = "none"; return null; }
     if (!this.reader || !this.poster || this.apiToken !== t.token) {
       const make = this.opts.makeApi ?? ((token: string, kind: ApiKind) => new WebClient(token, webClientOptions(kind)) as unknown as SlackApi);
@@ -219,12 +243,14 @@ export class SlackWebClient implements UserSlack {
   }
 
   private async identity(api: SlackApi): Promise<{ userId: string; name: string } | null> {
-    if (this.self === undefined) {
-      const r = await api.auth.test();
-      // a bot token must never count as "posts as the person"
-      this.self = r.user_id && !r.bot_id ? { userId: r.user_id, name: r.user ?? r.user_id } : null;
-    }
-    return this.self;
+    if (this.self !== undefined) return this.self;
+    const token = this.apiToken;
+    const r = await api.auth.test();
+    // a bot token must never count as "posts as the person"
+    const me = r.user_id && !r.bot_id ? { userId: r.user_id, name: r.user ?? r.user_id } : null;
+    if (this.apiToken !== token) return null;   // the token was swapped while auth.test ran: stale, discard
+    this.self = me;
+    return me;
   }
 
   /** Chosen: conversations.members (paged) looked for the bot's id, cached per channel with a TTL. */
@@ -265,8 +291,10 @@ export class SlackWebClient implements UserSlack {
     await this.loadUsers(api, real.flatMap(m => (m.user ? [m.user] : [])));
     return real.map(m => {
       const ts = m.ts as string;
-      // bot-token messages carry both user and bot_id; a human message never has bot_id, so either signal means bot
-      const isBot = !!m.bot_id || !!(m.user && this.userCache.get(m.user)?.isBot);
+      // A person's own post through the Nexus app also carries bot_id/app_id/bot_profile, so trust users.info when it answered;
+      // bot_id is only the fallback when the lookup failed (section 14: never show agent text as human).
+      const cached = m.user ? this.userCache.get(m.user) : undefined;
+      const isBot = cached ? cached.isBot : !!m.bot_id;
       const id = m.user ?? (m.bot_id as string);
       const name = (m.user && this.userCache.get(m.user)?.name) || m.username || m.bot_profile?.name || id;
       const text = m.text ?? "";   // verbatim: untrusted (§14)

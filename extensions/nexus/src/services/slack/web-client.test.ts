@@ -21,7 +21,7 @@ function makeFake() {
         ? { messages: [{ ...base, ts: "1.000000", user: "U_ADRIAN", text: "old" }] }
         : { messages: [
             { ...base, ts: "3.000000", thread_ts: "3.000000", user: "U_ADRIAN", text: `bug <${link}|here>`, reply_count: 2 },
-            { type: "message", subtype: "bot_message", ts: "2.000000", user: "U_BOT", bot_id: "B1", username: "Nexus", text: "approve?", blocks: [{ type: "actions", elements: [{ type: "button" }] }] },
+            { type: "message", team: "T1", ts: "2.000000", user: "U_BOT", bot_id: "B1", app_id: "A1", bot_profile: { id: "B1", name: "Nexus" }, text: "approve?", blocks: [{ type: "actions", elements: [{ type: "button" }] }] },
             { ...base, subtype: "channel_join", ts: "2.500000", user: "U_NEW", text: "<@U_NEW> has joined the channel" },
           ], response_metadata: { next_cursor: "page2" } }),
       replies: vi.fn(async (a: { cursor?: string }) => a.cursor
@@ -36,26 +36,44 @@ function makeFake() {
 }
 
 type Fake = ReturnType<typeof makeFake>;
-function client(api: Fake = makeFake(), token: { token: string; source: "manual" } | null = { token: "xoxp-test", source: "manual" }) {
-  const makeApi = vi.fn((_t: string, _k: string) => api as unknown as SlackApi);
-  return { api, makeApi, c: new SlackWebClient({ getToken: async () => token, botUserId: "U_BOT", makeApi }) };
+function client(api: Fake = makeFake(), token: { token: string; source: "manual" } | null = { token: "xoxp-test", source: "manual" }, poster: Fake = makeFake()) {
+  const makeApi = vi.fn((_t: string, kind: string) => (kind === "post" ? poster : api) as unknown as SlackApi);
+  return { api, poster, makeApi, c: new SlackWebClient({ getToken: async () => token, botUserId: "U_BOT", makeApi }) };
 }
 
 describe("extractCodeRefs", () => {
   it("extracts refs from slack-wrapped and bare links", () => {
-    expect(extractCodeRefs(`see <${link}|x> and ${link}.`)).toEqual([fx.codeRef, fx.codeRef]);
+    expect(extractCodeRefs(`see <${link}|x>, <${link}> and ${link}.`)).toEqual([fx.codeRef, fx.codeRef, fx.codeRef]);
   });
   it("never throws on a malformed percent escape and ignores bad links", () => {
     expect(() => extractCodeRefs(`nexus://coderef/ws/${SHA}/1-2/%E0%A4%A`)).not.toThrow();
     expect(extractCodeRefs(`nexus://coderef/ws/${SHA}/1-2/%E0%A4%A nexus://coderef/bad`)).toEqual([]);
   });
-  it("keeps parentheses in paths but not a closing paren or punctuation around the link", () => {
+  it("keeps parentheses in paths but not a closing paren or punctuation around a bare link", () => {
     const ref = { ...fx.codeRef, path: "app/(auth)/page.tsx" };
     const l = encodeCodeRef(ref);
-    expect(l).toContain("(auth)");
     expect(extractCodeRefs(l)).toEqual([ref]);
     expect(extractCodeRefs(`(see ${l})`)).toEqual([ref]);
     expect(extractCodeRefs(`${l}, then ${l}.`)).toEqual([ref, ref]);
+  });
+  it("ends a bare link at quotes, brackets, backticks, ellipsis and escaped >", () => {
+    for (const [pre, post] of [['"', '"'], ["`", "`"], ["[", "]"], ["{", "}"], ["", "…"], ["", "&gt;"]]) {
+      expect(extractCodeRefs(`${pre}${link}${post}`)).toEqual([fx.codeRef]);
+    }
+  });
+  it("takes wrapped links exactly, with no trimming", () => {
+    for (const path of ["a~", "a!", "a.", "a*", "a)"]) {
+      const ref = { ...fx.codeRef, path };
+      expect(extractCodeRefs(`<${encodeCodeRef(ref)}|label>`)).toEqual([ref]);
+      expect(extractCodeRefs(`<${encodeCodeRef(ref)}>`)).toEqual([ref]);
+    }
+  });
+  it("is linear on adversarial input", () => {
+    const t = Date.now();
+    extractCodeRefs(`nexus://coderef/${")".repeat(40_000)}`);
+    extractCodeRefs(`${"<nexus://coderef/a|".repeat(2_000)}`);
+    extractCodeRefs(`nexus://coderef/${"a)(".repeat(13_000)}.!~`);
+    expect(Date.now() - t).toBeLessThan(500);
   });
 });
 
@@ -83,6 +101,19 @@ describe("SlackWebClient", () => {
     expect(p2.nextCursor).toBeUndefined();
     expect(api.conversations.history).toHaveBeenLastCalledWith({ channel: "C1", limit: 50, cursor: "page2" });
     expect(api.users.info).toHaveBeenCalledTimes(2);   // U_ADRIAN and U_BOT, cached after
+  });
+
+  it("reads a person's own Nexus post (user + bot_id + app_id + bot_profile, no client_msg_id) as human", async () => {
+    const own = { type: "message", team: "T1", ts: "5.000000", user: "U_ADRIAN", bot_id: "B1", app_id: "A1", bot_profile: { id: "B1", name: "Nexus" }, text: "mine", blocks: [{ type: "rich_text" }] };
+    const api = makeFake();
+    api.conversations.history.mockResolvedValue({ messages: [own] } as never);
+    const m = (await client(api).c.history("C1")).messages[0];
+    expect(ChatMessage.parse(m)).toMatchObject({ sentVia: "user", author: { isBot: false } });
+    expect(m.blocks).toBeUndefined();
+    const failing = makeFake();
+    failing.conversations.history.mockResolvedValue({ messages: [own] } as never);
+    failing.users.info.mockRejectedValue(new Error("down"));
+    expect((await client(failing).c.history("C1")).messages[0]).toMatchObject({ sentVia: "bot" });   // fallback when the lookup failed
   });
 
   it("treats a message as bot when users.info fails (bot_id present)", async () => {
@@ -143,14 +174,15 @@ describe("SlackWebClient", () => {
     const b = client(bot);
     expect((await b.c.status()).postsAs).toBeNull();
     await expect(b.c.postAsUser({ channelId: "C1", text: "x" })).rejects.toThrow("not verified");
-    expect(bot.chat.postMessage).not.toHaveBeenCalled();
+    expect(b.poster.chat.postMessage).not.toHaveBeenCalled();
   });
 
   it("posts as the user, returns Slack's confirmed text and code refs from it", async () => {
-    const { c, api } = client();
-    api.chat.postMessage.mockResolvedValue({ ts: "9.000100", message: { text: `<${link}|ref>` } });
+    const { c, api, poster } = client();
+    poster.chat.postMessage.mockResolvedValue({ ts: "9.000100", message: { text: `<${link}|ref>` } });
     const m = ChatMessage.parse(await c.postAsUser({ channelId: "C1", text: "hi", threadTs: "3.000000", clientId: "k1" }));
-    expect(api.chat.postMessage).toHaveBeenCalledWith({ channel: "C1", text: "hi", thread_ts: "3.000000" });
+    expect(api.chat.postMessage).not.toHaveBeenCalled();
+    expect(poster.chat.postMessage).toHaveBeenCalledWith({ channel: "C1", text: "hi", thread_ts: "3.000000" });
     expect(m).toMatchObject({ id: "C1:9.000100", sentVia: "user", threadTs: "3.000000", author: { id: "U_ADRIAN", isBot: false }, text: `<${link}|ref>`, codeRefs: [fx.codeRef] });
   });
 
@@ -164,12 +196,66 @@ describe("SlackWebClient", () => {
 
   it("never leaks the token in errors and still works if a malformed link comes back", async () => {
     await expect(client(undefined, null).c.postAsUser({ channelId: "C1", text: "x" })).rejects.toThrow("no slack user token");
-    const bad = makeFake();
-    bad.chat.postMessage.mockRejectedValue(Object.assign(new Error("xoxp-test boom"), { data: { error: "channel_not_found" } }));
-    const err = await client(bad).c.postAsUser({ channelId: "C1", text: "x" }).catch((e: Error) => e);
+    const bad = client();
+    bad.poster.chat.postMessage.mockRejectedValue(Object.assign(new Error("xoxp-test boom"), { data: { error: "channel_not_found" } }));
+    const err = await bad.c.postAsUser({ channelId: "C1", text: "x" }).catch((e: Error) => e);
     expect((err as Error).message).toBe("slack chat.postMessage failed: channel_not_found");
-    const ok = makeFake();
-    ok.chat.postMessage.mockResolvedValue({ ts: "9.1", message: { text: `nexus://coderef/ws/${SHA}/1-2/%E0%A4%A` } });
-    expect((await client(ok).c.postAsUser({ channelId: "C1", text: "x" })).codeRefs).toEqual([]);
+    const ok = client();
+    ok.poster.chat.postMessage.mockResolvedValue({ ts: "9.1", message: { text: `nexus://coderef/ws/${SHA}/1-2/%E0%A4%A` } });
+    expect((await ok.c.postAsUser({ channelId: "C1", text: "x" })).codeRefs).toEqual([]);
+  });
+
+  it("bounds the members fan-out in channels()", async () => {
+    const api = makeFake();
+    api.conversations.list.mockImplementation(async () => ({ channels: Array.from({ length: 20 }, (_, i) => ({ id: `C${i}`, name: `c${i}`, is_member: true })) }) as never);
+    let live = 0, peak = 0;
+    api.conversations.members.mockImplementation(async () => { peak = Math.max(peak, ++live); await new Promise(r => setTimeout(r, 2)); live--; return { members: [] }; });
+    expect(await client(api).c.channels()).toHaveLength(20);
+    expect(peak).toBeLessThanOrEqual(4);
+  });
+
+  it("does not pass a rejecting token provider's message through", async () => {
+    const c = new SlackWebClient({ getToken: async () => { throw new Error("vault said xoxp-SECRET"); }, makeApi: () => makeFake() as unknown as SlackApi });
+    expect(await c.status()).toEqual({ postsAs: null, userTokenSource: "none" });
+    const err = await c.channels().catch((e: Error) => e);
+    expect((err as Error).message).toBe("no slack user token");
+    expect(String(err)).not.toContain("SECRET");
+  });
+
+  it("discards a stale auth.test after the token changed", async () => {
+    let token = "xoxp-A";
+    let release!: () => void;
+    const gate = new Promise<void>(r => { release = r; });
+    const fakes: Record<string, Fake> = { "xoxp-A": makeFake(), "xoxp-B": makeFake() };
+    fakes["xoxp-A"].auth.test.mockImplementation(async () => { await gate; return { user_id: "U_A", user: "a" }; });
+    fakes["xoxp-B"].auth.test.mockResolvedValue({ user_id: "U_B", user: "b" });
+    const c = new SlackWebClient({ getToken: async () => ({ token, source: "manual" as const }), makeApi: t => fakes[t] as unknown as SlackApi });
+    const stale = c.status();
+    await new Promise(r => setTimeout(r, 0));
+    token = "xoxp-B";
+    expect((await c.status()).postsAs?.userId).toBe("U_B");
+    release();
+    expect((await stale).postsAs).toBeNull();
+    expect((await c.status()).postsAs?.userId).toBe("U_B");
+  });
+
+  it("de-duplicates thread messages across pages", async () => {
+    const api = makeFake();
+    api.conversations.replies.mockImplementation((async (a: { cursor?: string }) => a.cursor
+      ? { messages: [{ ...base, ts: "3.000000", user: "U_ADRIAN", text: "dup" }, { ...base, ts: "3.100000", thread_ts: "3.000000", user: "U_ADRIAN", text: "r" }] }
+      : { messages: [{ ...base, ts: "3.000000", user: "U_ADRIAN", text: "p" }], response_metadata: { next_cursor: "r2" } }) as never);
+    expect((await client(api).c.getThread("C1", "3.000000")).messages.map(m => m.ts)).toEqual(["3.000000", "3.100000"]);
+  });
+
+  it("maps rate limit and timeout failures without the token, and drops a repeated history cursor", async () => {
+    const rl = makeFake();
+    rl.conversations.list.mockRejectedValue(Object.assign(new Error("xoxp-test"), { code: "slack_webapi_rate_limited_error", retryAfter: 30 }));
+    expect(((await client(rl).c.channels().catch((e: Error) => e)) as Error).message).toBe("slack conversations.list failed: rate_limited (retry after 30s)");
+    const to = makeFake();
+    to.conversations.history.mockRejectedValue(Object.assign(new Error("xoxp-test"), { code: "slack_webapi_request_error", original: { name: "TimeoutError" } }));
+    expect(((await client(to).c.history("C1").catch((e: Error) => e)) as Error).message).toBe("slack conversations.history failed: timeout");
+    const loop = makeFake();
+    loop.conversations.history.mockResolvedValue({ messages: [], response_metadata: { next_cursor: "same" } });
+    expect((await client(loop).c.history("C1", "same")).nextCursor).toBeUndefined();
   });
 });

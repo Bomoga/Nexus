@@ -1,5 +1,8 @@
 import type { ReactNode } from "react";
 import type { ChatMessage } from "../../src/contracts";
+import type { BridgeClient } from "../shared";
+import { BotMessage } from "./BotMessage";
+import { CodeRefChip } from "./CodeRefChip";
 
 /** HH:MM in the viewer's locale, from a Slack ts ("1762485300.000100"). */
 export function formatTime(ts: string): string {
@@ -47,9 +50,11 @@ export interface MessageRowProps {
   onOpenLink?: (url: string) => void;
   /** Provided by the thread pane (L3-09); without it the reply count is plain text. */
   onOpenThread?: (message: ChatMessage) => void;
+  /** Overrides the page bridge (tests). */
+  bridge?: BridgeClient;
 }
 
-export function MessageRow({ message, displayName, avatarUrl, onOpenLink, onOpenThread }: MessageRowProps) {
+export function MessageRow({ message, displayName, avatarUrl, onOpenLink, onOpenThread, bridge }: MessageRowProps) {
   const name = displayName ?? message.author.name;
   const src = safeAvatarSrc(avatarUrl);
   const initial = (name.trim()[0] ?? "?").toUpperCase();
@@ -62,6 +67,13 @@ export function MessageRow({ message, displayName, avatarUrl, onOpenLink, onOpen
       p.text
     ),
   );
+  const chips = message.codeRefs.length ? (
+    <span className="chat-coderefs">
+      {message.codeRefs.map((r, i) => (
+        <CodeRefChip key={`${r.commit}:${r.path}:${r.startLine}-${r.endLine}:${i}`} codeRef={r} bridge={bridge} />
+      ))}
+    </span>
+  ) : null;
   const replies = message.replyCount ? `↳ ${message.replyCount}` : undefined;
   return (
     <div className={`chat-row${message.pending ? " chat-row--pending" : ""}`} data-ts={message.ts}>
@@ -74,7 +86,17 @@ export function MessageRow({ message, displayName, avatarUrl, onOpenLink, onOpen
       )}
       <span className="chat-name">{name}</span>
       <span className="chat-time nx-data">{formatTime(message.ts)}</span>
-      <span className="chat-text">{body}</span>
+      {message.sentVia === "bot" ? (
+        <BotMessage message={message} bridge={bridge}>
+          {body}
+          {chips}
+        </BotMessage>
+      ) : (
+        <span className="chat-text">
+          {body}
+          {chips}
+        </span>
+      )}
       {replies ? (
         onOpenThread ? (
           <button type="button" className="chat-replies nx-data" onClick={() => onOpenThread(message)}>

@@ -5,6 +5,10 @@ import type { OrbitSpec } from "./index";
 export const BASE_DISTANCE = 8.24;
 /** Room left around the outermost activity ring, as a fraction of its radius. */
 const MARGIN = 1.12;
+/** Never back off further than this (a very narrow pane would otherwise ask for hundreds of units). */
+export const MAX_FIT_DISTANCE = 40;
+/** The camera's far plane; comfortably beyond the furthest the controls allow. */
+export const CAMERA_FAR = 200;
 
 /** Radius of the outermost thing drawn: the last orbit plus its activity ring. */
 export function outerRadius(layout: readonly Pick<OrbitSpec, "radius">[]): number {
@@ -17,5 +21,5 @@ export function outerRadius(layout: readonly Pick<OrbitSpec, "radius">[]): numbe
  */
 export function fitDistance(radius: number, fovDeg: number, aspect: number): number {
   const half = Math.tan(((fovDeg / 2) * Math.PI) / 180) * Math.min(1, aspect > 0 ? aspect : 1);
-  return Math.max(BASE_DISTANCE, (radius * MARGIN) / half);
+  return Math.min(MAX_FIT_DISTANCE, Math.max(BASE_DISTANCE, (radius * MARGIN) / half));
 }

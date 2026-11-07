@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 import { ACTIVITY_OFFSET } from "./arcs";
-import { BASE_DISTANCE, fitDistance, outerRadius } from "./fit";
+import { BASE_DISTANCE, CAMERA_FAR, MAX_FIT_DISTANCE, fitDistance, outerRadius } from "./fit";
 import { orbitLayout } from "./index";
 
 describe("camera fit", () => {
@@ -22,5 +22,12 @@ describe("camera fit", () => {
   test("a view narrower than tall fits by its width", () => {
     const r = 4;
     expect(fitDistance(r, 40, 0.5)).toBeGreaterThan(fitDistance(r, 40, 1));
+  });
+
+  test("a very narrow pane is capped well inside the camera's far plane; a bad aspect falls back to square", () => {
+    const d = fitDistance(7, 40, 100 / 600);
+    expect(d).toBe(MAX_FIT_DISTANCE);
+    expect(MAX_FIT_DISTANCE * 1.3).toBeLessThan(CAMERA_FAR);
+    expect(fitDistance(4, 40, 0)).toBe(fitDistance(4, 40, 1));
   });
 });

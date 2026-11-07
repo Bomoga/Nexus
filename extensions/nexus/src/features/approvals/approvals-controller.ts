@@ -102,7 +102,15 @@ export class ApprovalsController implements ApprovalRequester {
       throw e;
     }
     // A decision made while we were still creating (another machine, a Slack button) is applied now, after approval_request.
-    const stored = await store.getApproval(approval.id);
+    let stored: ApprovalRequest | undefined;
+    try {
+      stored = await store.getApproval(approval.id);
+    } catch (e) {
+      // The caller gets this error and no agent waits on it, so nothing may stay parked: a later decision must settle normally.
+      this.pending.delete(approval.id);
+      this.creating.delete(approval.id);
+      throw e;
+    }
     const early = this.creating.get(approval.id) ?? stored;          // read the parked decision AFTER the await: one may land during it
     this.creating.delete(approval.id);
     if (early?.decision) await this.settle(early);
@@ -112,12 +120,22 @@ export class ApprovalsController implements ApprovalRequester {
   /** Resolves when ANY surface or machine decides. There is no timeout path: a silent human leaves it pending. */
   async waitForDecision(approvalId: string): Promise<Decision> {
     // Register first, then look at the store: a decision that lands in between must not leave this waiting forever.
+    let register!: (d: Decision) => void;
     const waiting = new Promise<Decision>(resolve => {
+      register = resolve;
       const list = this.waiters.get(approvalId) ?? [];
       list.push(resolve);
       this.waiters.set(approvalId, list);
     });
-    const stored = await this.deps.store.getApproval(approvalId);
+    let stored: ApprovalRequest | undefined;
+    try {
+      stored = await this.deps.store.getApproval(approvalId);
+    } catch (e) {
+      // The caller sees the error; do not leave a dead waiter behind.
+      const rest = (this.waiters.get(approvalId) ?? []).filter(w => w !== register);
+      if (rest.length > 0) this.waiters.set(approvalId, rest); else this.waiters.delete(approvalId);
+      throw e;
+    }
     if (stored?.decision && !this.pending.has(approvalId)) this.wake(approvalId, stored.decision);
     return waiting;
   }
@@ -125,7 +143,9 @@ export class ApprovalsController implements ApprovalRequester {
   async request(input: { sessionId: string; action: ApprovalAction; reason: string; diffPreview?: string }): Promise<{ approval: ApprovalRequest; decision: Decision }> {
     const created = await this.create(input);
     const decision = await this.waitForDecision(created.id);
-    return { approval: (await this.deps.store.getApproval(created.id)) ?? created, decision };
+    // The decision is already known; the read-back only adds who decided, so a store failure here must not turn it into an error.
+    const stored = await this.deps.store.getApproval(created.id).catch(e => { this.deps.log?.(`could not read back approval ${created.id}: ${e instanceof Error ? e.message : "unknown error"}`); return undefined; });
+    return { approval: stored ?? created, decision };
   }
 
   // ---- deciding (the humans' side) ----

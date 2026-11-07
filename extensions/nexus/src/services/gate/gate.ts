@@ -80,17 +80,27 @@ export function createGate(deps: GateDeps): Gate {
     const env = childEnv();
     const plan = win ? windowsPlan(argv, env, deps.fileExists ?? existsSync) : { file: argv[0]!, args: argv.slice(1), verbatim: false };
     return new Promise(resolve => {
-      let out = "", err = "", done = false, exitCode: number | undefined, drain: NodeJS.Timeout | undefined;
+      let out = "", err = "", done = false, exitCode: number | undefined, drain: NodeJS.Timeout | undefined, force: NodeJS.Timeout | undefined;
       let child: ChildProcess | undefined, killing: Promise<void> = Promise.resolve();
       const kill = (c: ChildProcess) => { killing = Promise.all([killing, killTree(c)]).then(() => undefined); };
       const finish = (code: number) => {
         if (done) return;
-        done = true; clearTimeout(timer); clearTimeout(drain);
+        done = true; clearTimeout(timer); clearTimeout(drain); clearTimeout(force);
         if (child) { child.stdout?.destroy(); child.stderr?.destroy(); }
         // Not reported until a kill in progress has completed.
         void killing.then(() => resolve({ exitCode: code, stdoutTail: tail(deps.redact(out), OUTPUT_TAIL_CHARS), stderrTail: tail(deps.redact(err), OUTPUT_TAIL_CHARS) }));
       };
-      const timer = setTimeout(() => { if (child) kill(child); }, timeoutMs);
+      // A timeout kills the tree. If the child is still not gone once the kill has settled (taskkill failed or hit its cap on
+      // Windows), stop waiting for it after a short grace and report it as killed, so the agent never waits forever.
+      const timer = setTimeout(() => {
+        if (!child) return;
+        const c = child;
+        kill(c);
+        void killing.then(() => {
+          if (done) return;
+          force = setTimeout(() => { try { c.kill("SIGKILL"); } catch { /* best effort */ } finish(exitCode ?? (win ? 1 : 137)); }, DRAIN_MS);
+        });
+      }, timeoutMs);
       try {
         child = spawn(plan.file, plan.args, { cwd: session.worktreePath, env, shell: false, detached: !win, windowsHide: true, windowsVerbatimArguments: plan.verbatim, stdio: ["ignore", "pipe", "pipe"] });
       } catch (e) { err = String((e as Error).message); finish(127); return; }

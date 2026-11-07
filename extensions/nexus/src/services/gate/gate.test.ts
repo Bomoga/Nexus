@@ -429,6 +429,22 @@ describe("hardening", () => {
     expect(new Set(calls.slice(1))).toEqual(new Set(["/pid 4242 /T /F"]));
   });
 
+  it("reports a timed-out run as killed even when taskkill fails and the child never exits", async () => {
+    let killed = 0;
+    const spawn = ((file: string) => {
+      const child = Object.assign(new EventEmitter(), { pid: 4243, stdout: new PassThrough(), stderr: new PassThrough(), kill: () => { killed++; return true; } });
+      // taskkill fails (access denied); the main process ignores everything and never exits or closes
+      if (file === "taskkill") setTimeout(() => child.emit("exit", 128, null), 10);
+      return child as unknown as ChildProcess;
+    }) as unknown as SpawnFn;
+    const env = { PATH: "C:\\bin", PATHEXT: ".EXE", ComSpec: "C:\\Windows\\System32\\cmd.exe" };
+    const t0 = Date.now();
+    const r = await gate({ allow: ["tool"], spawn, platform: "win32", env, fileExists: f => f === "C:\\bin\\tool.EXE", taskkillTimeoutMs: 50 }).request(session, "cmd.run", { command: "tool", timeoutMs: 50 });
+    expect(r.exitCode).toBe(1);
+    expect(killed).toBeGreaterThan(0);
+    expect(Date.now() - t0).toBeLessThan(2000);
+  });
+
   it.skipIf(win32)("does not let a worktree binary shadow an allowlisted one through an empty or relative PATH entry", async () => {  // POSIX PATH and a #!/bin/sh shadow; the Windows refusal of bare names is covered in the windows describe
     await writeFile(path.join(dir, "mytool"), "#!/bin/sh\necho SHADOWED\n", { mode: 0o755 });
     for (const PATH of ["/usr/bin:/bin:", ".:/usr/bin:/bin", ":/usr/bin:/bin", "/usr/bin:/bin::"]) {

@@ -7,6 +7,7 @@ import { AccountsService, secretKeyFor } from "../features/accounts/accounts-ser
 import { connectProvider, type ConnectUi } from "../features/accounts/connect-provider";
 import { ModelPicker, type PickerItem, type PickerUi } from "../features/accounts/model-picker";
 import { reseedDemoRepo } from "../features/demo/reseed";
+import { HomeKeeper } from "../features/home/open-home";
 import { createProviders } from "../models/registry";
 
 // Lane 1 wiring: accounts, models, agent, tasks, sessions, approvals, swarms, auth.
@@ -16,6 +17,7 @@ export function registerLane1(context: vscode.ExtensionContext): void {
   const picker = registerModelPicker(context, accounts);
   registerConnectProvider(context, accounts, picker);
   registerReseedDemoRepo(context);
+  registerHomeKeeper(context);
 }
 
 function registerModelPicker(context: vscode.ExtensionContext, accounts: AccountsService): ModelPicker {
@@ -89,4 +91,22 @@ function registerReseedDemoRepo(context: vscode.ExtensionContext): void {
       else void vscode.window.showErrorMessage(res.message);
     }),
   );
+}
+
+/** Opens the Nexus home at startup and whenever the last editor closes (the home itself is Lane 3's `nexus.openHome`). */
+function registerHomeKeeper(context: vscode.ExtensionContext): void {
+  let warned = false;
+  const keeper = new HomeKeeper({
+    tabCount: () => vscode.window.tabGroups.all.reduce((n, g) => n + g.tabs.length, 0),
+    openHome: async () => { await vscode.commands.executeCommand("nexus.openHome"); },
+    schedule: (fn, ms) => setTimeout(fn, ms),
+    cancel: h => clearTimeout(h as ReturnType<typeof setTimeout>),
+    onError: e => {
+      if (warned) return;
+      warned = true;                                    // e.g. nexus.openHome is not registered yet in this build
+      console.warn("Nexus: could not open the home:", e instanceof Error ? e.message : e);
+    },
+  });
+  context.subscriptions.push(vscode.window.tabGroups.onDidChangeTabs(() => keeper.tabsChanged()), { dispose: () => keeper.dispose() });
+  keeper.start();
 }

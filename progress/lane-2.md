@@ -1,4 +1,5 @@
 ## Done
+- Wiring: register/lane-2.ts now provides the Slack service, git service and gate to Lane 1, and serves app.ping, store.*, events.query/search/subscribe, slack.*, git.commit.show, git.branches and ui.openExternal. Launch check: nexus.nexus activates, no extension host errors.
 - Wave 2 merged to lane-2: L2-13 gate, L2-05 git read side, L2-03 live Slack (each disputed twice; lead applied the last fixes, each pinned by a mutant)
 - L2-08 LocalStore + search merged to lane-2 (three disputes; lead applied the last fix). Adrian's controllers shadowed into it: 1,069 writes, 0 refused
 - L2-01 router + host merged to lane-2 (lead applied the final fixes; panels retained, reused ids replace)
@@ -36,6 +37,8 @@ T+0 = 22:00 ET, 2026-11-06
 - 2026-11-07 Gate limits: a descendant that calls setsid() survives the timeout kill; Windows shim quoting, taskkill and bare-name refusal are unit-tested only (never run on Windows). The recheck between commit approval and commitIn leaves a window of tens of milliseconds.
 - 2026-11-07 For L2-06: git.diff must include untracked files (or the human approves a diff missing whole files that commitIn then commits).
 - 2026-11-07 Slack: the SDK's delayReconnectAttempt is replaced on our client (hardenReconnect) because the SDK drops a rejection and retries forever. Unpinned: no test catches createBoltApp dropping that call. The host must store ApprovalRequest.slackMessage before a card can be clicked. L2-S1 (live) not run yet.
+- 2026-11-07 For Adrian: a Slack APPROVE click needs Lane 1's approvals controller. registerLane2 returns setSlackApprovalResolver; Lane 1 must call it with approvals.resolve after composing (until then a Slack click is refused, app and notification approvals work). The Slack approval card posts only for tasks whose source is a thread.
+- 2026-11-07 Slack tokens: SecretStorage (Nexus: Connect Slack) first, then SLACK_USER_TOKEN / SLACK_BOT_TOKEN / SLACK_APP_TOKEN from the environment in development.
 
 ## Next
-- Wiring in register/lane-2.ts, L2-S1 live Slack check, then wave 3 (L2-06 worktrees, L2-09 Tiger schema, L2-04 cache)
+- L2-S1 live Slack check (Brandon), then wave 3 (L2-06 worktrees, L2-09 Tiger schema, L2-04 cache), then L2-07 watcher

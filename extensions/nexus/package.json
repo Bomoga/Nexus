@@ -132,6 +132,14 @@
         "title": "Nexus: Cancel agent session"
       },
       {
+        "command": "nexus.connectSlack",
+        "title": "Nexus: Connect Slack"
+      },
+      {
+        "command": "nexus.showIdentity",
+        "title": "Nexus: Show Slack posting identity"
+      },
+      {
         "command": "nexus.shareSelectionToSlack",
         "title": "Nexus: Share to Slack"
       },
@@ -182,6 +190,19 @@
           "type": "string",
           "default": "",
           "description": "Base URL of the Nexus auth service. Phone approval (Auth0 push) is off until this is set and you are signed in."
+        },
+        "nexus.agent.allowedCommands": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Commands an agent may run in its worktree without asking, matched exactly (for example \"npm test\"). Everything else needs a human approval."
+        },
+        "nexus.t0": {
+          "type": "string",
+          "default": "",
+          "description": "The hackathon's start time (ISO 8601, for example 2026-11-06T22:00:00-05:00), used for T+ times."
         }
       }
     },

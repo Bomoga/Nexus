@@ -1,1 +1,25 @@
-{"contributes":{},"activationEvents":[]}
+{
+  "contributes": {
+    "commands": [
+      { "command": "nexus.connectSlack", "title": "Nexus: Connect Slack" },
+      { "command": "nexus.showIdentity", "title": "Nexus: Show Slack posting identity" }
+    ],
+    "configuration": {
+      "title": "Nexus",
+      "properties": {
+        "nexus.agent.allowedCommands": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Commands an agent may run in its worktree without asking, matched exactly (for example \"npm test\"). Everything else needs a human approval."
+        },
+        "nexus.t0": {
+          "type": "string",
+          "default": "",
+          "description": "The hackathon's start time (ISO 8601, for example 2026-11-06T22:00:00-05:00), used for T+ times."
+        }
+      }
+    }
+  },
+  "activationEvents": []
+}

@@ -201,7 +201,8 @@ describe("SlackWebClient", () => {
     const m = ChatMessage.parse(await c.postAsUser({ channelId: "C1", text: "hi", threadTs: "3.000000", clientId: "k1" }));
     expect(api.chat.postMessage).not.toHaveBeenCalled();
     expect(poster.chat.postMessage).toHaveBeenCalledWith({ channel: "C1", text: "hi", thread_ts: "3.000000" });
-    expect(m).toMatchObject({ id: "C1:9.000100", sentVia: "user", threadTs: "3.000000", author: { id: "U_ADRIAN", isBot: false }, text: `<${link}|ref>`, codeRefs: [fx.codeRef] });
+    expect(m).toMatchObject({ id: "C1:9.000100", sentVia: "user", threadTs: "3.000000", author: { id: "U_ADRIAN", isBot: false }, text: `<${link}|ref>`, codeRefs: [fx.codeRef], clientId: "k1" });
+    expect("clientId" in ChatMessage.parse(await c.postAsUser({ channelId: "C1", text: "hi" }))).toBe(false);
   });
 
   it("posting uses the no-retry client and reads use the retrying client", async () => {

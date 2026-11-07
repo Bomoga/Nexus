@@ -3,12 +3,12 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const calls: string[] = [];
 const registerLane1 = vi.fn((_c: unknown, _l2?: unknown) => { calls.push("lane1"); });
 const registerLane2 = vi.fn((_c: unknown): unknown => { calls.push("lane2"); return undefined; });
-const registerLane3 = vi.fn((_c: unknown) => { calls.push("lane3"); });
+const registerLane3 = vi.fn((_c: unknown, _router?: unknown) => { calls.push("lane3"); });
 
 vi.mock("vscode", () => ({}));
 vi.mock("./register/lane-1", () => ({ registerLane1: (c: unknown, l: unknown) => registerLane1(c, l) }));
 vi.mock("./register/lane-2", () => ({ registerLane2: (c: unknown) => registerLane2(c) }));
-vi.mock("./register/lane-3", () => ({ registerLane3: (c: unknown) => registerLane3(c) }));
+vi.mock("./register/lane-3", () => ({ registerLane3: (c: unknown, r: unknown) => registerLane3(c, r) }));
 
 import { activate } from "./extension";
 
@@ -22,11 +22,7 @@ describe("activate", () => {
     registerLane2.mockImplementationOnce(() => { calls.push("lane2"); return services; });
     activate(context);
     expect(registerLane1).toHaveBeenCalledWith(context, services);
+    expect(registerLane3).toHaveBeenCalledWith(context, services.router);
     expect(calls).toEqual(["lane2", "lane1", "lane3"]);
-  });
-
-  it("gives Lane 1 an empty object while registerLane2 is still a stub that returns nothing", () => {
-    activate(context);
-    expect(registerLane1).toHaveBeenCalledWith(context, {});
   });
 });

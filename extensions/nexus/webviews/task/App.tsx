@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ModelInfo, OptimizerSetting, ProviderAccount, Task } from "../../src/contracts";
-import { Button, Chip, EmptyState, Input, Select, StatusLine, getBridge } from "../shared";
+import { Button, Chip, EmptyState, Input, Select, StatusLine, friendlyError, getBridge } from "../shared";
 import type { BridgeClient } from "../shared";
 import { composeBrief, splitBrief } from "./brief";
 
@@ -41,7 +41,11 @@ export function App({ bridge, taskId }: AppProps) {
   const [error, setError] = useState("");
   const [titleEmpty, setTitleEmpty] = useState(false);
   const [note, setNote] = useState("");
-  const [failed, setFailed] = useState(false);
+  const [failure, setFailure] = useState("");
+  const [modelsError, setModelsError] = useState("");
+  // RETRY of each load re-runs only that load, so edits already typed into the task are never reset.
+  const [taskAttempt, setTaskAttempt] = useState(0);
+  const [modelsAttempt, setModelsAttempt] = useState(0);
   // Latest values for persist(), which START awaits after the user's last keystroke.
   const saved = useRef<Task | undefined>(undefined);
   const titleRef = useRef("");
@@ -54,6 +58,7 @@ export function App({ bridge, taskId }: AppProps) {
   useEffect(() => {
     if (!taskId) return;
     let live = true;
+    setFailure("");
     const b = bridge ?? getBridge();
     b.request("tasks.get", { taskId })
       .then((t) => {
@@ -63,10 +68,7 @@ export function App({ bridge, taskId }: AppProps) {
         setTitle(t.title);
         setRest(splitBrief(t.brief, t.source.kind === "thread").rest);
       })
-      .catch(() => live && setFailed(true));
-    b.request("models.list", { role: "agent" })
-      .then((m) => live && setModels(m))
-      .catch((e) => live && setError(message(e)));
+      .catch((e) => live && setFailure(friendlyError(e, "task")));
     b.request("accounts.list", {})
       .then((a) => live && setAccounts(a))
       .catch(() => undefined); // labels fall back to "data use unknown" + leaves machine
@@ -76,7 +78,20 @@ export function App({ bridge, taskId }: AppProps) {
     return () => {
       live = false;
     };
-  }, [bridge, taskId]);
+  }, [bridge, taskId, taskAttempt]);
+
+  useEffect(() => {
+    if (!taskId) return;
+    let live = true;
+    setModelsError("");
+    (bridge ?? getBridge())
+      .request("models.list", { role: "agent" })
+      .then((m) => live && setModels(m))
+      .catch((e) => live && setModelsError(friendlyError(e, "models")));
+    return () => {
+      live = false;
+    };
+  }, [bridge, taskId, modelsAttempt]);
 
   // §14: while the optimizer state is unknown (loading or failed), calls might go through Prune,
   // so labels say "unknown" + leaves machine rather than guessing in the user's favour.
@@ -90,7 +105,13 @@ export function App({ bridge, taskId }: AppProps) {
   );
 
   if (!taskId) return <StatusLine tone="error">no task id</StatusLine>;
-  if (failed) return <StatusLine tone="error">task unavailable</StatusLine>;
+  if (failure) {
+    return (
+      <StatusLine tone="error">
+        {failure} <Button onClick={() => setTaskAttempt((n) => n + 1)}>RETRY</Button>
+      </StatusLine>
+    );
+  }
   if (!task) return <StatusLine>loading task</StatusLine>;
 
   const b = bridge ?? getBridge();
@@ -142,7 +163,7 @@ export function App({ bridge, taskId }: AppProps) {
         setTask(saved.current);
         await b.request("ui.openTarget", { type: "session", sessionId: s.id });
       })
-      .catch((e) => setError(message(e)))
+      .catch((e) => setError(friendlyError(e, "task")))
       .finally(() => {
         starting.current = saved.current?.status !== "draft"; // stays locked once started
         setBusy("");
@@ -159,7 +180,7 @@ export function App({ bridge, taskId }: AppProps) {
         const p = await b.request("tasks.decompose", { taskId });
         setNote(`plan ${p.id} proposed: ${p.subtasks.length} subtasks`);
       })
-      .catch((e) => setError(message(e)))
+      .catch((e) => setError(friendlyError(e, "task")))
       .finally(() => setBusy(""));
   };
 
@@ -219,7 +240,13 @@ export function App({ bridge, taskId }: AppProps) {
           <Select id="task-model" aria-label="model" className="task-model" options={options} value={selected} disabled={!editable || busy === "starting"} onChange={(e) => setSelected(e.target.value)} />
           <Chip>{`Prune: ${prune}`}</Chip>
         </div>
-        {models.length === 0 ? <EmptyState message="no agent models available" /> : null}
+        {modelsError ? (
+          <StatusLine tone="error">
+            {modelsError} <Button onClick={() => setModelsAttempt((n) => n + 1)}>RETRY</Button>
+          </StatusLine>
+        ) : models.length === 0 ? (
+          <EmptyState message="no agent models available" />
+        ) : null}
       </div>
 
       <div className="task-actions">

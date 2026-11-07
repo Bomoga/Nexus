@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import { z } from "zod";
 import type { ApprovalRequest, ChatMessage } from "../../src/contracts";
-import { Button, Chip, getBridge } from "../shared";
+import { BridgeError, Button, Chip, getBridge } from "../shared";
 import type { BridgeClient } from "../shared";
 
 // ChatMessage.blocks is raw, untrusted Block Kit. Only this narrow shape is understood; everything else is ignored.
@@ -41,26 +41,61 @@ export function parseBlocks(blocks: unknown): ParsedBlocks {
   return out;
 }
 
+/** The approval as the store has it; undefined when the store has no such approval. */
+async function lookup(client: BridgeClient, approvalId: string): Promise<ApprovalRequest | undefined> {
+  const list = await client.request("approvals.list", { pendingOnly: false });
+  return list.find((a) => a.id === approvalId);
+}
+
 function Approval({ approvalId, bridge }: { approvalId: string; bridge?: BridgeClient }) {
   const [decided, setDecided] = useState<ApprovalRequest | undefined>();
+  // Buttons only for an approval the store knows: a block's approval id is untrusted (any bot could post one).
+  const [known, setKnown] = useState<"checking" | "yes" | "no">("checking");
   const [error, setError] = useState<string | undefined>();
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
     const client = bridge ?? getBridge();
-    return client.subscribe("approvals.subscribe", {}, (a) => {
-      if (a.id === approvalId && a.decision) setDecided(a);
+    let live = true;
+    lookup(client, approvalId).then(
+      (a) => {
+        if (!live) return;
+        setKnown(a ? "yes" : "no");
+        if (a?.decision) setDecided(a);
+      },
+      (e: unknown) => {
+        if (!live) return;
+        setKnown("no");
+        setError(e instanceof Error ? e.message : String(e));
+      },
+    );
+    const unsub = client.subscribe("approvals.subscribe", {}, (a) => {
+      if (a.id !== approvalId) return;
+      setKnown("yes");
+      if (a.decision) setDecided(a);
     });
+    return () => {
+      live = false;
+      unsub();
+    };
   }, [bridge, approvalId]);
 
   const resolve = (decision: "approved" | "rejected") => {
+    const client = bridge ?? getBridge();
     setBusy(true);
     setError(undefined);
-    (bridge ?? getBridge())
-      .request("approvals.resolve", { approvalId, decision })
-      .then((a) => {
+    const settle = async () => {
+      try {
+        const a = await client.request("approvals.resolve", { approvalId, decision });
         if (a.decision) setDecided(a);
-      })
+      } catch (e) {
+        // Someone else decided first: the host answers "conflict" without the winner, so fetch it.
+        if (!(e instanceof BridgeError && e.code === "conflict")) throw e;
+        const a = await lookup(client, approvalId);
+        if (a?.decision) setDecided(a);
+      }
+    };
+    settle()
       .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
       .finally(() => setBusy(false));
   };
@@ -71,6 +106,14 @@ function Approval({ approvalId, bridge }: { approvalId: string; bridge?: BridgeC
       <div className="chat-approval">
         <Chip tone={decided.decision === "approved" ? "ok" : "error"}>{decided.decision.toUpperCase()}</Chip>
         <span className="nx-data">{by ? `decided by ${by.userId} via ${by.via}` : "decided"}</span>
+      </div>
+    );
+  }
+  if (known !== "yes") {
+    return (
+      <div className="chat-approval">
+        <span className="nx-data">{known === "checking" ? "checking approval…" : "approval not found in Nexus"}</span>
+        {error ? <span className="chat-approval-error">{error}</span> : null}
       </div>
     );
   }

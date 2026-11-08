@@ -162,6 +162,9 @@ export function isNexusBotMessage(m: SlackMsg, nexus?: NexusBotIds): boolean {
   return !!nexus.userId && m.user === nexus.userId;
 }
 
+const MAX_MENTIONS_PER_MESSAGE = 20;
+const MAX_MENTIONS_PER_CALL = 100;
+
 const NEXUS_LINK = /<nexus:\/\/nexus\.nexus\/coderef\/[^<>\s|]*\|[^<>\n]*>/g;
 
 /**
@@ -383,7 +386,10 @@ export class SlackWebClient implements UserSlack {
 
   private async mapMessages(api: SlackApi, channelId: string, raw: SlackMsg[]): Promise<ChatMessage[]> {
     const real = raw.filter(isShownSlackMsg);
-    await this.loadUsers(api, real.flatMap(m => [...(m.user ? [m.user] : []), ...mentionedUserIds(m.text ?? "")]));
+    // Authors always load. Mentions are untrusted input that could name thousands of users, so they are capped per message and per call.
+    const mentions = new Set<string>();
+    for (const m of real) for (const id of mentionedUserIds(m.text ?? "", true).slice(0, MAX_MENTIONS_PER_MESSAGE)) if (mentions.size < MAX_MENTIONS_PER_CALL) mentions.add(id);
+    await this.loadUsers(api, [...real.flatMap(m => (m.user ? [m.user] : [])), ...mentions]);
     const names: NameResolvers = { user: id => { const u = this.userCache.get(id); return u ? u.displayName || u.name : undefined; } };
     return real.map(m => mapSlackMessage(channelId, m, m.user ? this.userCache.get(m.user) : undefined, { botId: this.opts.botId, userId: this.opts.botUserId }, names));
   }

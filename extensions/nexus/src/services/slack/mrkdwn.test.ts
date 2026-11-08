@@ -39,7 +39,7 @@ describe("toDisplayText", () => {
     expect(toDisplayText("<nexus://nexus.nexus/coderef/abc>")).toBe("nexus://nexus.nexus/coderef/abc");
   });
   it("shows where a labeled link goes", () => {
-    expect(toDisplayText("<https://evil.example/x|https://bank.example>")).toBe("https://bank.example (https://evil.example/x)");
+    expect(toDisplayText("<https://evil.example/x|https://bank.example>")).toBe("bank.example (https://evil.example/x)");
     expect(toDisplayText("<https://x.com|label>")).toBe("label (https://x.com)");
     expect(toDisplayText("<https://x.com|https://x.com>")).toBe("https://x.com");
     expect(toDisplayText("<https://x.com|x.com>")).toBe("https://x.com");
@@ -80,6 +80,36 @@ describe("toDisplayText", () => {
       mentionedUserIds(s);
       expect(performance.now() - t0).toBeLessThan(200);
     }
+  });
+});
+
+// A copy of the chat view's linkifier (webviews/chat/MessageRow.tsx), kept here so the service never imports the webview.
+const URL_RE = /https?:\/\/[^\s<>]+/g;
+const TRAILING_PUNCT = /[.,;:!?)\]}"']+$/;
+function linkified(text: string): string[] {
+  return [...text.matchAll(URL_RE)].map(m => m[0].replace(TRAILING_PUNCT, ""));
+}
+const hostOf = (u: string): string => new URL(u).host;
+
+describe("urls survive the chat view's linkifier", () => {
+  const bank = "https://bank.example";
+  const prefixes = ["", "see ", "https://evil.example/", "x", "(", "evil.example/"];
+  const suffixes = ["", "@evil.example/x", ".evil.example", "evil.example", "/path", ":8080", "?q=1", "#frag", ")x", " ok", "https://evil.example/y"];
+  const labels = [undefined, "Sign in", "https://evil.example/x", "evil.example", "bank.example"];
+  it("links exactly the host Slack's link goes to", () => {
+    for (const pre of prefixes) for (const suf of suffixes) for (const label of labels) {
+      const seq = label === undefined ? `<${bank}>` : `<${bank}|${label}>`;
+      const out = toDisplayText(pre + seq + suf);
+      const hosts = linkified(out).map(hostOf);
+      const own = linkified(pre).concat(linkified(suf)).map(hostOf);   // urls the person typed themselves
+      expect(hosts, out).toContain("bank.example");
+      expect([...hosts].sort(), out).toEqual(["bank.example", ...own].sort());
+    }
+  });
+  it("keeps the known phishing shapes apart", () => {
+    expect(toDisplayText("<https://bank.example|Sign in>@evil.example/login")).toBe("Sign in (https://bank.example) @evil.example/login");
+    expect(toDisplayText("<https://bank.example>.evil.example")).toBe("https://bank.example .evil.example");
+    expect(toDisplayText("https://evil.example/<https://bank.example>")).toBe("https://evil.example/ https://bank.example");
   });
 });
 

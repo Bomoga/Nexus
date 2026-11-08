@@ -208,6 +208,23 @@ describe("SlackWebClient", () => {
     expect(m.codeRefs).toEqual([fx.codeRef]);
   });
 
+  it("caps mention lookups at 20 per message and 100 per call, skips labeled mentions, still loads authors", async () => {
+    const api = makeFake();
+    const ids = (from: number, n: number) => Array.from({ length: n }, (_v, i) => `<@U_M${from + i}>`).join(" ");
+    api.conversations.history.mockResolvedValue({ messages: [
+      { ...base, ts: "6.1", user: "U_ADRIAN", text: `${ids(0, 4000)} <@U_LAB|lab>` },
+      ...Array.from({ length: 6 }, (_v, k) => ({ ...base, ts: `6.${k + 2}`, user: "U_ADRIAN", text: ids(1000 * (k + 1), 30) })),
+    ], response_metadata: { next_cursor: "" } } as never);
+    const { c } = client(api);
+    const { messages } = await c.history("C1");
+    const asked = api.users.info.mock.calls.map(x => x[0].user);
+    expect(asked.filter(u => u.startsWith("U_M"))).toHaveLength(100);
+    expect(asked).not.toContain("U_LAB");
+    expect(asked).toContain("U_ADRIAN");
+    expect(messages.find(m => m.ts === "6.1")?.text).toContain("@lab");
+    expect(messages.find(m => m.ts === "6.7")?.text).toContain("@U_M6000");   // beyond the caps: shown as the raw id
+  });
+
   it("a typed message's confirmed copy converts back to exactly what was typed (pending-echo match)", async () => {
     const { c, poster } = client();
     const typed = "Map<string> & <@U1> https://x.com";

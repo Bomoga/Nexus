@@ -304,10 +304,10 @@ export class SlackSocket {
       const known = raw.user ? await this.lookupUser(app, raw.user) : undefined;
       // Mentioned users are resolved through the same cached lookup, bounded per message; an unknown one shows as @U….
       const mentioned = new Map<string, string>();
-      for (const id of mentionedUserIds(raw.text ?? "").slice(0, MAX_MENTION_LOOKUPS)) {
-        const u = await this.lookupUser(app, id).catch(() => undefined);
+      await Promise.all(mentionedUserIds(raw.text ?? "", true).slice(0, MAX_MENTION_LOOKUPS).map(async id => {
+        const u = await this.lookupUser(app, id);   // never throws: a failed lookup is just an unknown user
         if (u) mentioned.set(id, u.displayName || u.name);
-      }
+      }));
       const message = mapSlackMessage(channelId, raw, known, this.nexusBot, { user: id => mentioned.get(id) });
       this.emit({ type: changed ? "message_changed" : "message", message });
     } catch { /* an odd payload must not take the handler (and the socket) down */ }

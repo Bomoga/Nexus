@@ -46,64 +46,79 @@ function splitLabel(inner: string): [string, string | undefined] {
   return bar < 0 ? [inner, undefined] : [inner.slice(0, bar), inner.slice(bar + 1)];
 }
 
-function convertSeq(inner: string, names: NameResolvers | undefined): string {
+interface Converted { s: string; url?: boolean }
+
+/** A label shown next to its url must not be linkifiable itself, or it would send the reader to a host Slack's link does not. */
+function plainLabel(label: string): string {
+  return label.replace(/https?:\/\//gi, "");
+}
+
+function convertSeq(inner: string, names: NameResolvers | undefined): Converted {
   const first = inner[0];
   if (first === "@") {
     const [id, label] = splitLabel(inner.slice(1));
     if (USER_ID.test(id)) {
-      if (label) return "@" + decode(label);
-      return "@" + (names?.user?.(id) || id);
+      if (label) return { s: "@" + decode(label) };
+      return { s: "@" + (names?.user?.(id) || id) };
     }
   } else if (first === "#") {
     const [id, label] = splitLabel(inner.slice(1));
     if (CHANNEL_ID.test(id)) {
-      if (label) return "#" + decode(label);
-      return "#" + (names?.channel?.(id) || id);
+      if (label) return { s: "#" + decode(label) };
+      return { s: "#" + (names?.channel?.(id) || id) };
     }
   } else if (first === "!") {
     const [cmd, labelRaw] = splitLabel(inner.slice(1));
     const label = labelRaw === undefined ? undefined : decode(labelRaw);
-    if (cmd === "here" || cmd === "channel" || cmd === "everyone") return "@" + cmd;
-    if (cmd.startsWith("subteam^")) return label || "@" + decode(cmd.slice(8));
-    return label || decode(cmd);
+    if (cmd === "here" || cmd === "channel" || cmd === "everyone") return { s: "@" + cmd };
+    if (cmd.startsWith("subteam^")) return { s: label || "@" + decode(cmd.slice(8)) };
+    return { s: label || decode(cmd) };
   } else {
     const [urlRaw, labelRaw] = splitLabel(inner);
     const url = decode(urlRaw);
     const label = labelRaw === undefined ? undefined : decode(labelRaw);
-    if (/^nexus:\/\/(?:nexus\.nexus\/)?coderef\//.test(url)) return label || url;
+    if (/^nexus:\/\/(?:nexus\.nexus\/)?coderef\//.test(url)) return label ? { s: label } : { s: url, url: true };
     if (/^https?:\/\//i.test(url)) {
-      if (!label) return url;
+      if (!label) return { s: url, url: true };
       const bare = url.replace(/^https?:\/\//i, "");
-      if (label === url || label === bare || label === bare.replace(/\/$/, "")) return url;
-      return `${label} (${url})`;
+      if (label === url || label === bare || label === bare.replace(/\/$/, "")) return { s: url, url: true };
+      return { s: `${plainLabel(label)} (${url})`, url: true };
     }
     if (/^mailto:/i.test(url)) {
       const addr = url.slice(7);
-      return !label || label === addr ? addr : `${label} (${addr})`;
+      return { s: !label || label === addr ? addr : `${plainLabel(label)} (${addr})`, url: true };
     }
-    if (SCHEME.test(url)) return label ? `${label} (${url})` : url;
+    if (SCHEME.test(url)) return { s: label ? `${plainLabel(label)} (${url})` : url, url: true };
   }
-  return "<" + decode(inner) + ">";   // not a Slack control sequence: keep what was there
+  return { s: "<" + decode(inner) + ">" };   // not a Slack control sequence: keep what was there
 }
 
 /** Slack message text as the person would read it. Entities are decoded only in plain text and inside converted sequences. */
 export function toDisplayText(raw: string, names?: NameResolvers): string {
   try {
-    const out: string[] = [];
-    walk(raw, t => out.push(decode(t)), inner => out.push(convertSeq(inner, names)));
-    return out.join("");
+    // A url piece is kept apart from any adjacent non-space text, so a chat view that linkifies the output cannot merge it with a neighbour.
+    let out = "";
+    let afterUrl = false;
+    const add = (piece: string, url: boolean): void => {
+      if (!piece) return;
+      const gapBefore = out !== "" && !/\s$/.test(out) && (url || afterUrl) && !/^\s/.test(piece);
+      out += (gapBefore ? " " : "") + piece;
+      afterUrl = url;
+    };
+    walk(raw, t => add(decode(t), false), inner => { const c = convertSeq(inner, names); add(c.s, !!c.url); });
+    return out;
   } catch {
     return raw;
   }
 }
 
 /** Ids of the users actually mentioned (<@U123>), in order of first appearance. Escaped lookalikes do not count. */
-export function mentionedUserIds(raw: string): string[] {
+export function mentionedUserIds(raw: string, unlabeledOnly = false): string[] {
   const ids = new Set<string>();
   walk(raw, () => undefined, inner => {
     if (inner[0] !== "@") return;
-    const [id] = splitLabel(inner.slice(1));
-    if (USER_ID.test(id)) ids.add(id);
+    const [id, label] = splitLabel(inner.slice(1));
+    if (USER_ID.test(id) && !(unlabeledOnly && label)) ids.add(id);   // a mention that carries its own label needs no lookup
   });
   return [...ids];
 }

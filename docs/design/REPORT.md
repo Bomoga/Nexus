@@ -38,6 +38,36 @@ _(filled at the end)_
 - Served entirely by the bridge (`git.branches`, `git.mergeAgentBranch`, `events.query`); repo text rendered as text only.
 - Narrow (360 px) shot: `screens/after/git-narrow.png`; headless Chrome squeezes the MERGE column there, the real browser does not.
 
+### Agent view (`webviews/session`, hosted as `nexus.agent` in the secondary side bar)
+
+| before | after |
+|---|---|
+| ![session before](screens/before/session.png) | ![session after](screens/after/session.png) |
+
+- Runs as a view with no session id: it calls `sessions.list`, shows the newest running/awaiting session first and offers a switcher (`STATUS · task title · modelId`); a host-supplied `<body data-session-id>` still wins; switching re-subscribes from seq 0, resets state and drops any late answer from the previous session (reviewer-found race, fixed on attempt 2, test included).
+- Two-row header (switcher + status Badge + CANCEL; mono strip `branch · model · T+start · elapsed · $cost (saved)` truncating from the left), Tabs with counts, LOG as `seq · T+ · TOOL · summary` rows with `›`/`✓`/`✗` glyphs, DIFF per-file regions, TESTS, RECEIPTS table with a footer total, the approval card with swarm Badge and judges table; once an `approval_resolved` event is seen the card shows no buttons even if the stored copy lags.
+- Narrow shot: `screens/after/session-narrow.png` (headless clamps the width; in the real browser at 320 px the badge and CANCEL fit).
+
+### Slack view (`webviews/chat`)
+
+| before | after |
+|---|---|
+| ![chat before](screens/before/chat.png) | ![chat after](screens/after/chat.png) |
+
+- CHANNELS header with count; 20 px rows (`#` mono, name, bold unread count, amber dot only when the bot is not a member); selected row with the 2 px accent rule and tint.
+- History header with the mono channel name, MEMBER / BOT / LIVE badges; rows `time · name · text`; day separators; `N REPLIES` chips; code-ref chips in accent (dashed when stale); bot messages with the NEXUS label, APPROVE primary / REJECT danger; failed sends get RETRY and DISMISS (new `dismiss(clientId)` in the outbox, never drops a pending send).
+- Composer: SEND (kbd ENTER) with the 20 px identity line ("posting as @name" or the amber no-token line); THREAD pane with `CLOSE ESC` and a MAKE TASK footer; links in Slack text now open through `ui.openExternal` (https only; before they did nothing). Narrow shot: `screens/after/chat-narrow.png`.
+
+### Approvals view (`webviews/approvals`)
+
+| before | after |
+|---|---|
+| ![approvals before](screens/before/approvals.png) | ![approvals after](screens/after/approvals.png) |
+
+- One Region per approval: header `KIND · session id · T+ requested` with the status Badge; action in mono; reason with the MODEL-WRITTEN label; waiting note; APPROVE primary / REJECT danger only while undecided.
+- Pending first (oldest first), then a 20 px DECIDED separator, then decided cards with the swarm verdict Badge (LOOKS GOOD / CONCERNS / DO NOT MERGE / REVIEW UNAVAILABLE), the judges table and the "approved by slack … at T+" line.
+- The swarm verdict only changes the look; decisions are human clicks only; a decided approval never reopens. Narrow shot: `screens/after/approvals-narrow.png`.
+
 ## 3. Decisions made for Adrian
 
 _(see also progress/lane-1.md "Decisions (design night)")_

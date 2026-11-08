@@ -42,6 +42,11 @@ const stateKey = (role: ModelRole) => `nexus.model.${role}`;
 export class ModelPicker {
   constructor(private readonly deps: { accounts: AccountsView; state: StateStore; ui: PickerUi; optimizer?: OptimizerView }) {}
 
+  /** The picker is built before the optimizer exists (extension wiring order), so the Prune toggle row is attached afterwards. */
+  attachOptimizer(optimizer: OptimizerView): void {
+    this.deps.optimizer = optimizer;
+  }
+
   /** The remembered choice for a role, only while that model is still returned by a connected, eligible account. */
   selected(role: ModelRole = "agent"): ChosenModel | undefined {
     const saved = this.deps.state.get<ChosenModel>(stateKey(role));

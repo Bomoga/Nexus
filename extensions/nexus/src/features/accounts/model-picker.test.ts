@@ -70,6 +70,12 @@ describe("ModelPicker items", () => {
     expect(labels(items).slice(-2)).toEqual(["separator:Optimization", "optimizer:Optimize with Prune: OFF"]);
     expect((items.at(-1) as { detail: string }).detail).toMatch(/data use unknown · leaves machine/);
   });
+
+  it("shows the Prune row once an optimizer is attached after construction (the extension builds the picker first)", async () => {
+    const s = await setup();
+    s.picker.attachOptimizer({ get: () => ({ enabled: true, scope: "text_roles", allowModelRouting: false }), toggle: async () => {} });
+    expect(labels(await s.picker.buildItems()).at(-1)).toBe("optimizer:Optimize with Prune: ON");
+  });
 });
 
 describe("pickerBridgeHandlers (the agent view's composer shares the status bar's choice)", () => {

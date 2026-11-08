@@ -13,6 +13,17 @@ function ui() {
 }
 const noBrackets = (s: string) => expect(s).not.toMatch(/[[\]]/);
 
+describe("make task opens the task editor", () => {
+  it("opens the editor for the new task instead of a popup", async () => {
+    const lane = { tasks: { createFromThread: async () => ({ id: "task_9", title: "T" }) } } as unknown as Lane1;
+    const c = ui();
+    const opened: string[] = [];
+    await lane1Commands(lane, c.u, () => "a", id => opened.push(id))["nexus.makeTaskFromThread"]("C1", "1.1");
+    expect(opened).toEqual(["task_9"]);
+    expect(c.infos).toEqual([]);
+  });
+});
+
 describe("lane1Commands keep untrusted text from becoming command links", () => {
   it("task titles", async () => {
     const lane = { tasks: { createFromThread: async () => ({ title: `Fix ${LINK}` }) } } as unknown as Lane1;

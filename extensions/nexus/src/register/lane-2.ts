@@ -17,6 +17,7 @@ import type { EventStore } from "../services/events/store";
 import { createTokenVault } from "../services/slack/token-vault";
 import { REFRESH_SECRET_KEY } from "../features/auth/auth0-signin";
 import { createSharedStore } from "./shared-store";
+import type { TigerClient } from "../services/events/tiger-store";
 
 /** SecretStorage key for the Tiger Cloud connection string; TIGER_URL in the environment works too. (A "Connect Tiger Cloud" command needs a contracts change first.) */
 const TIGER_SECRET_KEY = "nexus.tiger.url";
@@ -63,6 +64,33 @@ export function registerLane2(context: vscode.ExtensionContext): Lane2Wiring {
   let machineId = context.globalState.get<string>("nexus.machineId");
   if (!machineId) { machineId = randomUUID(); void context.globalState.update("nexus.machineId", machineId); }
 
+  // The git service and the workspace id (sha1 of the repo's root commit, the same on every machine) come first: the shared store
+  // and the activity strip are limited to this repo. Memoized once it is known; unknown (no folder, no commits) is retried next time.
+  const gitService = folder ? new GitCli(folder.uri.fsPath, { sessionsDir: join(context.globalStorageUri.fsPath, "sessions", workspaceSlug) }) : undefined;
+  let workspaceIdPromise: Promise<string | undefined> | undefined;
+  const rootWorkspaceId = (): Promise<string | undefined> => {
+    if (!gitService) return Promise.resolve(undefined);
+    workspaceIdPromise ??= gitService.workspaceId().then(id => id || undefined, () => undefined).then(id => { if (!id) workspaceIdPromise = undefined; return id; });
+    return workspaceIdPromise;
+  };
+  // Lane 1 still names its tasks' (and so its agent and Slack events') workspace `ws_<folder slug>`; both ids belong to this repo.
+  // Until the root-commit id is known the list is empty (unknown): sync would otherwise pull with the folder id alone, mark other
+  // machines' git events (tagged with the root id) seen, and never copy them.
+  const workspaceIds = async (): Promise<string[]> => {
+    if (!folder) return [];
+    const root = await rootWorkspaceId();
+    if (!root) return [];
+    return [...new Set([root, `ws_${workspaceSlug}`])];
+  };
+  // The shared store's client once it exists; before that (or without TIGER_URL) the query throws, so the strip counts the local copy.
+  let sharedClient: TigerClient | undefined;
+  const activityQuery = {
+    query: (text: string, params: unknown[]) => {
+      if (!sharedClient) return Promise.reject(new Error("shared store not connected"));
+      return sharedClient.query(text, params);
+    },
+  };
+
   // The store everyone uses: the local copy now, the shared store (Tiger Cloud) once its connection string has been read.
   // Subscriptions are the local copy's in both cases, so ones made before the switch keep working.
   let current: EventStore = local;
@@ -74,10 +102,11 @@ export function registerLane2(context: vscode.ExtensionContext): Lane2Wiring {
     if (!url) return;
     try {
       const shared = createSharedStore({
-        connectionString: url, local, machineId: machineId!, redact, log: m => log(`shared store: ${m}`),
+        connectionString: url, local, machineId: machineId!, redact, workspaceIds, log: m => log(`shared store: ${m}`),
         notify: m => { void vscode.window.showWarningMessage(plainNotificationText(m)); },
       });
       current = shared.store;
+      sharedClient = shared.client;
       context.subscriptions.push({ dispose: () => { void shared.dispose(); } });
       await shared.sync.start();
     } catch (e) {
@@ -94,7 +123,6 @@ export function registerLane2(context: vscode.ExtensionContext): Lane2Wiring {
 
   registerAppPing(router, context);
 
-  const gitService = folder ? new GitCli(folder.uri.fsPath, { sessionsDir: join(context.globalStorageUri.fsPath, "sessions", workspaceSlug) }) : undefined;
   const codeRefEditor = folder && gitService ? makeCodeRefEditor(context, folder, gitService) : undefined;
 
   // Each person's Slack token from Auth0 Token Vault. Only user settings count: a repository's workspace settings could
@@ -114,7 +142,7 @@ export function registerLane2(context: vscode.ExtensionContext): Lane2Wiring {
   });
 
   const lane2 = buildLane2({
-    router, store, redact, tokenVault,
+    router, store, redact, tokenVault, activityQuery, workspaceIds,
     readSessionLocally: id => local.getSession(id),
     secret: key => Promise.resolve(context.secrets.get(key)),
     env: process.env,

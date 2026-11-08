@@ -15,7 +15,7 @@ describe.skipIf(!url)("L2-10 TigerStore on Tiger Cloud", () => {
     const run = randomUUID().slice(0, 8);
     const id = (s: string) => `int_${run}_${s}`;
     const client = createTigerPool(url!);
-    const store = new TigerStore({ client, redact: t => t });
+    const store = new TigerStore({ client, redact: t => t, workspaceIds: async () => [fx.event.workspaceId] });   // reads are scoped to the repo
     const sha = "c".repeat(40);
     const task = { ...fx.task, id: id("task") };
     const session = { ...fx.session, id: id("ses"), taskId: task.id, branch: `nexus/agent-${id("ses")}` };

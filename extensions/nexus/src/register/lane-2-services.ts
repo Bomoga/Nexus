@@ -61,6 +61,8 @@ export interface Lane2Inputs {
   tokenVault?: { getUserToken(): Promise<{ token: string; source: "token_vault" } | null>; invalidate?(): void };
   /** The shared store's client for the activity strip's continuous aggregate; counted from the local copy without it. */
   activityQuery?: ActivityQueryClient;
+  /** The open repo's workspace ids (memoized by the caller); the activity strip's remote aggregate is read only while the list is non-empty. */
+  workspaceIds?: () => Promise<string[]>;
   /** Reads a session from this machine's own copy (never a remote round trip): used under the per-session write lock. */
   readSessionLocally?: (id: string) => Promise<AgentSession | undefined>;
   /** Milliseconds since the epoch (test seam). */
@@ -193,7 +195,7 @@ export function buildLane2(i: Lane2Inputs): Lane2Built {
 
     registerOpenExternal(r, i.openExternal),
     // The activity strip under the globe: 15-minute buckets per orbit (L2-12).
-    registerActivity(r, createActivity({ ...(i.activityQuery ? { query: i.activityQuery } : {}), localEvents: w => i.store.queryEvents({ from: w.from, to: w.to, limit: w.limit }) })),
+    registerActivity(r, createActivity({ ...(i.activityQuery ? { query: i.activityQuery } : {}), ...(i.workspaceIds ? { workspaceIds: i.workspaceIds } : {}), localEvents: w => i.store.queryEvents({ from: w.from, to: w.to, limit: w.limit }) })),
   );
   if (i.executeCommand) parts.push(registerOpenTarget(r, { executeCommand: i.executeCommand }));
 

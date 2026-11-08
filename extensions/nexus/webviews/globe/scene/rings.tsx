@@ -1,33 +1,24 @@
-import { useEffect, useMemo, useRef } from "react";
-import { BoxGeometry, BufferGeometry, Line, LineBasicMaterial, MeshBasicMaterial, OctahedronGeometry, Vector3 } from "three";
+import { useMemo, useRef } from "react";
+import { BoxGeometry, MeshBasicMaterial, OctahedronGeometry } from "three";
 import type { Group } from "three";
-import { useFrame } from "@react-three/fiber";
+import { Line } from "@react-three/drei";
+import { useFrame, useThree } from "@react-three/fiber";
 import type { NexusEvent, TimeWindow } from "../../../src/contracts";
 import { ACTIVITY_OFFSET, activityKey, activityPoint, shapeOf } from "../model/arcs";
 import type { OrbitSpec } from "../model";
-import { PURPLE_HI } from "./colors";
+import { ACCENT, ACCENT_GLOW, ACCENT_LO } from "./colors";
+import { FAR_OPACITY, applyFade } from "./fade";
+import { circlePoints, noRaycast } from "./Orbits";
 import { applyDrift, liveScale, useDriftNow } from "./live";
 import type { DriftData } from "./live";
 
-/** Event-kind colors from the prototype legend: the only non-purple things in the globe. */
-export const AGENT_GREEN = 0x1d9e75;
-export const SLACK_PINK = 0xd4537e;
-
-// Shared for the page lifetime; never disposed.
+// Shared for the page lifetime; never disposed. Markers differ by shape and brightness only: no status colors in the scene.
 const cubeGeometry = new BoxGeometry(0.1, 0.1, 0.1);
 const diamondGeometry = new OctahedronGeometry(0.075, 0);
-const cubeMaterial = new MeshBasicMaterial({ color: AGENT_GREEN });
-const diamondMaterial = new MeshBasicMaterial({ color: SLACK_PINK });
-const ringMaterial = new LineBasicMaterial({ color: PURPLE_HI, transparent: true, opacity: 0.22 });
-
-function circle(r: number, segments: number): BufferGeometry {
-  const pts: Vector3[] = [];
-  for (let i = 0; i <= segments; i++) {
-    const a = (i / segments) * Math.PI * 2;
-    pts.push(new Vector3(Math.cos(a) * r, 0, Math.sin(a) * r));
-  }
-  return new BufferGeometry().setFromPoints(pts);
-}
+const cubeMaterial = new MeshBasicMaterial({ color: ACCENT_GLOW });
+const cubeFar = new MeshBasicMaterial({ color: ACCENT_GLOW, transparent: true, opacity: FAR_OPACITY });
+const diamondMaterial = new MeshBasicMaterial({ color: ACCENT });
+const diamondFar = new MeshBasicMaterial({ color: ACCENT, transparent: true, opacity: FAR_OPACITY });
 
 export interface ActivityProps {
   events: readonly NexusEvent[];
@@ -44,7 +35,7 @@ interface Placed {
   scale: number;
 }
 
-/** Agent sessions (green cubes) and Slack tasks (pink diamonds) on a faint activity ring just outside each orbit. */
+/** Agent sessions (cubes) and Slack tasks (diamonds) on a faint activity ring just outside each orbit. */
 export function Activity({ events, layout, now, window }: ActivityProps) {
   // Keyed on the activity events themselves: the 5 s tick re-filters `events` without changing any of them.
   const key = activityKey(events);
@@ -68,35 +59,42 @@ export function Activity({ events, layout, now, window }: ActivityProps) {
     () =>
       layout
         .filter((o) => o.id !== "main" || withActivity.has(o.id))
-        .map((o) => ({ id: o.id, tilt: o.tilt, line: new Line(circle(o.radius + ACTIVITY_OFFSET, 160), ringMaterial) })),
+        .map((o) => ({ id: o.id, tilt: o.tilt, points: circlePoints(o.radius + ACTIVITY_OFFSET, 160) })),
     [layout, withActivity],
   );
-  // Geometries are ours (materials are shared): release them when the rings change or on unmount.
-  useEffect(() => () => rings.forEach((r) => r.line.geometry.dispose()), [rings]);
 
-  const group = useRef<Group>(null);
+  const cubes = useRef<Group>(null);
+  const diamonds = useRef<Group>(null);
+  const camera = useThree((s) => s.camera);
   const driftNow = useDriftNow(now);
   useFrame(() => {
-    if (group.current) applyDrift(group.current, driftNow(), window, ACTIVITY_OFFSET, performance.now());
+    const n = driftNow();
+    const perf = performance.now();
+    if (cubes.current) {
+      applyDrift(cubes.current, n, window, ACTIVITY_OFFSET, perf);
+      applyFade(cubes.current, camera, cubeMaterial, cubeFar);
+    }
+    if (diamonds.current) {
+      applyDrift(diamonds.current, n, window, ACTIVITY_OFFSET, perf);
+      applyFade(diamonds.current, camera, diamondMaterial, diamondFar);
+    }
   });
 
   return (
     <group>
       {rings.map((r) => (
         <group key={r.id} rotation={[0, 0, r.tilt]}>
-          <primitive object={r.line} />
+          <Line points={r.points} color={ACCENT_LO} lineWidth={1} transparent opacity={0.3} dashed dashSize={0.08} gapSize={0.06} raycast={noRaycast} />
         </group>
       ))}
-      <group ref={group}>
-        {placed.map((p) => (
-          <mesh
-            key={p.event.id}
-            position={p.position}
-            scale={p.scale}
-            geometry={p.shape === "cube" ? cubeGeometry : diamondGeometry}
-            material={p.shape === "cube" ? cubeMaterial : diamondMaterial}
-            userData={p.data}
-          />
+      <group ref={cubes}>
+        {placed.filter((p) => p.shape === "cube").map((p) => (
+          <mesh key={p.event.id} position={p.position} scale={p.scale} geometry={cubeGeometry} material={cubeMaterial} userData={p.data} />
+        ))}
+      </group>
+      <group ref={diamonds}>
+        {placed.filter((p) => p.shape === "diamond").map((p) => (
+          <mesh key={p.event.id} position={p.position} scale={p.scale} geometry={diamondGeometry} material={diamondMaterial} userData={p.data} />
         ))}
       </group>
     </group>

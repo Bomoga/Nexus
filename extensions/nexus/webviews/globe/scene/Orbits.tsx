@@ -1,37 +1,53 @@
-import { useEffect, useMemo } from "react";
-import { BufferGeometry, Line, LineBasicMaterial, Vector3 } from "three";
+import { useMemo } from "react";
+import { Line } from "@react-three/drei";
+import { SphereGeometry, MeshBasicMaterial } from "three";
 import { GLOBE_RADIUS } from "../model";
 import type { OrbitSpec } from "../model";
-import { PURPLE, PURPLE_NOW } from "./colors";
+import { ACTIVITY_OFFSET } from "../model/arcs";
+import { ACCENT_GLOW, ACCENT_LO } from "./colors";
 
-function circle(r: number, segments: number): BufferGeometry {
-  const pts: Vector3[] = [];
+type P3 = [number, number, number];
+
+/** A ring in the orbit's own XZ plane. Shared with the activity rings. */
+export function circlePoints(r: number, segments: number): P3[] {
+  const pts: P3[] = [];
   for (let i = 0; i <= segments; i++) {
     const a = (i / segments) * Math.PI * 2;
-    pts.push(new Vector3(Math.cos(a) * r, 0, Math.sin(a) * r));
+    pts.push([Math.cos(a) * r, 0, Math.sin(a) * r]);
   }
-  return new BufferGeometry().setFromPoints(pts);
+  return pts;
 }
 
-const ringMaterial = new LineBasicMaterial({ color: PURPLE, transparent: true, opacity: 0.55 });
-const nowMaterial = new LineBasicMaterial({ color: PURPLE_NOW });
+/** Decorative lines must never take a click: wide lines are meshes to the raycaster and would occlude markers behind them. */
+export const noRaycast = () => undefined;
 
-/** One ring per orbit family, all tilted around the shared Z axis, plus the now line along +Z. */
+const dotGeometry = new SphereGeometry(0.03, 10, 10);
+const dotMaterial = new MeshBasicMaterial({ color: ACCENT_GLOW });
+/** Past the outermost activity ring. */
+const NOW_LINE_OVERSHOOT = ACTIVITY_OFFSET + 0.15;
+
+/** One 1.5 px ring per orbit family (all tilted around the shared Z axis), plus the 2 px now line along +Z with a dot at each crossing. */
 export function Orbits({ layout }: { layout: readonly OrbitSpec[] }) {
   const outer = layout.length ? layout[layout.length - 1].radius : 2;
-  const rings = useMemo(() => layout.map((o) => ({ id: o.id, tilt: o.tilt, line: new Line(circle(o.radius, 160), ringMaterial) })), [layout]);
-  const nowLine = useMemo(() => new Line(new BufferGeometry().setFromPoints([new Vector3(0, 0, GLOBE_RADIUS), new Vector3(0, 0, outer + 0.8)]), nowMaterial), [outer]);
-  // Geometries are ours (materials are module-level and shared): release them when the layout changes or on unmount.
-  useEffect(() => () => rings.forEach((r) => r.line.geometry.dispose()), [rings]);
-  useEffect(() => () => nowLine.geometry.dispose(), [nowLine]);
+  const rings = useMemo(() => layout.map((o) => ({ id: o.id, tilt: o.tilt, radius: o.radius, points: circlePoints(o.radius, 160) })), [layout]);
+  const nowPoints = useMemo<P3[]>(
+    () => [
+      [0, 0, GLOBE_RADIUS],
+      [0, 0, outer + NOW_LINE_OVERSHOOT],
+    ],
+    [outer],
+  );
   return (
     <group>
       {rings.map((r) => (
         <group key={r.id} rotation={[0, 0, r.tilt]}>
-          <primitive object={r.line} />
+          <Line points={r.points} color={ACCENT_LO} lineWidth={1.5} transparent opacity={0.55} raycast={noRaycast} />
         </group>
       ))}
-      <primitive object={nowLine} />
+      <Line points={nowPoints} color={ACCENT_GLOW} lineWidth={2} raycast={noRaycast} />
+      {rings.map((r) => (
+        <mesh key={`dot-${r.id}`} position={[0, 0, r.radius]} geometry={dotGeometry} material={dotMaterial} raycast={noRaycast} />
+      ))}
     </group>
   );
 }

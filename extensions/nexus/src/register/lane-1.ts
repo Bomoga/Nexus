@@ -7,6 +7,7 @@ import { AccountsService, secretKeyFor } from "../features/accounts/accounts-ser
 import { connectProvider, type ConnectUi } from "../features/accounts/connect-provider";
 import { ModelPicker, type PickerItem, type PickerUi } from "../features/accounts/model-picker";
 import { Auth0Session } from "../features/auth/auth0-signin";
+import { createLoopbackListener } from "../features/auth/loopback";
 import { setCurrentAuth } from "../features/auth/current";
 import { safeMessageUi, safeText } from "../features/notify-safe";
 import { reseedDemoRepo } from "../features/demo/reseed";
@@ -39,6 +40,7 @@ function registerAuth(context: vscode.ExtensionContext): Auth0Session {
     },
     secrets: context.secrets,
     openExternal: async url => vscode.env.openExternal(vscode.Uri.parse(url)),
+    loopback: createLoopbackListener(),
     log: m => console.warn(`Nexus auth: ${m}`),
   });
   setCurrentAuth(auth);                                   // Lane 2's nexus:// URI handler delegates nexus://auth/* here

@@ -1,23 +1,29 @@
 import { useEffect, useState } from "react";
 import type { TaskPlan } from "../../src/contracts";
-import { Button, Chip, StatusLine, Table, friendlyError, getBridge } from "../shared";
-import type { BridgeClient, TableColumn, Tone } from "../shared";
+import { Badge, Button, Chip, MonoBlock, Region, StatusLine, Table, friendlyError, getBridge } from "../shared";
+import type { BadgeKind, BridgeClient, TableColumn } from "../shared";
 import "./plan.css";
 
 type Subtask = TaskPlan["subtasks"][number];
 type Row = Subtask & { index: number };
 
-const STATUS_TONE: Record<TaskPlan["status"], Tone> = { proposed: "pending", accepted: "ok", rejected: "error" };
+const STATUS_BADGE: Record<TaskPlan["status"], { kind: BadgeKind; label: string }> = {
+  proposed: { kind: "pending", label: "PROPOSED" },
+  accepted: { kind: "ok", label: "ACCEPTED" },
+  rejected: { kind: "error", label: "REJECTED" },
+};
 
 export interface PlanReviewProps {
   /** Loaded with tasks.plan.get when no `plan` is given. */
   planId?: string;
   plan?: TaskPlan;
   bridge?: BridgeClient;
+  /** Title of the task the plan was made from, when the caller has it; the header falls back to the task id. */
+  sourceTitle?: string;
 }
 
 /** Review a swarm-written TaskPlan: nothing becomes a Task until a human accepts it. All plan text is rendered as plain text. */
-export function PlanReview({ planId, plan: given, bridge }: PlanReviewProps) {
+export function PlanReview({ planId, plan: given, bridge, sourceTitle }: PlanReviewProps) {
   const [plan, setPlan] = useState<TaskPlan | undefined>(given);
   const [failure, setFailure] = useState("");
   const [error, setError] = useState("");
@@ -47,11 +53,11 @@ export function PlanReview({ planId, plan: given, bridge }: PlanReviewProps) {
   if (failure) {
     return (
       <StatusLine tone="error">
-        {failure} <Button onClick={() => setAttempt((n) => n + 1)}>RETRY</Button>
+        {failure} <Button size="sm" onClick={() => setAttempt((n) => n + 1)}>RETRY</Button>
       </StatusLine>
     );
   }
-  if (!plan) return <StatusLine>loading plan</StatusLine>;
+  if (!plan) return <StatusLine>… loading plan</StatusLine>;
 
   const decide = (name: "tasks.plan.accept" | "tasks.plan.reject") => {
     if (busy) return;
@@ -80,54 +86,77 @@ export function PlanReview({ planId, plan: given, bridge }: PlanReviewProps) {
 
   const rows: Row[] = plan.subtasks.map((s, index) => ({ ...s, index }));
   const columns: TableColumn<Row>[] = [
-    { key: "n", header: "#", data: true, render: (r) => String(r.index + 1) },
-    { key: "title", header: "TITLE", render: (r) => r.title },
+    { key: "n", header: "#", mono: true, align: "right", render: (r) => String(r.index + 1) },
     {
-      key: "brief",
-      header: "BRIEF",
+      key: "title",
+      header: "TITLE",
       render: (r) => {
         const expanded = open.has(r.index);
         return (
-          <div className="plan-brief">
-            <Button
-              aria-label={`${expanded ? "collapse" : "expand"} brief ${r.index + 1}`}
-              aria-expanded={expanded}
-              onClick={() => toggle(r.index)}
-            >
-              {expanded ? "▾" : "▸"}
-            </Button>
-            {expanded ? <pre className="plan-brief-full">{r.brief}</pre> : <span className="plan-brief-line">{r.brief}</span>}
+          <div className="plan-subtask">
+            <div className="plan-subtask-head">
+              <Button
+                size="sm"
+                aria-label={`${expanded ? "collapse" : "expand"} brief ${r.index + 1}`}
+                aria-expanded={expanded}
+                onClick={() => toggle(r.index)}
+              >
+                {expanded ? "▾" : "▸"}
+              </Button>
+              <span>{r.title}</span>
+            </div>
+            {expanded ? (
+              <MonoBlock label={`BRIEF ${r.index + 1} (MODEL-WRITTEN)`}>{r.brief}</MonoBlock>
+            ) : (
+              <span className="plan-brief-line" title={r.brief}>{r.brief}</span>
+            )}
           </div>
         );
       },
     },
-    {
-      key: "after",
-      header: "DEPENDS",
-      data: true,
-      render: (r) => (r.dependsOn.length ? `after: ${r.dependsOn.map((d) => d + 1).join(", ")}` : ""),
-    },
+    { key: "after", header: "DEPENDS ON", mono: true, render: (r) => (r.dependsOn.length ? r.dependsOn.map((d) => d + 1).join(", ") : "") },
   ];
 
   const created = plan.createdTaskIds?.length ?? 0;
+  const badge = STATUS_BADGE[plan.status];
 
   return (
-    <div className="plan-review">
-      <div className="plan-head">
-        <span className="plan-data">{plan.id.slice(0, 12)}</span>
-        <span className="plan-data">{plan.swarmType}</span>
-        <Chip tone={STATUS_TONE[plan.status]}>{plan.status}</Chip>
-        <Chip>model-written · left machine</Chip>
+    <Region
+      className="plan-review"
+      aria-label="plan review"
+      header={{
+        title: "PLAN",
+        children: (
+          <span className="plan-meta">
+            <span className="plan-source" title={sourceTitle ?? plan.sourceTaskId}>{sourceTitle ?? plan.sourceTaskId}</span>
+            <Badge kind={badge.kind}>{badge.label}</Badge>
+          </span>
+        ),
+        actions: <span className="nx-count">{`${plan.subtasks.length} subtasks`}</span>,
+      }}
+      pad
+    >
+      <div className="plan-meta">
+        <span className="nx-data">{plan.id.slice(0, 12)}</span>
+        <span className="nx-data">{plan.swarmType}</span>
+        <span className="nx-label">model-written · left machine</span>
       </div>
-      <Table columns={columns} rows={rows} rowKey={(r) => String(r.index)} />
+      <Table columns={columns} rows={rows} rowKey={(r) => String(r.index)} aria-label="subtasks" />
       {plan.status === "accepted" ? <StatusLine tone="ok">{`created ${created} draft tasks`}</StatusLine> : null}
+      {plan.status === "accepted" && created > 0 ? (
+        <div className="plan-ids">
+          {plan.createdTaskIds?.map((id) => (
+            <Chip key={id} className="nx-data">{id}</Chip>
+          ))}
+        </div>
+      ) : null}
       {plan.status === "proposed" ? (
         <div className="plan-actions">
           <Button variant="primary" disabled={busy} onClick={() => decide("tasks.plan.accept")}>ACCEPT</Button>
-          <Button disabled={busy} onClick={() => decide("tasks.plan.reject")}>REJECT</Button>
+          <Button variant="danger" disabled={busy} onClick={() => decide("tasks.plan.reject")}>REJECT</Button>
         </div>
       ) : null}
       {error ? <StatusLine tone="error">{error}</StatusLine> : null}
-    </div>
+    </Region>
   );
 }

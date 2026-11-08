@@ -16,6 +16,8 @@ import { registerOpenTarget } from "../services/coderef/open-target";
 import { openCodeRef } from "../services/coderef/resolve";
 import { createSlackService, type ComposedSlackService, type CreateSlackServiceOptions } from "../services/slack/slack-service";
 import { SlackCache } from "../services/slack/cache";
+import { createAvatarResolver, dropAvatars, type AvatarResolver } from "../services/slack/avatars";
+import path from "node:path";
 import { createProgressMessages, type ProgressMessages } from "../services/slack/progress-message";
 import type { SlackService } from "../services/slack/types";
 import { GitWatcher } from "../services/git/watcher";
@@ -51,6 +53,8 @@ export interface Lane2Inputs {
   log: (message: string) => void;
   /** Where the Slack message cache keeps its per-channel files; no cache when omitted. */
   slackCacheDir?: string;
+  /** Turns Slack's remote avatar URLs into data: URIs (webviews load no remote content). Defaults to a real one using the global fetch, caching under slackCacheDir/avatars when given. */
+  avatars?: AvatarResolver;
   /** The git watcher's change source (a FileSystemWatcher on .git refs) and this machine's id; no watcher when omitted. */
   watcher?: { watch: (onChange: () => void) => () => void; machineId: string };
   /** vscode.commands.executeCommand, for ui.openTarget (the commit, session and Slack views are Lane 3's commands). Without it ui.openTarget is not served. */
@@ -173,13 +177,19 @@ export function buildLane2(i: Lane2Inputs): Lane2Built {
   // History is served from the local cache first; live events and the user's own posts keep it current.
   const served: SlackService = i.slackCacheDir ? new SlackCache({ dir: i.slackCacheDir, fetcher: slack }).wrap(slack) : slack;
 
+  // Webviews load no remote content: avatars leave here as data: URIs, or not at all.
+  const avatars = i.avatars ?? createAvatarResolver({ ...(i.slackCacheDir ? { cacheDir: path.join(i.slackCacheDir, "avatars") } : {}), log: i.log });
+
   const r = i.router;
   parts.push(
     r.handle("slack.status", () => served.status()),
     r.handle("slack.channels", () => served.channels()),
     r.handle("slack.history", (q: Req<"slack.history">) => served.history(q.channelId, q.cursor, q.limit)),
     r.handle("slack.thread", (q: Req<"slack.thread">) => served.getThread(q.channelId, q.threadTs)),
-    r.handle("slack.users", (q: Req<"slack.users">) => served.users(q.ids)),
+    r.handle("slack.users", async (q: Req<"slack.users">) => {
+      const users = await served.users(q.ids);
+      try { return await avatars.mapUsers(users); } catch { return dropAvatars(users); }
+    }),
     r.handle("slack.post", (q: Req<"slack.post">) => served.postAsUser({ channelId: q.channelId, text: q.text, threadTs: q.threadTs, clientId: q.clientId })),
     // Live feed: every message and status change is published; the router delivers each to the subscriptions whose channelIds match.
     r.onSubscribe("slack.subscribe", () => undefined),

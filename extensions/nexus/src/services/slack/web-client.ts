@@ -37,6 +37,8 @@ export interface WebClientOptions {
   getToken: TokenProvider;
   /** The Nexus bot's user id; needed to compute Channel.botIsMember. Without it botIsMember is false. */
   botUserId?: string;
+  /** The Nexus bot's bot id (auth.test); only messages from it keep sentVia "bot" and their blocks. */
+  botId?: string;
   /** Test seam; defaults to the real @slack/web-api WebClient built with webClientOptions(kind). */
   makeApi?: (token: string, kind: ApiKind) => SlackApi;
   /** Called when Slack refuses the user token itself (invalid_auth, token_revoked, ...), with where that token came from. */
@@ -148,13 +150,42 @@ export function isShownSlackMsg(m: SlackMsg): boolean {
   return !!m.ts && !!(m.user || m.bot_id) && m.subtype !== "channel_join" && m.subtype !== "channel_leave";
 }
 
+/** The Nexus bot's own ids (auth.test). Without them no message counts as Nexus's (fail closed). */
+export interface NexusBotIds { botId?: string; userId?: string }
+
+/** True only for the Nexus bot's own message: its bot_id matches, or (no bot_id) its user is the bot user. Other apps and webhooks are not Nexus (section 14). */
+export function isNexusBotMessage(m: SlackMsg, nexus?: NexusBotIds): boolean {
+  if (!nexus) return false;
+  if (m.user && nexus.userId && m.user !== nexus.userId) return false;   // a person's own post through the app carries the app's bot_id too
+  if (m.bot_id) return !!nexus.botId && m.bot_id === nexus.botId;
+  return !!nexus.userId && m.user === nexus.userId;
+}
+
+const NEXUS_LINK = /<nexus:\/\/nexus\.nexus\/coderef\/[^<>\s|]*\|[^<>\n]*>/g;
+
+/**
+ * Makes a person's text literal in Slack: & < > become entities so <!channel> and <@U1> cannot ping and Map<string, number> shows as typed.
+ * Well-formed Nexus code-ref links (from formatCodeRefForSlack) and existing &amp; &lt; &gt; entities pass through unchanged.
+ */
+export function escapeUserText(text: string): string {
+  const esc = (s: string) => s.replace(/&(?!(?:amp|lt|gt);)/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  let out = "";
+  let last = 0;
+  for (const m of text.matchAll(NEXUS_LINK)) {
+    out += esc(text.slice(last, m.index)) + m[0];
+    last = m.index + m[0].length;
+  }
+  return out + esc(text.slice(last));
+}
+
 /**
  * Maps one raw Slack message. A person's own post through the Nexus app also carries bot_id/app_id/bot_profile, so a known user's
  * is_bot is trusted; bot_id is only the fallback when the user is unknown (section 14: never show agent text as human).
  */
-export function mapSlackMessage(channelId: string, m: SlackMsg, known?: SlackUser): ChatMessage {
+export function mapSlackMessage(channelId: string, m: SlackMsg, known?: SlackUser, nexus?: NexusBotIds): ChatMessage {
   const ts = m.ts as string;
   const isBot = known ? known.isBot : !!m.bot_id;
+  const fromNexus = isBot && isNexusBotMessage(m, nexus);
   const id = m.user ?? (m.bot_id as string);
   const name = known?.name || m.username || m.bot_profile?.name || id;
   const text = m.text ?? "";   // verbatim: untrusted (§14)
@@ -164,8 +195,8 @@ export function mapSlackMessage(channelId: string, m: SlackMsg, known?: SlackUse
     author: { id, name, isBot },
     text, codeRefs: extractCodeRefs(text),
     ...(m.reply_count ? { replyCount: m.reply_count } : {}),
-    sentVia: isBot ? "bot" : "user",
-    ...(isBot && m.blocks !== undefined ? { blocks: m.blocks } : {}),   // approval buttons survive a reload; humans' blocks are never mapped
+    sentVia: fromNexus ? "bot" : "user",
+    ...(fromNexus && m.blocks !== undefined ? { blocks: m.blocks } : {}),   // approval buttons survive a reload; humans' blocks are never mapped
   } satisfies ChatMessage;
 }
 
@@ -241,13 +272,14 @@ export class SlackWebClient implements UserSlack {
     const me = await this.identity(reader).catch(() => null);
     if (!me) throw new Error("slack user token not verified: refusing to post");
     if (!opts.text.trim()) throw new Error("empty message");
+    const sendText = escapeUserText(opts.text);
     // opts.clientId is not sent to Slack; it is echoed on the returned copy so the UI can match its pending echo.
     let r;
-    try { r = await poster.chat.postMessage({ channel: opts.channelId, text: opts.text, ...(opts.threadTs ? { thread_ts: opts.threadTs } : {}) }); }
+    try { r = await poster.chat.postMessage({ channel: opts.channelId, text: sendText, ...(opts.threadTs ? { thread_ts: opts.threadTs } : {}) }); }
     catch (e) { throw safeError(e, "chat.postMessage"); }
     const ts = r.ts ?? r.message?.ts;
     if (!ts) throw new Error("slack chat.postMessage returned no ts");
-    const text = r.message?.text ?? opts.text;   // Slack's confirmed copy
+    const text = r.message?.text ?? sendText;   // Slack's confirmed copy
     return {
       id: `${opts.channelId}:${ts}`, channelId: opts.channelId, ts,
       ...(opts.threadTs ? { threadTs: opts.threadTs } : {}),
@@ -349,6 +381,6 @@ export class SlackWebClient implements UserSlack {
   private async mapMessages(api: SlackApi, channelId: string, raw: SlackMsg[]): Promise<ChatMessage[]> {
     const real = raw.filter(isShownSlackMsg);
     await this.loadUsers(api, real.flatMap(m => (m.user ? [m.user] : [])));
-    return real.map(m => mapSlackMessage(channelId, m, m.user ? this.userCache.get(m.user) : undefined));
+    return real.map(m => mapSlackMessage(channelId, m, m.user ? this.userCache.get(m.user) : undefined, { botId: this.opts.botId, userId: this.opts.botUserId }));
   }
 }

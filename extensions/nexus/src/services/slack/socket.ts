@@ -169,6 +169,7 @@ export class SlackSocket {
   private running = false;
   private connected = false;
   private generation = 0;
+  private nexusBot: { botId?: string; userId?: string } | undefined;
   private abandon: (() => void) | undefined;
   private readonly listeners = new Set<Listener>();
   private readonly connectionListeners = new Set<(connected: boolean) => void>();
@@ -227,6 +228,7 @@ export class SlackSocket {
     try {
       const identity = await this.opts.getIdentity();
       if (gen !== this.generation) return false;
+      this.nexusBot = { botId: identity.botId, userId: identity.userId };
       app = (this.opts.makeApp ?? createBoltApp)(tokens, identity);
       const mine = app;
       app.event("message", async ({ event }) => { if (gen === this.generation) await this.onEvent(mine, event); });
@@ -298,7 +300,7 @@ export class SlackSocket {
       this.seen.set(key, true);
       if (this.seen.size > SEEN_LIMIT) this.seen.delete(this.seen.keys().next().value as string);
       const known = raw.user ? await this.lookupUser(app, raw.user) : undefined;
-      const message = mapSlackMessage(channelId, raw, known);
+      const message = mapSlackMessage(channelId, raw, known, this.nexusBot);
       this.emit({ type: changed ? "message_changed" : "message", message });
     } catch { /* an odd payload must not take the handler (and the socket) down */ }
   }

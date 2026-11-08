@@ -235,6 +235,11 @@ function buildParsed(o: Record<string, unknown>, r: VerdictObject): Parsed {
   return { verdict, summary: clip(redact(text.trim()), NOTE_CHARS), ...(judges && judges.length > 0 ? { judges } : {}) };
 }
 
+/** Matching key for a judge name: trimmed, lowercased, without a leading "judge:" label prefix, separators (whitespace, _, -) collapsed to one space. Linear time. */
+function judgeKey(name: string): string {
+  return name.trim().toLowerCase().replace(/^judge *: */, "").replace(/[\s_-]+/g, " ").trim();
+}
+
 const NO_VERDICTS = "The judges returned prose and their verdicts could not be derived; read their notes.";
 const JUDGE_CHARS = 1_500;
 const REVIEWER_SYSTEM = "Reply with the candidate change exactly as given between BEGIN_CANDIDATE and END_CANDIDATE, nothing else.";
@@ -393,7 +398,7 @@ export class SwarmReviewService implements ApprovalHook {
     try {
       const task = [
         "Below are written assessments from code-review judges who graded a coding agent's change.",
-        'Reply with ONLY a JSON object: {"verdict":"looks_good"|"concerns"|"do_not_merge","summary":"one sentence","judges":[{"modelId":"<judge name as labeled>","verdict":"looks_good"|"concerns"|"do_not_merge","notes":"one sentence"}]}.',
+        'Reply with ONLY a JSON object: {"verdict":"looks_good"|"concerns"|"do_not_merge","summary":"one sentence","judges":[{"modelId":"<judge name as labeled, WITHOUT the judge: prefix>","verdict":"looks_good"|"concerns"|"do_not_merge","notes":"one sentence"}]}.',
         "Use do_not_merge when a judge found the change wrong, incomplete, or its tests skipped or fake; looks_good only when no judge found a real defect.",
         "",
         frame(judges.map(j => ({ label: `judge: ${j.modelId}`, text: j.text }))),
@@ -410,9 +415,9 @@ export class SwarmReviewService implements ApprovalHook {
       // are not folded, so a synthesizer that invents its own judge names keeps its overall verdict. A duplicate row for one judge floors looks_good.)
       const seen = new Set<string>();
       let dup = false, verdict = out.verdict;
-      const readIds = new Set(judges.map(j => j.modelId.trim().toLowerCase()));
+      const readIds = new Set(judges.map(j => judgeKey(j.modelId)));
       for (const row of rows) {
-        const id = typeof row.modelId === "string" ? row.modelId.trim().toLowerCase() : undefined;
+        const id = typeof row.modelId === "string" ? judgeKey(row.modelId) : undefined;
         if (id === undefined) continue;
         if (seen.has(id)) dup = true;
         seen.add(id);

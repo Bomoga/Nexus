@@ -713,3 +713,33 @@ describe("total parsing and judge fold, attempt 6", () => {
     }
   });
 });
+
+describe("judge label matching tolerates the echoed label", () => {
+  const output = [{ role: "accuracy_judge", content: "judge prose" }, { role: "aggregator_agent", content: "echo" }];
+  const run = async (reply: string, onTask?: (task: string) => void) => {
+    const s = await setup({ runner: { run: async () => ({ text: "x", output }), complete: async (a: { task: string }) => { onTask?.(a.task); return { text: reply }; } } });
+    await s.service.onCreated(s.approval());
+    return (await s.service.get("apr_1"))!;
+  };
+  const row = (id: string, v = "concerns") => `{"modelId":"${id}","verdict":"${v}","notes":"n"}`;
+  const top = (...rows: string[]) => `{"verdict":"looks_good","summary":"s","judges":[${rows.join(",")}]}`;
+
+  it.each(["judge: accuracy judge", "Judge:Accuracy Judge", "Accuracy_Judge", "  ACCURACY  Judge ", "accuracy-judge"])("folds a row echoed as %j", async id => {
+    expect((await run(top(row(id)))).verdict).toBe("concerns");
+  });
+  it("floors a duplicate row written with and without the prefix", async () => {
+    expect((await run(top(row("judge: accuracy judge", "looks_good"), row("accuracy judge", "looks_good")))).verdict).toBe("concerns");
+  });
+  it("does not fold an unrelated name", async () => {
+    expect((await run(top(row("judge: someone else")))).verdict).toBe("looks_good");
+  });
+  it("a matching looks_good row never lowers the verdict", async () => {
+    expect((await run(top(row("judge: accuracy judge", "looks_good")))).verdict).toBe("looks_good");
+  });
+  it("the prompt no longer asks for the judge: prefix", async () => {
+    let task = "";
+    await run(top(row("accuracy judge", "looks_good")), t => { task = t; });
+    expect(task).toContain("WITHOUT the judge: prefix");
+    expect(task).toContain("judge: accuracy judge");   // the label in the framed data itself is unchanged
+  });
+});

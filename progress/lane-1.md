@@ -199,3 +199,9 @@ ul` on Windows and Git 2.56.0.windows.4 rejects it as `GIT_CONFIG_GLOBAL`/`GIT_C
 - Worker `nexus-auth-service` deployed at `https://nexus-auth-service.atmorton04.workers.dev`; `AUTH0_CLIENT_SECRET` set by Adrian with `wrangler secret put` (value never seen by Claude). With no token `/ciba/start` and `/ciba/poll` return 401. [proof: `wrangler deploy`, `wrangler secret list` (name only), curl status codes]
 - Not tested: a real push to a phone. Needs Adrian's phone enrolled in Guardian and a signed-in Nexus user. {unverified}
 - Open: untick Implicit and Authorization Code on the Nexus Auth Service app (Nexus needs only CIBA). Old tenant id still appears in `docs/playbooks/lane-1-session-4.md` as history.
+
+## Session 7: sign-in works (loopback redirect)
+
+- Adrian signed in to Nexus through Auth0 in the dev fork. Two blockers on the way: the Native app was not granted access to the `https://nexus-api` API (Chrome agent granted it and turned on Allow Offline Access), and Chrome silently dropped the `nexus://` redirect, leaving Auth0's consent page stuck. [proof: curl probes of `/authorize` before and after; Adrian's report "sign in worked"]
+- Fix: PR 61 adds an optional one-shot loopback listener (`src/features/auth/loopback.ts`, `http://127.0.0.1:51789/callback`, Host-checked, closed on every exit) with the `nexus://` path as fallback. `http://127.0.0.1:51789/callback` is in the Native app's Allowed Callback URLs. Opus review confirmed; its three low findings (stray web request cancelling a sign-in, double code exchange, listener leak when openExternal throws) were fixed before merge. [proof: PR 61, 42 auth tests green, `extension` check passed]
+- Adrian decided the phone-push (Guardian) test is not needed for now; the CIBA Worker stays deployed and untested end to end. {unverified}

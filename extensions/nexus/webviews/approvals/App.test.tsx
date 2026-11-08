@@ -50,6 +50,7 @@ function setup(answers: Answers = {}) {
   return { bridge: createBridgeClient(transport), emit, reqs, subbed };
 }
 
+const NO_APPROVALS = "no approvals · an agent will ask here before a risky action";
 const base = fx.approval;
 const mk = (id: string, over: Partial<ApprovalRequest> = {}): ApprovalRequest => ({ ...base, id, ...over });
 const commit = (id: string, over: Partial<ApprovalRequest> = {}) =>
@@ -83,7 +84,7 @@ describe("approvals states", () => {
     expect(screen.queryByText(/no handler/)).toBeNull();
     missing = false;
     fireEvent.click(screen.getByRole("button", { name: "RETRY" }));
-    expect(await screen.findByText("No approvals")).toBeTruthy();
+    expect(await screen.findByText(NO_APPROVALS)).toBeTruthy();
     expect(s.reqs("approvals.list")).toHaveLength(2);
     expect(screen.queryByText("approvals isn't connected yet")).toBeNull();
   });
@@ -119,7 +120,7 @@ describe("approvals states", () => {
     });
     for (const id of ["a1", "a2"]) {
       expect(btn(row(id), /approve/i).disabled).toBe(false);
-      expect(within(row(id)).getByText("pending")).toBeTruthy();
+      expect(within(row(id)).getByText("PENDING")).toBeTruthy();
     }
     expect(s.reqs("approvals.resolve")).toHaveLength(0);
   });
@@ -135,7 +136,7 @@ describe("approvals view", () => {
   test("empty list shows one line", async () => {
     const s = setup({ "approvals.list": () => [] });
     render(<App bridge={s.bridge} />);
-    expect(await screen.findByText("No approvals")).toBeTruthy();
+    expect(await screen.findByText(NO_APPROVALS)).toBeTruthy();
     expect(s.reqs("approvals.list")[0].body).toEqual({ pendingOnly: false });
   });
 
@@ -165,7 +166,7 @@ describe("approvals view", () => {
     fireEvent.click(btn(r, /diff/i));
     const pre = within(r).getByText(/\+new/);
     expect(pre.tagName).toBe("PRE");
-    expect(pre.className).toContain("nx-data");
+    expect(pre.closest(".nx-mono-block")).toBeTruthy();
     fireEvent.click(btn(r, /diff/i));
     expect(r.textContent).not.toContain("+new");
   });
@@ -175,7 +176,7 @@ describe("approvals view", () => {
       "approvals.resolve": (b) => mk("a1", { decision: b.decision as "approved", decidedBy: { via: "app", userId: "me" }, decidedAt: "2026-11-07T04:00:00Z" }),
     });
     fireEvent.click(btn(row("a1"), /approve/i));
-    await waitFor(() => expect(row("a1").textContent).toMatch(/decided by me via app/));
+    await waitFor(() => expect(row("a1").textContent).toMatch(/approved by app me at T\+/));
     expect(s.reqs("approvals.resolve")[0].body).toEqual({ approvalId: "a1", decision: "approved" });
     expect(within(row("a1")).queryByRole("button", { name: /approve/i })).toBeNull();
   });
@@ -192,7 +193,7 @@ describe("approvals view", () => {
       "slack.users": () => fx.slackUsers,
     });
     fireEvent.click(btn(row("a1"), /approve/i));
-    await waitFor(() => expect(row("a1").textContent).toMatch(/decided by Brandon via slack/));
+    await waitFor(() => expect(row("a1").textContent).toMatch(/rejected by slack Brandon at T\+/));
     expect(row("a1").textContent).toMatch(/rejected/i);
     expect(s.reqs("approvals.list").length).toBe(2);
     expect(screen.queryByText(/failed|Already decided/i)).toBeNull();
@@ -203,24 +204,24 @@ describe("approvals view", () => {
     await mount([mk("a1")], { "approvals.resolve": () => mk("a1", { decision: "rejected", decidedBy: { via: "app", userId: "me" }, decidedAt: "2026-11-07T04:00:00Z" }) });
     fireEvent.click(btn(row("a1"), /reject/i));
     await waitFor(() => expect(row("a1").textContent).toMatch(/rejected/i));
-    expect(row("a1").textContent).toMatch(/decided by me via app/);
+    expect(row("a1").textContent).toMatch(/rejected by app me at T\+/);
   });
 
   test("a decided approval without decidedBy shows 'decided' and no buttons", async () => {
     await mount([mk("a1", { decision: "approved", decidedAt: "2026-11-07T04:00:00Z" })]);
-    expect(row("a1").textContent).toMatch(/decided T\+/);
-    expect(row("a1").textContent).not.toMatch(/decided by/);
+    expect(row("a1").textContent).toMatch(/approved at T\+/);
+    expect(row("a1").textContent).not.toMatch(/approved by/);
     expect(within(row("a1")).queryByRole("button", { name: /approve|reject/i })).toBeNull();
   });
 
   test("decider name falls back to the id when slack.users fails", async () => {
     await mount([mk("a1", { decision: "approved", decidedBy: { via: "slack", userId: "U_GONE" }, decidedAt: "2026-11-07T04:00:00Z" })]);
-    await waitFor(() => expect(row("a1").textContent).toMatch(/decided by U_GONE via slack/));
+    await waitFor(() => expect(row("a1").textContent).toMatch(/approved by slack U_GONE at T\+/));
   });
 
   test("auth0_push is shown as 'auth0 push' and needs no lookup", async () => {
     const s = await mount([mk("a1", { decision: "approved", decidedBy: { via: "auth0_push", userId: "auth0|abc" }, decidedAt: "2026-11-07T04:00:00Z" })]);
-    expect(row("a1").textContent).toMatch(/decided by auth0\|abc via auth0 push/);
+    expect(row("a1").textContent).toMatch(/approved by auth0 push auth0\|abc at T\+/);
     expect(s.reqs("slack.users").length).toBe(0);
   });
 
@@ -228,7 +229,7 @@ describe("approvals view", () => {
     const s = await mount([mk("a1", decidedApp)]);
     await waitFor(() => expect(s.subbed("approvals.subscribe").length).toBe(1));
     s.emit("approvals.subscribe", mk("a1"));
-    expect(row("a1").textContent).toMatch(/decided by me via app/);
+    expect(row("a1").textContent).toMatch(/approved by app me at T\+/);
     expect(within(row("a1")).queryByRole("button", { name: /approve/i })).toBeNull();
   });
 
@@ -251,7 +252,7 @@ describe("approvals view", () => {
     expect(btn(row("a2"), /reject/i).disabled).toBe(false);
     expect(s.reqs("approvals.resolve").length).toBe(1);
     release(mk("a1", decidedApp));
-    await waitFor(() => expect(row("a1").textContent).toMatch(/decided by me/));
+    await waitFor(() => expect(row("a1").textContent).toMatch(/approved by app me/));
   });
 
   test("a failed resolve shows an error that clears on the next success", async () => {
@@ -267,7 +268,7 @@ describe("approvals view", () => {
     expect(btn(row("a1"), /approve/i).disabled).toBe(false);
     fail = false;
     fireEvent.click(btn(row("a2"), /approve/i));
-    await waitFor(() => expect(row("a2").textContent).toMatch(/decided by me/));
+    await waitFor(() => expect(row("a2").textContent).toMatch(/approved by app me/));
     expect(screen.queryByText("approvals: not found")).toBeNull();
   });
 
@@ -284,37 +285,42 @@ describe("swarm card", () => {
 
   test("running: text only, buttons stay enabled", async () => {
     await mount([commit("c1")], review(rev("c1", { status: "running", ...noBody })));
-    await waitFor(() => expect(within(row("c1")).getByText(/council reviewing/i)).toBeTruthy());
+    await waitFor(() => expect(within(row("c1")).getByText(/review running/i)).toBeTruthy());
     expect(btn(row("c1"), /approve/i).disabled).toBe(false);
     expect(btn(row("c1"), /reject/i).disabled).toBe(false);
   });
 
-  test("done: verdict chip, summary, left machine label, expandable judges", async () => {
+  test("done: verdict badge, summary, left machine label, judges table", async () => {
     const s = await mount([commit("c1")], review(rev("c1")));
     const r = row("c1");
-    expect(await within(r).findByText("looks_good")).toBeTruthy();
+    expect((await within(r).findByTestId("swarm-verdict")).textContent).toBe("LOOKS GOOD");
     expect(within(r).getByText(/Fix is minimal/)).toBeTruthy();
     expect(within(r).getByText(/left machine · model-written/i)).toBeTruthy();
-    expect(r.textContent).not.toContain("Correct arithmetic");
-    fireEvent.click(btn(r, /judges/i));
-    expect(within(r).getByText(/Correct arithmetic/)).toBeTruthy();
-    expect(within(r).getByText(/No negative-discount guard/)).toBeTruthy();
+    const judges = within(r).getByRole("table", { name: "judges" });
+    expect(within(judges).getByText("judge-a")).toBeTruthy();
+    expect(within(judges).getByText(/Correct arithmetic/)).toBeTruthy();
+    expect(within(judges).getByText(/No negative-discount guard/)).toBeTruthy();
+    expect(within(judges).getByText("CONCERNS").className).toContain("nx-badge--pending");
     expect(s.reqs("swarms.review.get")[0].body).toEqual({ approvalId: "c1" });
   });
 
-  test("verdict chip tone follows the verdict", async () => {
+  test("verdict badge kind follows the verdict", async () => {
     await mount([commit("g"), commit("c"), commit("d")], {
       "swarms.review.get": (b) => rev(b.approvalId as string, { verdict: ({ g: "looks_good", c: "concerns", d: "do_not_merge" } as const)[b.approvalId as "g"] }),
     });
-    await waitFor(() => expect(within(row("d")).getByText("do_not_merge")).toBeTruthy());
-    expect(within(row("g")).getByText("looks_good").className).toContain("nx-tone-ok");
-    expect(within(row("c")).getByText("concerns").className).toContain("nx-tone-pending");
-    expect(within(row("d")).getByText("do_not_merge").className).toContain("nx-tone-error");
+    await waitFor(() => expect(within(row("d")).getByTestId("swarm-verdict")).toBeTruthy());
+    const badge = (id: string) => within(row(id)).getByTestId("swarm-verdict").querySelector(".nx-badge") as HTMLElement;
+    expect(badge("g").textContent).toBe("LOOKS GOOD");
+    expect(badge("g").className).toContain("nx-badge--ok");
+    expect(badge("c").textContent).toBe("CONCERNS");
+    expect(badge("c").className).toContain("nx-badge--pending");
+    expect(badge("d").textContent).toBe("DO NOT MERGE");
+    expect(badge("d").className).toContain("nx-badge--error");
   });
 
   test("do_not_merge never disables APPROVE or REJECT", async () => {
     await mount([commit("c1")], review(rev("c1", { verdict: "do_not_merge" })));
-    await waitFor(() => expect(within(row("c1")).getByText("do_not_merge")).toBeTruthy());
+    await waitFor(() => expect(within(row("c1")).getByTestId("swarm-verdict").textContent).toBe("DO NOT MERGE"));
     expect(btn(row("c1"), /approve/i).disabled).toBe(false);
     expect(btn(row("c1"), /reject/i).disabled).toBe(false);
   });
@@ -328,7 +334,7 @@ describe("swarm card", () => {
     expect(btn(row("c1"), /approve/i).disabled).toBe(false);
     fireEvent.click(btn(row("c1"), /re-run/i));
     await waitFor(() => expect(s.reqs("swarms.review.rerun")[0]?.body).toEqual({ approvalId: "c1" }));
-    await waitFor(() => expect(within(row("c1")).getByText(/council reviewing/i)).toBeTruthy());
+    await waitFor(() => expect(within(row("c1")).getByText(/review running/i)).toBeTruthy());
   });
 
   test("a live review event updates the card; the newest at wins per approval", async () => {
@@ -344,7 +350,6 @@ describe("swarm card", () => {
     await mount([commit("c1")], review(rev("c1", { summary: "<b>hi</b>", judges: [{ modelId: "j", verdict: "concerns", notes: "<img src=x onerror=alert(1)>" }] })));
     const r = row("c1");
     expect(await within(r).findByText("<b>hi</b>")).toBeTruthy();
-    fireEvent.click(btn(r, /judges/i));
     expect(r.querySelector("img")).toBeNull();
     expect(r.textContent).toContain("<img src=x onerror=alert(1)>");
   });
@@ -355,7 +360,7 @@ describe("swarm card", () => {
     s.emit("swarms.review.subscribe", rev("c1", { status: "done", summary: "finished" }));
     s.emit("swarms.review.subscribe", rev("c1", { status: "running", ...noBody }));
     expect(within(row("c1")).getByText(/finished/)).toBeTruthy();
-    expect(within(row("c1")).queryByText(/council reviewing/i)).toBeNull();
+    expect(within(row("c1")).queryByText(/review running/i)).toBeNull();
   });
 
   test("commit message and other description are labeled model-written", async () => {
@@ -387,5 +392,66 @@ describe("swarm card", () => {
   test("non-commit approvals never fetch a review", async () => {
     const s = await mount([mk("a1")]);
     expect(s.reqs("swarms.review.get").length).toBe(0);
+  });
+});
+
+describe("approvals v2 layout", () => {
+  test("the DECIDED separator sits between pending and decided cards", async () => {
+    await mount([mk("d1", decidedApp), mk("p1")]);
+    const sep = screen.getByRole("separator");
+    expect(sep.textContent).toBe("DECIDED");
+    const all = Array.from(document.querySelectorAll("[data-testid=approval-row], [role=separator]"));
+    expect(all.map((n) => n.getAttribute("data-id") ?? "SEP")).toEqual(["p1", "SEP", "d1"]);
+  });
+
+  test("no separator when nothing is decided", async () => {
+    await mount([mk("p1")]);
+    expect(screen.queryByRole("separator")).toBeNull();
+  });
+
+  test("APPROVE and REJECT exist only while undecided", async () => {
+    await mount([mk("p1"), mk("d1", decidedApp)]);
+    expect(btn(row("p1"), /approve/i)).toBeTruthy();
+    expect(btn(row("p1"), /reject/i)).toBeTruthy();
+    expect(within(row("d1")).queryByRole("button", { name: /approve|reject/i })).toBeNull();
+    expect(within(row("d1")).queryByText(/waiting/)).toBeNull();
+  });
+
+  test("APPROVE is the primary button and REJECT the danger button", async () => {
+    await mount([mk("p1")]);
+    expect(btn(row("p1"), /approve/i).className).toContain("nx-button--primary");
+    expect(btn(row("p1"), /reject/i).className).toContain("nx-button--danger");
+  });
+
+  test("the header shows kind, 8-char session id and T+ requested", async () => {
+    await mount([mk("p1", { sessionId: "ses_0123456789", action: { kind: "write_outside_scope", path: "/etc/x" }, requestedAt: "2026-11-07T05:07:00Z" })]);
+    const head = within(row("p1")).getByRole("heading");
+    expect(head.textContent).toContain("write outside scope");
+    expect(within(head).getByText("ses_0123")).toBeTruthy();
+    expect(within(head).getByText("T+02:07")).toBeTruthy();
+    expect(within(row("p1")).getByText("/etc/x").className).toContain("nx-data");
+  });
+
+  test("the decided line reads 'approved by <via> <user> at T+' in ok, 'rejected …' in error", async () => {
+    await mount([
+      mk("d1", { decision: "approved", decidedBy: { via: "app", userId: "me" }, decidedAt: "2026-11-07T05:07:00Z" }),
+      mk("d2", { decision: "rejected", decidedBy: { via: "auth0_push", userId: "auth0|z" }, decidedAt: "2026-11-07T04:07:00Z" }),
+    ]);
+    const ok = within(row("d1")).getByText("approved by app me at T+02:07");
+    expect(ok.closest(".nx-status-line")?.className).toContain("nx-tone-ok");
+    const bad = within(row("d2")).getByText("rejected by auth0 push auth0|z at T+01:07");
+    expect(bad.closest(".nx-status-line")?.className).toContain("nx-tone-error");
+  });
+
+  test("unavailable review shows a muted REVIEW UNAVAILABLE badge", async () => {
+    await mount([commit("c1")], { "swarms.review.get": () => rev("c1", { status: "unavailable", ...noBody }) });
+    const badge = await within(row("c1")).findByText("REVIEW UNAVAILABLE");
+    expect(badge.className).toBe("nx-badge");
+  });
+
+  test("loading shows '… loading' until the list answers", async () => {
+    const s = setup({ "approvals.list": () => new Promise<ApprovalRequest[]>(() => {}) });
+    render(<App bridge={s.bridge} />);
+    expect(screen.getByText("… loading")).toBeTruthy();
   });
 });

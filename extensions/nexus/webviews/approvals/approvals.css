@@ -1,18 +1,39 @@
 /* Approvals view: tokens and geometry come from the kit's theme.css. */
 html, body, #root { height: 100%; }
 
-.ap-app { height: 100%; overflow-y: auto; }
-.ap-row { padding: var(--nx-gap-1) var(--nx-pad-x); border-bottom: var(--nx-border-w) solid var(--nx-border); font-size: var(--nx-font-ui); display: flex; flex-direction: column; gap: var(--nx-gap-1); }
-.ap-row:hover { background: var(--nx-hover-bg); }
-.ap-line { display: flex; align-items: center; gap: var(--nx-gap-1); flex-wrap: wrap; min-height: var(--nx-row-h); }
-.ap-kind { font-size: var(--nx-font-ui-sm); color: var(--nx-muted); text-transform: uppercase; }
+.ap-app { height: 100%; overflow-y: auto; overflow-x: hidden; }
+.ap-card .nx-region-body { overflow: visible; }
+.ap-app > .ap-card + .ap-card { border-top: 0; }
+
+/* A labeled field: 11 px uppercase key over its value; values wrap, mono data breaks anywhere. */
+.ap-field { display: flex; flex-direction: column; gap: 2px; padding: var(--nx-gap-1) var(--nx-pad-x); border-bottom: var(--nx-border-w) solid var(--nx-border); font-size: var(--nx-font-ui); line-height: var(--nx-lh-ui); }
+.ap-key { font-size: var(--nx-font-ui-sm); line-height: var(--nx-lh-sm); font-weight: 600; letter-spacing: var(--nx-tracking-header); text-transform: uppercase; color: var(--nx-muted); }
+.ap-val { display: flex; align-items: baseline; gap: var(--nx-gap-2); flex-wrap: wrap; min-width: 0; }
 .ap-text { min-width: 0; white-space: pre-wrap; word-break: break-word; user-select: text; }
-.ap-block { display: block; white-space: pre-wrap; word-break: break-all; user-select: text; }
-.ap-reason { display: flex; align-items: baseline; gap: var(--nx-gap-1); flex-wrap: wrap; }
-.ap-label { font-size: var(--nx-font-ui-sm); color: var(--nx-muted); text-transform: uppercase; border: var(--nx-border-w) solid var(--nx-border); padding: 0 3px; }
-.ap-diff { margin: 0; padding: var(--nx-gap-1); border: var(--nx-border-w) solid var(--nx-border); font-size: var(--nx-font-ui-sm); white-space: pre-wrap; word-break: break-all; user-select: text; }
-.ap-swarm { border: var(--nx-border-w) solid var(--nx-border); padding: var(--nx-gap-1); display: flex; flex-direction: column; gap: var(--nx-gap-1); }
-.ap-judges { display: flex; flex-direction: column; gap: var(--nx-gap-1); }
-.ap-judge { display: flex; align-items: baseline; gap: var(--nx-gap-1); flex-wrap: wrap; font-size: var(--nx-font-ui-sm); }
-.ap-note { font-size: var(--nx-font-ui-sm); color: var(--nx-muted); }
-.ap-decided { font-size: var(--nx-font-ui-sm); color: var(--nx-muted); }
+.ap-block { display: block; min-width: 0; font-size: var(--nx-font-ui); white-space: pre-wrap; word-break: break-all; user-select: text; }
+.ap-label { font-size: var(--nx-font-ui-sm); line-height: var(--nx-lh-sm); color: var(--nx-muted); text-transform: uppercase; border: var(--nx-border-w) solid var(--nx-border); padding: 0 3px; white-space: nowrap; }
+
+.ap-diffwrap { display: flex; flex-direction: column; gap: var(--nx-gap-1); padding: 2px 0; border-bottom: var(--nx-border-w) solid var(--nx-border); align-items: flex-start; }
+.ap-diffwrap .nx-mono-block { align-self: stretch; margin: 0 var(--nx-pad-x) var(--nx-gap-1); }
+
+.ap-swarm { display: flex; flex-direction: column; border-bottom: var(--nx-border-w) solid var(--nx-border); }
+.ap-swarm > .ap-line { padding: var(--nx-gap-1) var(--nx-pad-x); }
+.ap-swarm > .nx-status-line:first-child { border-top: 0; }
+.ap-swarm .nx-table { table-layout: fixed; }
+.ap-swarm .nx-table th:nth-child(2), .ap-swarm .nx-table td:nth-child(2) { width: 104px; max-width: none; }
+.ap-line { display: flex; align-items: center; gap: var(--nx-gap-2); flex-wrap: wrap; min-height: var(--nx-control-h); }
+.ap-note { padding: 0 var(--nx-pad-x); min-height: var(--nx-row-h); display: flex; align-items: center; font-size: var(--nx-font-ui-sm); color: var(--nx-muted); border-top: var(--nx-border-w) solid var(--nx-border); }
+
+.ap-actions { display: flex; align-items: center; gap: var(--nx-gap-1); padding: var(--nx-gap-1) var(--nx-pad-x); border-top: var(--nx-border-w) solid var(--nx-border); }
+
+/* Error lines carry a button: let them grow and let the focus ring show. */
+.ap-err .nx-status-line { height: auto; min-height: var(--nx-control-h); padding-top: 2px; padding-bottom: 2px; overflow: visible; white-space: normal; flex-wrap: wrap; }
+
+/* DECIDED separator: 20 px, uppercase, muted, 1 px rule. */
+.ap-sep { display: flex; align-items: center; height: var(--nx-row-h); padding: 0 var(--nx-pad-x); border-top: var(--nx-border-w) solid var(--nx-border); border-bottom: var(--nx-border-w) solid var(--nx-border); background: var(--nx-surface); color: var(--nx-muted); font-size: var(--nx-font-ui-sm); font-weight: 600; letter-spacing: var(--nx-tracking-header); text-transform: uppercase; }
+.ap-sep + .ap-card { border-top: 0; }
+
+/* Header meta: separate the mono items with a dot. */
+.ap-card .nx-panel-header-title { flex: none; }
+.ap-card .nx-panel-header-meta { gap: 0; padding-left: var(--nx-gap-2); }
+.ap-card .nx-panel-header-meta > * + *::before { content: "\00b7"; color: var(--nx-muted); margin: 0 var(--nx-gap-2); }

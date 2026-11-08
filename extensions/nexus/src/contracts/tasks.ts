@@ -38,6 +38,7 @@ const Base = { sessionId: Id, seq: z.number().int().nonnegative(), at: IsoTime }
 export const AgentEvent = z.discriminatedUnion("type", [
   z.object({ ...Base, type: z.literal("status"), status: SessionStatus }).strict(),
   z.object({ ...Base, type: z.literal("message"), text: z.string() }).strict(),                 // model-written, label it
+  z.object({ ...Base, type: z.literal("user_message"), text: z.string() }).strict(),            // typed by a person in the session view (redacted), never model-written
   z.object({ ...Base, type: z.literal("tool_call"), tool: z.string(), args: z.unknown() }).strict(),
   z.object({ ...Base, type: z.literal("tool_result"), tool: z.string(), ok: z.boolean(), summary: z.string() }).strict(),
   z.object({ ...Base, type: z.literal("file_edit"), path: z.string(), diff: z.string() }).strict(), // from git diff, never model prose

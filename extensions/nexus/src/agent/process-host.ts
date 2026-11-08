@@ -127,6 +127,11 @@ export class ProcessHost {
     return res;
   }
 
+  /** Hands a person's follow-up to the running loop; rejects when that session is no longer running in the child. */
+  async messageSession(sessionId: string, text: string): Promise<HostResOut<"session.message">> {
+    return this.requestChild("session.message", { sessionId, text });
+  }
+
   /** The controller calls this when a session finishes normally, so a later process exit is not blamed on it. */
   endSession(sessionId: string): void {
     if (this.activeSession === sessionId) this.activeSession = undefined;

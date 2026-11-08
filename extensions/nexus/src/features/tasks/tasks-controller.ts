@@ -131,3 +131,19 @@ export function openEditorAfterCreate<H extends { "tasks.createFromThread": (r: 
     },
   };
 }
+
+/**
+ * The Slack view's MAKE TASK sends tasks.createFromThread (the bridge has no command request), so what follows a new task (an
+ * agent starts, or the task editor opens) runs after that request. It never fails or delays the request: the task exists.
+ */
+export function startAgentAfterCreate<H extends { "tasks.createFromThread": (r: Req<"tasks.createFromThread">) => Promise<Res<"tasks.createFromThread">> }>(handlers: H, after: (task: Res<"tasks.createFromThread">) => Promise<void>): H {
+  const create = handlers["tasks.createFromThread"];
+  return {
+    ...handlers,
+    "tasks.createFromThread": async (r: Req<"tasks.createFromThread">) => {
+      const task = await create(r);
+      void after(task).catch(() => { /* reported by the handler itself; the draft task is already stored */ });
+      return task;
+    },
+  };
+}

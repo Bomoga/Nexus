@@ -43,6 +43,7 @@ export const Requests = {
   "tasks.update":        { req: z.object({ taskId: Id, title: z.string().optional(), brief: z.string().optional() }), res: T.Task }, // only while draft
   "agent.start":         { req: z.object({ taskId: Id, model: z.object({ provider: z.string(), modelId: z.string() }) }), res: T.AgentSession },
   "agent.cancel":        { req: z.object({ sessionId: Id }), res: T.AgentSession },
+  "agent.message":       { req: z.object({ sessionId: Id, text: z.string().trim().min(1).max(20000) }), res: T.AgentSession }, // a person's follow-up: queued for a live session, or resumes a finished one on its own branch
   "sessions.get":        { req: z.object({ sessionId: Id }), res: T.AgentSession },
   "sessions.list":       { req: z.object({ status: T.SessionStatus.optional() }), res: z.array(T.AgentSession) },
   "approvals.list":      { req: z.object({ sessionId: Id.optional(), pendingOnly: z.boolean().default(false) }), res: z.array(T.ApprovalRequest) },

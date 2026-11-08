@@ -92,6 +92,7 @@ function buildHandlers(): Handlers {
     },
     "agent.start": () => fx.session,
     "agent.cancel": () => ({ ...fx.session, status: "cancelled" }),
+    "agent.message": ({ sessionId }) => sessions.find((s) => s.id === sessionId) ?? fx.session,
     "sessions.get": ({ sessionId }) => sessions.find((s) => s.id === sessionId) ?? fx.session,
     "sessions.list": ({ status }) => sessions.filter((s) => !status || s.status === status),
     "approvals.list": ({ sessionId, pendingOnly }) =>

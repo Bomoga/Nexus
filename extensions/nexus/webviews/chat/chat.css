@@ -3,7 +3,7 @@ html, body, #root { height: 100%; }
 
 .chat-app { display: flex; flex-direction: column; height: 100%; }
 .chat-panes { display: flex; flex: 1; min-height: 0; }
-.chat-left { width: 180px; flex: none; border-right: var(--nx-border-w) solid var(--nx-border); overflow-y: auto; background: var(--nx-surface); }
+.chat-left { width: clamp(104px, 28%, 180px); flex: none; border-right: var(--nx-border-w) solid var(--nx-border); overflow-y: auto; background: var(--nx-surface); }
 .chat-right { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 
 .chat-channels { display: flex; flex-direction: column; }

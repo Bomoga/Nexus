@@ -171,8 +171,9 @@ describe("lane1Commands", () => {
     expect(c.infos[0]).toContain("Slack view");
     await cmds["nexus.makeTaskFromThread"](fx.thread.channelId, fx.thread.threadTs);
     expect(c.infos[1]).toContain("Created a draft task");
+    const before = c.errors.length;                              // a chosen model starts an agent; here that start may fail and the draft stays
     await cmds["nexus.makeTaskFromThread"]("C_NOPE", "1.1");
-    expect(c.errors).toHaveLength(1);
+    expect(c.errors).toHaveLength(before + 1);
   });
 
   it("toggles Prune and reports a failure instead of throwing", async () => {

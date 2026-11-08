@@ -25,6 +25,8 @@ export interface ApprovalRequester {
   request(input: { sessionId: string; action: ApprovalAction; reason: string; diffPreview?: string }): Promise<{ approval: ApprovalRequest; decision: "approved" | "rejected" }>;
   /** The session is over: release whatever is still waiting and refuse later decisions (a cancelled session's APPROVE must run nothing). */
   sessionEnded?(sessionId: string, how: "cancelled" | "failed" | "done"): Promise<void>;
+  /** A finished session was resumed by a follow-up message: it can raise and decide approvals again. */
+  sessionResumed?(sessionId: string): Promise<void> | void;
 }
 
 /** The session's single Slack progress message (L1-13, proposed to move to Lane 2). */
@@ -34,8 +36,10 @@ export interface ProgressPort {
 
 /** The slice of ProcessHost this controller drives. */
 export interface HostPort {
-  startSession(params: { session: { id: string; taskId: string; branch: string; worktreePath: string; baseCommit: string; model: { provider: string; modelId: string } }; task: Task; systemRules: string; untrustedBlocks: Array<{ label: string; text: string }> }): Promise<unknown>;
+  startSession(params: { session: { id: string; taskId: string; branch: string; worktreePath: string; baseCommit: string; model: { provider: string; modelId: string } }; task: Task; systemRules: string; untrustedBlocks: Array<{ label: string; text: string }>; resume?: { history: Array<{ role: "user" | "assistant"; text: string }>; message: string } }): Promise<unknown>;
   cancelSession(sessionId: string): Promise<unknown>;
+  /** Hands a person's follow-up to the running loop (session.message). */
+  messageSession?(sessionId: string, text: string): Promise<unknown>;
   endSession(sessionId: string): void;
 }
 
@@ -68,6 +72,23 @@ const MAX_DIFF_CHARS = 20_000;
 
 const TERMINAL = new Set<AgentSession["status"]>(["done", "failed", "cancelled"]);
 
+const MAX_MESSAGE_CHARS = 20_000;
+/** A resumed agent gets the conversation so far, not tool output: the person's messages and the agent's replies, newest kept within this size. */
+const MAX_HISTORY_CHARS = 60_000;
+
+export function historyOf(events: AgentEvent[]): Array<{ role: "user" | "assistant"; text: string }> {
+  const turns = events.flatMap((e): Array<{ role: "user" | "assistant"; text: string }> =>
+    e.type === "message" ? [{ role: "assistant", text: e.text }] : e.type === "user_message" ? [{ role: "user", text: e.text }] : []);
+  const kept: typeof turns = [];
+  let size = 0;
+  for (let i = turns.length - 1; i >= 0; i--) {
+    size += turns[i].text.length;
+    if (size > MAX_HISTORY_CHARS && kept.length > 0) break;
+    kept.unshift(turns[i]);
+  }
+  return kept;
+}
+
 interface Counter {
   next?: number;
   chain: Promise<unknown>;
@@ -82,6 +103,7 @@ export class SessionsController implements SessionEvents {
   private reserved = false;
   /** Endings in flight, so a second caller waits for the first instead of seeing a half-written session. */
   private readonly ending = new Map<string, Promise<AgentSession>>();
+  private readonly cancelling = new Set<string>();
   private readonly counters = new Map<string, Counter>();
   private readonly subscribers = new Map<string, Set<(e: AgentEvent) => void>>();
   private readonly allSubscribers = new Set<(e: AgentEvent) => void>();
@@ -151,10 +173,100 @@ export class SessionsController implements SessionEvents {
     if (!a || a.session.id !== sessionId) {
       const stored = await this.deps.store.getSession(sessionId);
       if (!stored) throw new Error(`No session ${sessionId}.`);
-      return stored;                                            // already over: nothing to cancel
+      if (TERMINAL.has(stored.status)) return stored;           // already over: nothing to cancel
+      // The store says it is running but no agent here is running it (the app restarted, or it runs on another machine).
+      if (stored.machineId !== this.deps.machineId) throw new Error("This session is running on another machine; cancel it there.");
+      return this.endOrphan(stored, "cancelled");
     }
+    this.cancelling.add(sessionId);                            // a follow-up in this window would be accepted by the child and never read
     try { await this.deps.host.cancelSession(sessionId); } catch { /* the process may already be gone */ }
-    return this.finalize(sessionId, "cancelled");
+    try { return await this.finalize(sessionId, "cancelled"); } finally { this.cancelling.delete(sessionId); }
+  }
+
+  /**
+   * A person's follow-up. A live session takes it between model calls; a finished one on this machine is resumed on its own
+   * branch and worktree, starting from what was said so far. Either way it is stored as a `user_message` event, in order.
+   */
+  async message(sessionId: string, rawText: string): Promise<AgentSession> {
+    const text = redact(rawText).trim().slice(0, MAX_MESSAGE_CHARS);
+    if (text.length === 0) throw new Error("Type a message first.");
+    const a = this.active;
+    if (a && a.session.id === sessionId) {
+      if (this.cancelling.has(sessionId)) throw new Error("The session is being cancelled; send the message again once it has stopped.");
+      try {
+        if (!this.deps.host.messageSession) throw new Error("follow-up messages are not available");
+        await this.deps.host.messageSession(sessionId, text);
+      } catch (e) {
+        // Nothing was delivered and nothing was stored: the box keeps the text and the person sends it again.
+        throw new Error("The agent did not receive the message; it may have just finished. Send it again.", { cause: e });
+      }
+      await this.emit(sessionId, { type: "user_message", text });
+      return a.session;
+    }
+    return this.resume(sessionId, text);
+  }
+
+  private async resume(sessionId: string, text: string): Promise<AgentSession> {
+    const { store, host } = this.deps;
+    if (this.reserved || this.active) throw new Error("An agent session is already running or starting here; wait for it, or cancel it, then send this again.");
+    this.reserved = true;
+    try {
+      await this.ending.get(sessionId)?.catch(() => undefined);   // the previous ending's writes must land before this run's
+      const stored = await store.getSession(sessionId);
+      if (!stored) throw new Error(`No session ${sessionId}.`);
+      if (!TERMINAL.has(stored.status)) throw new Error(`Session ${sessionId} is ${stored.status} and not running here.`);
+      if (stored.machineId !== this.deps.machineId) throw new Error("This session's worktree is on another machine; send the follow-up from there.");
+      const task = await store.getTask(stored.taskId);
+      if (!task) throw new Error(`No task ${stored.taskId}.`);
+      const history = historyOf(await store.agentEvents(sessionId, 0));
+      const session: AgentSession = { ...stored, status: "running" };
+      delete session.endedAt;
+      const running: Task = { ...task, status: "running", sessionId };
+      await store.putSession(session);
+      await this.putTask(running);
+      await this.deps.approvals?.sessionResumed?.(sessionId);
+      this.active = { session, task: running };
+      try {
+        await this.emit(sessionId, { type: "user_message", text });
+        await this.emit(sessionId, { type: "status", status: "running" });
+        await host.startSession({
+          session: { id: sessionId, taskId: stored.taskId, branch: session.branch, worktreePath: session.worktreePath, baseCommit: session.baseCommit, model: session.model },
+          task: running, systemRules: SYSTEM_RULES, untrustedBlocks: this.deps.untrustedBlocks?.(running) ?? [], resume: { history, message: text },
+        });
+      } catch (e) {
+        await this.emit(sessionId, { type: "error", message: `The agent did not resume: ${redact(e instanceof Error ? e.message : "unknown error")}` }).catch(() => undefined);
+        await this.finalize(sessionId, "failed");
+        throw new Error("The agent process did not resume.", { cause: e });
+      }
+      return session;
+    } finally {
+      this.reserved = false;
+    }
+  }
+
+  /** Ends a session the store still shows as running although no agent runs it: nothing can finish it, so a person's CANCEL must. */
+  private async endOrphan(stored: AgentSession, status: "cancelled" | "failed"): Promise<AgentSession> {
+    const ended: AgentSession = { ...stored, status, endedAt: this.deps.clock.now() };
+    await this.attempt("release approvals", () => this.deps.approvals?.sessionEnded?.(stored.id, status) ?? Promise.resolve());
+    await this.attempt("save the session", () => this.deps.store.putSession(ended));
+    await this.attempt("save the task", async () => {
+      const task = await this.deps.store.getTask(stored.taskId);
+      if (task) await this.putTask({ ...task, status });
+    });
+    if (status === "failed") await this.attempt("record the error", () => this.emit(stored.id, { type: "error", message: "Nexus was restarted while this agent was running, so the run was lost. Send a message to continue it." }));
+    await this.attempt("record the final status", () => this.emit(stored.id, { type: "status", status }));
+    return ended;
+  }
+
+  /** At startup: sessions of this machine still marked running belong to an agent process that no longer exists. */
+  async reconcileOrphans(): Promise<number> {
+    let n = 0;
+    for (const s of await this.deps.store.listSessions()) {
+      if (TERMINAL.has(s.status) || s.machineId !== this.deps.machineId || this.active?.session.id === s.id) continue;
+      await this.endOrphan(s, "failed");
+      n++;
+    }
+    return n;
   }
 
   /** ProcessHost.onSessionFinished */
@@ -377,6 +489,7 @@ export function sessionsBridgeHandlers(c: SessionsController, store: Pick<StoreP
   return {
     "agent.start": async (r: Req<"agent.start">): Promise<Res<"agent.start">> => c.start(r.taskId, r.model),
     "agent.cancel": async (r: Req<"agent.cancel">): Promise<Res<"agent.cancel">> => c.cancel(r.sessionId),
+    "agent.message": async (r: Req<"agent.message">): Promise<Res<"agent.message">> => c.message(r.sessionId, r.text),
     "sessions.get": async (r: Req<"sessions.get">): Promise<Res<"sessions.get">> => {
       const s = await store.getSession(r.sessionId);
       if (!s) throw new Error(`No session ${r.sessionId}.`);

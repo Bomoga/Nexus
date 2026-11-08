@@ -72,3 +72,6 @@ html, body, #root { height: 100%; }
 @media (max-width: 480px) {
   .session-body .nx-table td { white-space: normal; max-width: none; height: auto; padding-top: 2px; padding-bottom: 2px; line-height: var(--nx-lh-sm); vertical-align: top; }
 }
+
+/* The empty hint is a sentence, not a status: let it wrap in a narrow side bar instead of truncating. */
+.session-app .nx-empty, .session-app .nx-empty-message { white-space: normal; height: auto; min-height: var(--nx-control-h); line-height: var(--nx-lh-ui); padding-top: 3px; padding-bottom: 3px; }

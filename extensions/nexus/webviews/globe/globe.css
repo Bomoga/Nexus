@@ -4,16 +4,20 @@ html, body, #root { height: 100%; }
 body { overflow: hidden; }
 .globe-app { display: flex; flex-direction: column; height: 100vh; background: var(--nx-bg); }
 
-/* Top bar: one 22 px header row. Overflow stays visible so focus rings and the search dropdown are never clipped. */
-.globe-bar { overflow: visible; text-transform: none; letter-spacing: 0; font-weight: 400; color: var(--nx-fg); }
+/* Top bar: two flush 22 px rows. Row 1 = window segments left, status group right; row 2 = the search, full width.
+   Overflow stays visible so focus rings and the search dropdown are never clipped. */
+.globe-bar { overflow: visible; text-transform: none; letter-spacing: 0; font-weight: 400; color: var(--nx-fg); gap: var(--nx-gap-2); }
 .globe-bar .nx-segmented, .globe-bar .nx-input-wrap, .globe-bar .nx-button { height: var(--nx-toolbar-h); }
-.globe-bar-center { flex: 1 1 0; min-width: 0; display: flex; align-items: center; justify-content: center; gap: var(--nx-gap-2); }
-.globe-bar-right { flex: none; display: flex; align-items: center; gap: var(--nx-gap-2); margin-left: auto; }
-.globe-bar-right .nx-count { text-transform: uppercase; }
+.globe-bar .nx-segment { min-width: 36px; justify-content: center; padding: 0 var(--nx-pad-x); border-radius: 0; }
+.globe-bar-top { justify-content: space-between; }
+.globe-bar-right { flex: 0 1 auto; min-width: 0; display: flex; align-items: center; justify-content: flex-end; gap: var(--nx-gap-2); margin-left: auto; white-space: nowrap; }
+.globe-bar-right .nx-count { text-transform: uppercase; flex: none; }
+.globe-bar-search .globe-search { flex: 1 1 0; }
+.globe-bar-search .nx-button { flex: none; }
 
 /* Search */
-.globe-search { position: relative; flex: 1 1 auto; max-width: 480px; min-width: 120px; }
-.globe-search .globe-search-box { display: flex; width: 100%; }
+.globe-search { position: relative; flex: 1 1 auto; min-width: 160px; }
+.globe-search > .nx-input { display: block; width: 100%; box-sizing: border-box; height: var(--nx-toolbar-h); }
 .globe-search-list { position: absolute; z-index: 5; top: calc(100% + 1px); left: 0; right: 0; margin: 0; padding: 0; list-style: none; max-height: 220px; overflow-y: auto; background: var(--nx-surface-2); border: var(--nx-border-w) solid var(--nx-border-strong); }
 .globe-search-row { display: flex; align-items: center; gap: var(--nx-gap-2); height: var(--nx-row-h); padding: 0 var(--nx-pad-x); overflow: hidden; white-space: nowrap; font-size: var(--nx-font-ui-sm); cursor: default; }
 .globe-search-row.is-active { background: var(--nx-accent-tint); outline: var(--nx-border-w) solid var(--nx-accent); outline-offset: -1px; }

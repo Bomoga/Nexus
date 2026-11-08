@@ -322,3 +322,23 @@ New text` });
     expect(container.querySelector("b")).toBeNull();
   });
 });
+
+describe("task panel data-use chips", () => {
+  test("the chosen model shows its data use as chips", async () => {
+    const { bridge } = setup();
+    render(<App bridge={bridge} taskId="task_01" />);
+    await screen.findByRole("option", { name: /Claude Sonnet 4\.5/ });
+    expect(screen.queryByText("NOT USED FOR TRAINING")).toBeNull();
+    fireEvent.change(screen.getByLabelText("model"), { target: { value: SONNET } });
+    expect(screen.getByText("NOT USED FOR TRAINING").className).toContain("nx-chip--ok");
+    expect(screen.getByText("LEAVES MACHINE").className).toContain("nx-chip--pending");
+  });
+
+  test("the quoted block carries the untrusted tag", async () => {
+    const { bridge } = setup();
+    render(<App bridge={bridge} taskId="task_01" />);
+    const block = await screen.findByTestId("quoted-block");
+    expect(block.querySelector(".nx-quote")).not.toBeNull();
+    expect(screen.getByText(/UNTRUSTED \/ QUOTED/).className).toContain("nx-label");
+  });
+});

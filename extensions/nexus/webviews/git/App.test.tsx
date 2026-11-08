@@ -58,6 +58,16 @@ describe("sessionIdOf", () => {
 });
 
 describe("git view", () => {
+  it("fetches branches and commits exactly once when mounted without a fixed time (no refetch loop)", async () => {
+    const { bridge, calls } = fakeBridge();
+    render(<App bridge={bridge} />);
+    await waitFor(() => expect(screen.getByText("CURRENT")).toBeTruthy());
+    await screen.findAllByRole("listitem");
+    await new Promise((r) => setTimeout(r, 50));
+    expect(calls.filter((c) => c.name === "events.query")).toHaveLength(1);
+    expect(calls.filter((c) => c.name === "git.branches")).toHaveLength(1);
+  });
+
   it("lists branches, agent branches and the last 24 h of commits, newest first", async () => {
     const { bridge, calls } = fakeBridge();
     render(<App bridge={bridge} now={NOW} />);

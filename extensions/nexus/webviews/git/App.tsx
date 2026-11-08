@@ -29,8 +29,10 @@ interface MergeState {
   text: string;
 }
 
-export function App({ bridge, now = Date.now() }: { bridge?: BridgeClient; now?: number }) {
+export function App({ bridge, now: nowProp }: { bridge?: BridgeClient; now?: number }) {
   const b = useMemo(() => bridge ?? getBridge(), [bridge]);
+  // The query window is anchored once per mount: a fresh Date.now() per render would re-create loadCommits and refetch forever.
+  const [now] = useState(() => nowProp ?? Date.now());
   const [branches, setBranches] = useState<readonly Branch[] | undefined>();
   const [branchesError, setBranchesError] = useState<string | undefined>();
   const [commits, setCommits] = useState<readonly NexusEvent[] | undefined>();

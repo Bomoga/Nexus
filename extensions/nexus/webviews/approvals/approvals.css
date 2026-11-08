@@ -13,8 +13,8 @@ html, body, #root { height: 100%; }
 .ap-block { display: block; min-width: 0; font-size: var(--nx-font-ui); white-space: pre-wrap; word-break: break-all; user-select: text; }
 .ap-label { font-size: var(--nx-font-ui-sm); line-height: var(--nx-lh-sm); color: var(--nx-muted); text-transform: uppercase; border: var(--nx-border-w) solid var(--nx-border); padding: 0 3px; white-space: nowrap; }
 
-.ap-diffwrap { display: flex; flex-direction: column; gap: var(--nx-gap-1); padding: 2px 0; border-bottom: var(--nx-border-w) solid var(--nx-border); align-items: flex-start; }
-.ap-diffwrap .nx-mono-block { align-self: stretch; margin: 0 var(--nx-pad-x) var(--nx-gap-1); }
+.ap-diffwrap { display: flex; flex-direction: column; gap: var(--nx-gap-1); padding: 2px var(--nx-pad-x); border-bottom: var(--nx-border-w) solid var(--nx-border); align-items: flex-start; }
+.ap-diffwrap .nx-mono-block { align-self: stretch; margin: 0 0 var(--nx-gap-1); }
 
 .ap-swarm { display: flex; flex-direction: column; border-bottom: var(--nx-border-w) solid var(--nx-border); }
 .ap-swarm > .ap-line { padding: var(--nx-gap-1) var(--nx-pad-x); }

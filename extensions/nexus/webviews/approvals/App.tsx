@@ -75,7 +75,7 @@ function SwarmCard({ review, busy, onRerun }: { review: SwarmReview; busy: boole
             ) : null}
             {review.summary ? <span className="ap-text">{review.summary}</span> : null}
           </div>
-          {judges.length > 0 ? <Table columns={JUDGE_COLUMNS} rows={judges} rowKey={(j) => `${j.modelId}-${j.notes}`} aria-label="judges" /> : null}
+          {judges.length > 0 ? <Table columns={JUDGE_COLUMNS} rows={judges.map((j, i) => ({ ...j, key: `${i}-${j.modelId}` }))} rowKey={(j) => j.key} aria-label="judges" /> : null}
         </>
       ) : null}
       <div className="ap-note">left machine · model-written</div>

@@ -113,7 +113,7 @@ describe("SlackWebClient", () => {
     expect(p1.messages.map(m => ChatMessage.parse(m).id)).toEqual(["C1:3.000000", "C1:2.000000"]);   // channel_join dropped although it has a user
     expect(p1.messages[0]).toMatchObject({ codeRefs: [fx.codeRef], replyCount: 2, sentVia: "user", author: { name: "adrian", isBot: false } });
     expect(p1.messages[0].blocks).toBeUndefined();   // humans' blocks are not mapped
-    expect(p1.messages[0].text).toContain("<nexus://");   // verbatim
+    expect(p1.messages[0].text).not.toContain("<nexus://");   // display text; codeRefs above come from the raw text
     expect(p1.messages[1]).toMatchObject({ sentVia: "bot", author: { id: "U_BOT", name: "nexus", isBot: true } });
     expect(p1.messages[1].blocks).toEqual([{ type: "actions", elements: [{ type: "button" }] }]);
     const p2 = await c.history("C1", "page2");
@@ -197,13 +197,32 @@ describe("SlackWebClient", () => {
     expect(b.poster.chat.postMessage).not.toHaveBeenCalled();
   });
 
+  it("serves display text with mentions resolved, while codeRefs come from the raw text", async () => {
+    const api = makeFake();
+    api.conversations.history.mockResolvedValue({ messages: [{ ...base, ts: "5.000000", user: "U_ADRIAN", text: `hi <@U_BOT> Map&lt;string&gt; <${link}|here> <@U_GONE>` }], response_metadata: { next_cursor: "" } } as never);
+    const info = api.users.info.getMockImplementation() as (a: { user: string }) => Promise<never>;
+    api.users.info.mockImplementation((async (a: { user: string }) => { if (a.user === "U_GONE") throw new Error("user_not_found"); return info(a); }) as never);
+    const { c } = client(api);
+    const [m] = (await c.history("C1")).messages;
+    expect(m.text).toBe("hi @Nexus Map<string> here @U_GONE");
+    expect(m.codeRefs).toEqual([fx.codeRef]);
+  });
+
+  it("a typed message's confirmed copy converts back to exactly what was typed (pending-echo match)", async () => {
+    const { c, poster } = client();
+    const typed = "Map<string> & <@U1> https://x.com";
+    poster.chat.postMessage.mockImplementation((async (a: { text: string }) => ({ ok: true, ts: "9.000200", message: { text: a.text.replace("https://x.com", "<https://x.com>") } })) as never);
+    const m = await c.postAsUser({ channelId: "C1", text: typed });
+    expect(m.text).toBe(typed);
+  });
+
   it("posts as the user, returns Slack's confirmed text and code refs from it", async () => {
     const { c, api, poster } = client();
     poster.chat.postMessage.mockResolvedValue({ ts: "9.000100", message: { text: `<${link}|ref>` } });
     const m = ChatMessage.parse(await c.postAsUser({ channelId: "C1", text: "hi", threadTs: "3.000000", clientId: "k1" }));
     expect(api.chat.postMessage).not.toHaveBeenCalled();
     expect(poster.chat.postMessage).toHaveBeenCalledWith({ channel: "C1", text: "hi", thread_ts: "3.000000" });
-    expect(m).toMatchObject({ id: "C1:9.000100", sentVia: "user", threadTs: "3.000000", author: { id: "U_ADRIAN", isBot: false }, text: `<${link}|ref>`, codeRefs: [fx.codeRef], clientId: "k1" });
+    expect(m).toMatchObject({ id: "C1:9.000100", sentVia: "user", threadTs: "3.000000", author: { id: "U_ADRIAN", isBot: false }, text: "ref", codeRefs: [fx.codeRef], clientId: "k1" });
     expect("clientId" in ChatMessage.parse(await c.postAsUser({ channelId: "C1", text: "hi" }))).toBe(false);
   });
 

@@ -32,6 +32,16 @@ describe("SlackSocket events", () => {
     expect(events[0].type).toBe("message");
   });
 
+  it("serves display text for mrkdwn, resolves mentions, keeps code refs from the raw text, and survives a failed lookup", async () => {
+    const { bolt, socket, events } = setup();
+    await socket.start();
+    await bolt.message({ type: "message", channel: "C1", user: "U_ADRIAN", ts: "10.000300", text: `<@U_ADRIAN> Map&lt;string&gt; <${encodeCodeRef(fx.codeRef)}|here> <@U_NOBODY> &lt;@U1&gt;` });
+    expect(events).toHaveLength(1);
+    const msg = (events[0] as { message: ChatMessage }).message;
+    expect(msg.text).toBe("@Adrian Map<string> here @U_NOBODY <@U1>");
+    expect(msg.codeRefs).toEqual([fx.codeRef]);
+  });
+
   it("maps a person's own Nexus post (user + bot_id + app_id) to human", async () => {
     const { bolt, socket, events } = setup();
     await socket.start();

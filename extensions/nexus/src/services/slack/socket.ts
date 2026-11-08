@@ -4,6 +4,7 @@ import { App, LogLevel, SocketModeReceiver } from "@slack/bolt";
 import type { ChatMessage, SlackUser } from "../../contracts";
 import type { BotIdentity, BotTokenProvider, BotTokens } from "./bot";
 import type { Disposable, SlackMessageEvent } from "./types";
+import { mentionedUserIds } from "./mrkdwn";
 import { isShownSlackMsg, mapSlackMessage, toSlackUser, type SlackMsg, type SlackUserInfo } from "./web-client";
 
 /** A Slack `message` event as delivered over Socket Mode (loose: the payload is untrusted). */
@@ -159,6 +160,7 @@ export interface SocketOptions {
 }
 
 const SEEN_LIMIT = 2_000;
+const MAX_MENTION_LOOKUPS = 20;
 
 type Listener = { fn: (evt: SlackMessageEvent) => void; channelIds?: string[] };
 
@@ -300,7 +302,13 @@ export class SlackSocket {
       this.seen.set(key, true);
       if (this.seen.size > SEEN_LIMIT) this.seen.delete(this.seen.keys().next().value as string);
       const known = raw.user ? await this.lookupUser(app, raw.user) : undefined;
-      const message = mapSlackMessage(channelId, raw, known, this.nexusBot);
+      // Mentioned users are resolved through the same cached lookup, bounded per message; an unknown one shows as @U….
+      const mentioned = new Map<string, string>();
+      for (const id of mentionedUserIds(raw.text ?? "").slice(0, MAX_MENTION_LOOKUPS)) {
+        const u = await this.lookupUser(app, id).catch(() => undefined);
+        if (u) mentioned.set(id, u.displayName || u.name);
+      }
+      const message = mapSlackMessage(channelId, raw, known, this.nexusBot, { user: id => mentioned.get(id) });
       this.emit({ type: changed ? "message_changed" : "message", message });
     } catch { /* an odd payload must not take the handler (and the socket) down */ }
   }

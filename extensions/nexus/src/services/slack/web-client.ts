@@ -3,6 +3,7 @@
 import { WebClient } from "@slack/web-api";
 import { decodeCodeRef, type Channel, type ChatMessage, type CodeRef, type SlackStatus, type SlackUser, type Thread } from "../../contracts";
 import type { HistoryPage, PostOptions, SlackService } from "./types";
+import { mentionedUserIds, toDisplayText, type NameResolvers } from "./mrkdwn";
 
 export type UserSlack = Pick<SlackService, "postAsUser" | "channels" | "history" | "getThread" | "users"> & {
   status(): Promise<Pick<SlackStatus, "postsAs" | "userTokenSource">>;
@@ -182,18 +183,19 @@ export function escapeUserText(text: string): string {
  * Maps one raw Slack message. A person's own post through the Nexus app also carries bot_id/app_id/bot_profile, so a known user's
  * is_bot is trusted; bot_id is only the fallback when the user is unknown (section 14: never show agent text as human).
  */
-export function mapSlackMessage(channelId: string, m: SlackMsg, known?: SlackUser, nexus?: NexusBotIds): ChatMessage {
+export function mapSlackMessage(channelId: string, m: SlackMsg, known?: SlackUser, nexus?: NexusBotIds, names?: NameResolvers): ChatMessage {
   const ts = m.ts as string;
   const isBot = known ? known.isBot : !!m.bot_id;
   const fromNexus = isBot && isNexusBotMessage(m, nexus);
   const id = m.user ?? (m.bot_id as string);
   const name = known?.name || m.username || m.bot_profile?.name || id;
-  const text = m.text ?? "";   // verbatim: untrusted (§14)
+  const raw = m.text ?? "";   // Slack's wire format: untrusted (§14). Code refs come from it; the text shown is its plain-text form.
+  const text = toDisplayText(raw, names);
   return {
     id: `${channelId}:${ts}`, channelId, ts,
     ...(m.thread_ts && m.thread_ts !== ts ? { threadTs: m.thread_ts } : {}),
     author: { id, name, isBot },
-    text, codeRefs: extractCodeRefs(text),
+    text, codeRefs: extractCodeRefs(raw),
     ...(m.reply_count ? { replyCount: m.reply_count } : {}),
     sentVia: fromNexus ? "bot" : "user",
     ...(fromNexus && m.blocks !== undefined ? { blocks: m.blocks } : {}),   // approval buttons survive a reload; humans' blocks are never mapped
@@ -279,12 +281,13 @@ export class SlackWebClient implements UserSlack {
     catch (e) { throw safeError(e, "chat.postMessage"); }
     const ts = r.ts ?? r.message?.ts;
     if (!ts) throw new Error("slack chat.postMessage returned no ts");
-    const text = r.message?.text ?? sendText;   // Slack's confirmed copy
+    const raw = r.message?.text ?? sendText;   // Slack's confirmed copy, in wire format
+    const text = toDisplayText(raw);
     return {
       id: `${opts.channelId}:${ts}`, channelId: opts.channelId, ts,
       ...(opts.threadTs ? { threadTs: opts.threadTs } : {}),
       author: { id: me.userId, name: me.name, isBot: false },
-      text, codeRefs: extractCodeRefs(text), sentVia: "user",
+      text, codeRefs: extractCodeRefs(raw), sentVia: "user",
       ...(opts.clientId !== undefined ? { clientId: opts.clientId } : {}),
     };
   }
@@ -380,7 +383,8 @@ export class SlackWebClient implements UserSlack {
 
   private async mapMessages(api: SlackApi, channelId: string, raw: SlackMsg[]): Promise<ChatMessage[]> {
     const real = raw.filter(isShownSlackMsg);
-    await this.loadUsers(api, real.flatMap(m => (m.user ? [m.user] : [])));
-    return real.map(m => mapSlackMessage(channelId, m, m.user ? this.userCache.get(m.user) : undefined, { botId: this.opts.botId, userId: this.opts.botUserId }));
+    await this.loadUsers(api, real.flatMap(m => [...(m.user ? [m.user] : []), ...mentionedUserIds(m.text ?? "")]));
+    const names: NameResolvers = { user: id => { const u = this.userCache.get(id); return u ? u.displayName || u.name : undefined; } };
+    return real.map(m => mapSlackMessage(channelId, m, m.user ? this.userCache.get(m.user) : undefined, { botId: this.opts.botId, userId: this.opts.botUserId }, names));
   }
 }

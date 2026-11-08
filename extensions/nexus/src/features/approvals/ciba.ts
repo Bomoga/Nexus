@@ -92,7 +92,8 @@ export class CibaClient {
       const afterStart = await stop();
       if (afterStart) return afterStart;
       const authReqId = started.data.authReqId;
-      if (!started.ok || typeof authReqId !== "string") return NO("error");
+      const binding = started.data.binding;   // ties the poll to the signed-in user who started it (auth-service)
+      if (!started.ok || typeof authReqId !== "string" || typeof binding !== "string") return NO("error");
       let intervalMs = typeof started.data.interval === "number" && started.data.interval > 0 ? started.data.interval * 1000 : (this.deps.pollIntervalMs ?? 5000);
       const expiresMs = typeof started.data.expiresIn === "number" ? started.data.expiresIn * 1000 : Infinity;
       const deadline = begun + Math.min(this.deps.timeoutMs ?? 5 * 60_000, expiresMs);
@@ -103,7 +104,7 @@ export class CibaClient {
         if (halt) return halt;
         if (now() >= deadline) return NO("timeout");
         let polled: Awaited<ReturnType<CibaClient["post"]>>;
-        try { polled = await this.post("/ciba/poll", { authReqId }, signal); } catch { polled = { ok: false, status: 0, data: {} }; }
+        try { polled = await this.post("/ciba/poll", { authReqId, binding }, signal); } catch { polled = { ok: false, status: 0, data: {} }; }
         const afterPoll = await stop();   // cancelled or decided elsewhere while the poll was in flight: never report a decision
         if (afterPoll) return afterPoll;
         if (polled.status === 429) {      // rate limited: honour Retry-After, not a failure, still bounded by the deadline

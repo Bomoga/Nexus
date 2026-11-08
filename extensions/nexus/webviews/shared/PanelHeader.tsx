@@ -1,4 +1,5 @@
 // The 22 px header strip of a region: uppercase title, optional count in mono, free meta in the middle, actions right.
+// The heading role sits on the title only, so controls placed in the strip are never read as part of a heading.
 import type { ReactNode } from "react";
 
 export interface PanelHeaderProps {
@@ -14,8 +15,10 @@ export interface PanelHeaderProps {
 
 export function PanelHeader({ title, count, children, actions, className }: PanelHeaderProps) {
   return (
-    <div className={["nx-panel-header", className ?? ""].filter(Boolean).join(" ")} role="heading" aria-level={2}>
-      <span className="nx-panel-header-title">{title}</span>
+    <div className={["nx-panel-header", className ?? ""].filter(Boolean).join(" ")}>
+      <span className="nx-panel-header-title" role="heading" aria-level={2}>
+        {title}
+      </span>
       {count !== undefined ? <span className="nx-count">{count}</span> : null}
       {children !== undefined ? <span className="nx-panel-header-meta">{children}</span> : null}
       {actions !== undefined ? <span className="nx-panel-header-actions">{actions}</span> : null}

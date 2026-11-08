@@ -147,7 +147,8 @@ export class Lane3Views {
     try {
       await this.deps.executeCommand(`${AGENT_VIEW}.focus`);
     } catch {
-      this.keyed(this.sessions, sessionId, SESSION_PANEL, "session", `Session ${sessionId}`, "session-id");
+      // Only when there is no agent view at all: a resolved view already shows the session, so no second surface opens.
+      if (!this.agentView) this.keyed(this.sessions, sessionId, SESSION_PANEL, "session", `Session ${sessionId}`, "session-id");
     }
   }
 

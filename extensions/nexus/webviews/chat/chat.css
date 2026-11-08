@@ -50,7 +50,6 @@ html, body, #root { height: 100%; }
 
 /* Bot messages: 2 px accent rule, uppercase NEXUS label, body in the foreground color. */
 .chat-bot { border-left: 2px solid var(--nx-accent); padding-left: var(--nx-gap-2); }
-.chat-bot-head { display: flex; align-items: center; gap: var(--nx-gap-1); }
 .chat-bot-label { color: var(--nx-accent-hi); font-weight: 600; letter-spacing: var(--nx-tracking-header); text-transform: uppercase; }
 .chat-bot-section { color: var(--nx-muted); }
 .chat-approval { display: flex; flex-wrap: wrap; align-items: center; gap: var(--nx-gap-1); margin-top: var(--nx-gap-1); }

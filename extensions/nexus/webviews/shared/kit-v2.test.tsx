@@ -139,9 +139,13 @@ describe("PanelHeader and Region", () => {
         <Badge kind="live">LIVE</Badge>
       </PanelHeader>,
     );
-    const header = getByRole("heading", { level: 2 });
+    const title = getByRole("heading", { level: 2 });
+    expect(title.textContent).toBe("Channels");
+    expect(title.className).toBe("nx-panel-header-title"); // the heading role is on the title, never on the strip that holds controls
+    const header = container.querySelector(".nx-panel-header")!;
     expect(getComputedStyle(header).getPropertyValue("height")).toBe("22px");
     expect(getComputedStyle(header).getPropertyValue("text-transform")).toBe("uppercase");
+    expect(header.getAttribute("role")).toBeNull();
     expect(container.querySelector(".nx-count")!.textContent).toBe("4");
     expect(container.querySelector(".nx-panel-header-actions button")!.className).toContain("nx-button--sm");
     expect(container.querySelector(".nx-panel-header-meta .nx-badge")).toBeTruthy();

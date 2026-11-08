@@ -23,7 +23,7 @@ export function safeAvatarSrc(url: string | undefined): string | undefined {
   return undefined;
 }
 
-const URL_RE = /https?:\/\/[^\s<>]+/g;
+const URL_RE = /https:\/\/[^\s<>]+/g; // https only: the opener (ui.openExternal) refuses anything else, so http text stays plain
 const TRAILING_PUNCT = /[.,;:!?)\]}"']+$/;
 
 interface Part { text: string; link?: boolean }

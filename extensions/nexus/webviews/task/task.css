@@ -1,27 +1,15 @@
-/* Task panel: tokens and geometry come from the kit's theme.css. */
+/* Task panel: tokens and geometry come from the kit's theme.css; Regions touch, so the stack reads as one grid. */
 html, body, #root { height: 100%; }
 
-.task-app { display: flex; flex-direction: column; height: 100%; overflow-y: auto; padding: var(--nx-pad-x); gap: var(--nx-gap-2, 8px); }
-.task-field { display: flex; flex-direction: column; gap: 2px; }
-.task-label { font-size: var(--nx-font-ui-sm); color: var(--nx-muted); text-transform: uppercase; }
-.task-row { display: flex; align-items: center; gap: var(--nx-gap-1); flex-wrap: wrap; }
-
-.task-quote {
-  margin: 0; padding: 4px 6px;
-  border: var(--nx-border-w) dashed var(--nx-border); border-left: 2px solid var(--nx-muted);
-  background: var(--nx-surface); color: var(--nx-muted); user-select: text;
-  font-family: var(--nx-font-data); font-size: var(--nx-font-ui); white-space: pre-wrap; word-break: break-word;
-}
-.task-quote-tag { font-size: var(--nx-font-ui-sm); color: var(--nx-muted); text-transform: uppercase; }
-
-.task-brief {
-  min-height: 140px; resize: vertical; padding: 4px 6px;
-  border: var(--nx-border-w) solid var(--nx-input-border); border-radius: var(--nx-radius);
-  background: var(--nx-input-bg); color: var(--nx-input-fg);
-  font-family: var(--nx-font-data); font-size: var(--nx-font-ui);
-}
-.task-brief:focus { outline: var(--nx-border-w) solid var(--nx-focus); outline-offset: -1px; }
-.task-brief:disabled { opacity: 0.6; }
-
-.task-actions { display: flex; align-items: center; gap: var(--nx-gap-1); }
+.task-app { display: flex; flex-direction: column; height: 100%; overflow-y: auto; padding: 0; }
+.task-app > .nx-region { flex: 0 0 auto; }
+.task-app .nx-region-body--pad { display: flex; flex-direction: column; gap: var(--nx-gap-1); padding: var(--nx-gap-2) var(--nx-pad-x); }
+.task-app > .nx-status-line { padding: 0 var(--nx-pad-x); }
+.task-meta { display: flex; align-items: center; gap: var(--nx-gap-2); min-height: var(--nx-control-h); }
+.task-source { color: var(--nx-muted); font-size: var(--nx-font-ui-sm); }
+.task-title-wrap { width: 100%; }
+.task-row { display: flex; align-items: center; gap: var(--nx-gap-1); flex-wrap: wrap; min-height: var(--nx-control-h); }
+.task-brief { min-height: 140px; }
+.task-hint { text-transform: none; font-weight: 400; letter-spacing: 0; }
+.task-actions { display: flex; align-items: center; gap: var(--nx-gap-1); flex-wrap: wrap; }
 .task-model { flex: 1; min-width: 0; }

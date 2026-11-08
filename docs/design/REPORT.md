@@ -4,7 +4,10 @@ For the reader who opens Nexus at 08:00 and demos it. Written by the Lane 1 lead
 
 ## 1. Status line
 
-_(filled at the end)_
+- **On `main`** (PR 65 at 03:30, PR 66 at 04:21): tokens v2 and kit v2; Nexus Dark alignment; the layout (Agent view in the secondary side bar, visible by default; Slack · Git · Approvals on the left; `openSession` selects in the view); the new Git view; the globe chrome and scene redesign with the timeline fallback; the Agent view, Slack view and Approvals view redesigns.
+- **On `lane-1`, in the final PR (opened at 04:40, merged after its `extension` check)**: the task editor and plan review restyle (D-09), the polish commits (unused CSS rule, data-use chip tests, heading role on the panel title, no duplicate session panel, https-only Slack links), the design report and the progress file. If the PR is not merged by the time you read this, `lane-1` holds it and `main` is still fully usable.
+- **Abandoned**: nothing. Every task D-00 to D-12 landed; D-10 (git view) was folded into D-04. Two tasks needed a second attempt or a lead fix after review (D-05 cross-session race; D-08 focus-ring padding).
+- **Last full verification** on lane-1 at 04:35: typecheck, lint, `vitest run webviews src/features/views` 41 files / 474 tests, build:webviews, contributes:check, all exit 0. **Last launch check** at 04:37: redesigned globe home with 652 demo events, Agent view open on the right, no error notification (`screens/after/launch-final.png`).
 
 ## 2. Before / after
 
@@ -68,18 +71,63 @@ _(filled at the end)_
 - Pending first (oldest first), then a 20 px DECIDED separator, then decided cards with the swarm verdict Badge (LOOKS GOOD / CONCERNS / DO NOT MERGE / REVIEW UNAVAILABLE), the judges table and the "approved by slack … at T+" line.
 - The swarm verdict only changes the look; decisions are human clicks only; a decided approval never reopens. Narrow shot: `screens/after/approvals-narrow.png`.
 
+### Task editor and plan review (`webviews/task`, `webviews/plan`)
+
+| before | after |
+|---|---|
+| ![task before](screens/before/task.png) | ![task after](screens/after/task.png) |
+| ![plan before](screens/before/plan.png) | ![plan after](screens/after/plan.png) |
+
+- Task editor: Regions TASK (status Badge, source kind, title, code refs) · SOURCE (the quoted thread as a `.nx-quote` block under an UNTRUSTED / QUOTED / READ-ONLY label) · BRIEF (mono textarea with a line and character count) · MODEL (kit Select; data-use chips LEAVES MACHINE / NOT USED FOR TRAINING / MAY BE USED FOR TRAINING / UNKNOWN, with Prune forcing LEAVES MACHINE + UNKNOWN) · START (primary) and BREAK INTO SUBTASKS.
+- Plan review: PLAN header with the source title and a PROPOSED / ACCEPTED / REJECTED Badge, subtasks as a Table (`#` right-aligned mono · TITLE · DEPENDS ON "1, 2"), briefs labeled model-written, ACCEPT primary / REJECT danger only while proposed, created task ids after acceptance.
+- Restyle only: the same bridge requests, brief builder and id resolution; 600 px shot in `screens/after/task-narrow.png`.
+
 ## 3. Decisions made for Adrian
 
-_(see also progress/lane-1.md "Decisions (design night)")_
+Full list under "Decisions (design night)" in `progress/lane-1.md`. The ones that change how things look or behave:
+
+- **Accent ramp**: Nexus Dark's `#9d6bff` family everywhere (`--nx-accent`, `-hi #b794ff`, `-lo #7f77dd`, `-deep #5b3fb3`, `-glow #d9caff`, `-tint #9d6bff22`); the kit's old `#8b5cf6` and the globe's `0x7f77dd` primary are gone.
+- **Dark text on purple** (`--nx-accent-fg #0b0b0e`, 5.6:1) on every primary button, active segment and MERGE control; white on either purple fails 4.5:1. The style test carries a 22-pair contrast table and fails on any regression.
+- **Layout**: Slack · Git · Approvals in the left `nexus` container; the globe in the center; the Agent view in a new `nexus-agent` secondary-side-bar container that the core default now opens, plus a one-time `nexus.agent.focus` at activation because the workbench hides an empty secondary side bar before the extension registers its container.
+- **Session selection without a contract change**: `nexus.openSession` re-sets the Agent view's `<body data-session-id>` (page reload, replay from seq 0) through one optional `onResolveView` callback added to `src/bridge/host.ts`; the editor panel is a fallback only. With no id the view lists sessions itself and offers a switcher.
+- **Git view** built tonight (D-10 folded into D-04) because the new `nexus.git` view needed an entry to be usable.
+- **Rows**: tables stay 20 px, list rows are 22 px; both inside CLAUDE.md §6's range.
+- **Deviations from §5**: the globe's top bar is a `div.nx-panel-header` with `role="toolbar"` (the kit's `PanelHeader` is a heading); the "4 px gutter" for the activity strip legend is a ~28 px label column; now-line dots are world-space spheres, not a fixed 3 px; instanced markers dim by color instead of 0.5 opacity; the timeline has no activity strip (it never had one) and always shows LIVE; the agent view's switcher refetches `sessions.list` on open/focus because the protocol has no sessions subscription; Slack `http://` links are linkified but dropped by the https-only opener; the task editor's START has no keyboard hint (no shortcut exists).
+- **Worktrees** for workers lived in `C:\dev
+exus-wt\D-xx`; the fork was launched from `C:\dev
+exus` (the only built checkout) with `--extensionDevelopmentPath` pointing at this checkout's `extensions/nexus`.
 
 ## 4. Checks
 
-_(last full verification output, launch check, console errors per entry, globe frame time)_
+- **Full verification loop** (`npm run typecheck && npm run lint && npx vitest run webviews src/features/views && npm run build:webviews && npm run contributes:check`, from `extensions/nexus`): last run on lane-1 at 04:25 EST, exit 0, `41 files / 473 tests` passed [proof: scratch verify-slice3.log]. _(final run at the freeze: see Status line)_
+- **Baseline for comparison**: 37 files / 371 tests at 02:30 before any change.
+- **Launch checks** (`.\scripts\code.bat --extensionDevelopmentPath=<repo>\extensions
+exus` from the built checkout, fresh user-data dir, demo folder): three tonight; the last (04:13) showed the redesigned globe home tab-less, the Agent view open in the secondary side bar, Slack · Git · Approvals in the left container, "pick a model" in the status bar, no Chat panel, and only the known cold-start warning (`screens/after/launch-slice2.png`).
+- **Console errors per entry** (isolated headless Chrome with `--enable-logging=stderr`, 360 and 1280 px, `?fake=1`): globe, timeline, git, session, approvals, chat, task, plan all **0** (the capture method was proven with a `console.error` probe page). A burst of 371 "Maximum update depth exceeded" lines was seen once in the shared browser pane while three workers navigated the same tab; it never reproduced in isolation and `webviews/session/loop.test.tsx` now guards it.
+- **Globe frame time** (real GPU, headless Chrome over the DevTools protocol, 36 h fixture with 166 events, 5 s of `requestAnimationFrame`): 286 frames, p50 **16.7 ms**, p95 17.3 ms, avg 17.5 ms, one 66.7 ms hitch; renderer "ANGLE (Intel Iris Xe, Direct3D11)". That is the 60 Hz vsync interval, so the scene is not the bottleneck.
+- **Keyboard reach** (Tab over the DevTools protocol, 1280 px): globe 6/6 controls reached, chat 5/5, git 80 of 101 (the loop's press cap, every reached row focused), approvals 3/3, session 6/6, task 3/3, plan 5/5, timeline 7/6 (one control gained after a live insert); nothing focused off-screen; the only focused controls without an outline of their own are prefixed inputs (globe and timeline search, the task editor's title field), whose ring is drawn on the wrapper (`.nx-input-wrap:focus-within`); confirmed by reading the parent's computed outline over the DevTools protocol.
+- **Contrast**: the style test's 22-pair table over the fallback hex values, all ≥ 4.5:1 for text and ≥ 3:1 for UI, run on every test pass.
 
 ## 5. Not done / known issues
 
-_(file, line, smallest next step)_
+Everything in D-00 to D-12 landed. What is left, with the smallest next step:
+
+- `extensions/nexus/src/bridge/host.ts` (Lane 2): re-setting a view's `webview.html` does not reset the router session, so a reply to the previous page's first request (`r1`) or its `agent.subscribe` (`s4`) can land on the new page in the short window between two fast `nexus.openSession` calls. Next step: a `reload(html)` on the host that bumps the router epoch (`router.ts` `reset()`) before setting the html; one test in `host.test.ts` that `onResolveView` fires after `attach`.
+- `extensions/nexus/webviews/globe/App.tsx` (DetailStrip `event={hovered ?? selected}`): while the pointer rests on marker B with A selected, Enter/OPEN opens B. Next step: show the hover preview but keep OPEN bound to `selected ?? hovered`.
+- `extensions/nexus/webviews/session/App.tsx`: the whole transcript re-renders on every `useNow` tick (pre-existing) and RETRY on a `sessions.list` error reloads the whole session; the switcher's list has no request ordering. Next step: memoize `LogRow` and key the list refetch by a counter.
+- `extensions/nexus/webviews/chat/History.tsx`: the LIVE badge follows `channel.botIsMember`, not the actual subscription state; MEMBER/BOT badges hide under 480 px. Next step: derive LIVE from `slack.subscribe`'s status event.
+- `extensions/nexus/webviews/timeline/App.test.tsx` "shows a truncated line when the query hit the limit": passes alone and in every quiet full run, but timed out at 6.5 s and 21.7 s when three suites ran at once. Next step: use fake timers or raise its own timeout; not changed tonight (no test weakened).
+- Dev host only: "nexus.nexus created a webview without a content security policy" logs once when the first Nexus WebviewView resolves (`src/vs/workbench/contrib/webview/browser/webviewElement.ts:651` fires it only under `isExtensionDevelopment`); `buildHtml` does emit the CSP meta. Next step: check whether VS Code's empty initial document triggers it; if so it is noise.
+- Unexplained once: 371 "Maximum update depth exceeded" console lines in the shared browser pane at about 03:44 while workers navigated the same tab; zero in every isolated run since; `loop.test.tsx` guards the session view. Next step: open each view in a quiet browser and watch the console for a minute.
+- Headless Chrome at `--window-size=360` does not honour the width for layout, so the `*-narrow.png` shots are indicative; the real browser at 320 to 360 px was checked by hand for the git and session views only.
+- Unchanged by design: `PanelHeader` now puts the heading role on the title; the globe's top bar is a `role="toolbar"` div; the timeline has no activity strip; Slack `http://` text is plain, only `https://` is a link.
+- Still Held (never touched tonight): live API spend, Slack posts, Auth0/CIBA, `cp-*` tags, dependency upgrades, the demo repo seed, font bundling.
 
 ## 6. Demo notes
 
-_(what the presenter should know)_
+- The secondary side bar opens by default with the **Agent** view; if you close it, it stays closed for that workspace (`nexus.agentViewRevealed` in workspace state) until you open it from the layout toggle or `Nexus: Open session`. Below about 320 px wide the header strip truncates from the left and keeps the status badge and CANCEL visible.
+- With no agent session yet the Agent view says "no agent session yet · start one from a Slack thread"; the first `nexus.openSession` (from a notification, the globe or a thread) points it at that session. The switcher lists sessions newest first, running ones on top.
+- The globe's time window is the segmented 24H · 36H · 7D · 30D control; the 36H segment is filled purple when active. Search still takes Enter (top hit) and Escape; STOP TRACKING is ESC.
+- Left container: **Slack** (channels 20 px rows, LIVE badge when the bot is in the channel), **Git** (BRANCHES, AGENT BRANCHES with the inline MERGE → CONFIRM MERGE, RECENT COMMITS last 24 h), **Approvals** (pending on top, DECIDED below).
+- Every primary action is dark text on purple; red outlines are REJECT/danger only; amber is pending only.
+- Dev-host only: an "Extension host did not start in 10 seconds" warning on this 8 GB laptop and a "created a webview without a content security policy" log line when the first Nexus view resolves; neither affects the views.

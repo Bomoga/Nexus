@@ -60,14 +60,16 @@ describe("PlanReview", () => {
   test("renders status, model-written label and subtasks with 1-based dependencies", () => {
     const { bridge } = setup();
     render(<PlanReview plan={plan()} bridge={bridge} />);
-    expect(screen.getByText(/proposed/)).toBeTruthy();
+    expect(screen.getByText("PROPOSED")).toBeTruthy();
     expect(screen.getByText("HierarchicalSwarm", { exact: false })).toBeTruthy();
     expect(screen.getByText(/model-written/i)).toBeTruthy();
     expect(screen.getByText(/left machine/i)).toBeTruthy();
     expect(screen.getByText("Add failing test")).toBeTruthy();
     expect(screen.getByText("Fix discount math")).toBeTruthy();
-    expect(screen.getByText("after: 1")).toBeTruthy();
-    expect(screen.getByText("after: 1, 2")).toBeTruthy();
+    const dependsOn = (title: string) => screen.getByText(title).closest("tr")?.lastElementChild?.textContent;
+    expect(dependsOn("Add failing test")).toBe("");
+    expect(dependsOn("Fix discount math")).toBe("1");
+    expect(dependsOn("Update CHANGELOG")).toBe("1, 2");
   });
 
   test("briefs are collapsed to one line and expand as plain text", () => {
@@ -94,7 +96,7 @@ describe("PlanReview", () => {
     fireEvent.click(screen.getByRole("button", { name: "ACCEPT" }));
     expect(await screen.findByText(/created 3 draft tasks/)).toBeTruthy();
     expect(reqs("tasks.plan.accept")[0].body).toEqual({ planId: "plan_01" });
-    expect(screen.getByText(/accepted/)).toBeTruthy();
+    expect(screen.getByText("ACCEPTED")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "ACCEPT" })).toBeNull();
     expect(screen.queryByRole("button", { name: "REJECT" })).toBeNull();
   });
@@ -103,7 +105,7 @@ describe("PlanReview", () => {
     const { bridge, reqs } = setup();
     render(<PlanReview plan={plan()} bridge={bridge} />);
     fireEvent.click(screen.getByRole("button", { name: "REJECT" }));
-    await waitFor(() => expect(screen.getByText(/rejected/)).toBeTruthy());
+    await waitFor(() => expect(screen.getByText("REJECTED")).toBeTruthy());
     expect(reqs("tasks.plan.reject")[0].body).toEqual({ planId: "plan_01" });
     expect(screen.queryByRole("button", { name: "ACCEPT" })).toBeNull();
   });
@@ -139,7 +141,7 @@ describe("PlanReview", () => {
     fireEvent.click(screen.getByRole("button", { name: "ACCEPT" }));
     await waitFor(() => expect(screen.queryByRole("button", { name: "ACCEPT" })).toBeNull());
     expect(screen.queryByText(/already rejected/)).toBeNull();
-    expect(screen.getByText("rejected").className).toContain("nx-tone-error");
+    expect(screen.getByText("REJECTED").className).toContain("nx-badge--error");
     expect(reqs("tasks.plan.get")).toHaveLength(1);
   });
 

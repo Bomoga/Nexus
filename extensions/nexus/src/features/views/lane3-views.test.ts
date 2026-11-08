@@ -147,6 +147,14 @@ describe("Lane3Views", () => {
     expect(opened[0].panel.reveals).toBe(1);
   });
 
+  it("opens no panel when focus fails but a resolved agent view already shows the session", async () => {
+    const { run, opened, resolveView } = setup({ focusFails: true });
+    const view = resolveView("nexus.agent");
+    await run("nexus.openSession", "ses_03");
+    expect(view.webview.html).toContain('<body data-session-id="ses_03">');
+    expect(opened).toEqual([]);
+  });
+
   it("refuses to open a session without an id", async () => {
     const { run, opened, errors, executed } = setup();
     await run("nexus.openSession");

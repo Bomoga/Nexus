@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ModelInfo, OptimizerSetting, ProviderAccount, Task, TaskPlan } from "../../src/contracts";
-import { Button, Chip, EmptyState, Input, Select, StatusLine, friendlyError, getBridge } from "../shared";
+import { Badge, Button, Chip, EmptyState, Input, Region, Select, StatusLine, friendlyError, getBridge } from "../shared";
+import type { BadgeKind, ChipKind } from "../shared";
 import type { BridgeClient } from "../shared";
 import { PlanReview } from "../plan/PlanReview";
 import { composeBrief, splitBrief } from "./brief";
@@ -20,6 +21,26 @@ export function modelLabel(m: ModelInfo, account: ProviderAccount | undefined, v
   const leaves = viaPrune || !account || account.dataLeavesMachine;
   return `${m.displayName} | ${m.provider} | ${use}${leaves ? " | LEAVES MACHINE" : ""}`;
 }
+
+/** Data-use chips for the chosen model; same facts as modelLabel, so the picker line and the chips never disagree. */
+export function dataUseChips(account: ProviderAccount | undefined, viaPrune: boolean): { kind: ChipKind; label: string }[] {
+  const chips: { kind: ChipKind; label: string }[] = [];
+  if (viaPrune || !account || account.dataLeavesMachine) chips.push({ kind: "pending", label: "LEAVES MACHINE" });
+  const use = viaPrune ? "unknown" : (account?.dataUse ?? "unknown");
+  if (use === "not_used_for_training") chips.push({ kind: "ok", label: "NOT USED FOR TRAINING" });
+  else if (use === "may_be_used_for_training") chips.push({ kind: "error", label: "MAY BE USED FOR TRAINING" });
+  else chips.push({ kind: "default", label: "UNKNOWN" });
+  return chips;
+}
+
+const TASK_BADGE: Record<Task["status"], { kind: BadgeKind; label: string }> = {
+  draft: { kind: "muted", label: "DRAFT" },
+  running: { kind: "accent", label: "RUNNING" },
+  awaiting_approval: { kind: "pending", label: "AWAITING" },
+  done: { kind: "ok", label: "DONE" },
+  failed: { kind: "error", label: "FAILED" },
+  cancelled: { kind: "muted", label: "CANCELLED" },
+};
 
 const modelKey = (m: { provider: string; modelId: string }) => `${m.provider}/${m.modelId}`;
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
@@ -106,15 +127,17 @@ export function App({ bridge, taskId }: AppProps) {
     [models, accounts, viaPrune],
   );
 
-  if (!taskId) return <StatusLine tone="error">no task id</StatusLine>;
+  if (!taskId) return <div className="task-app"><StatusLine tone="error">no task id</StatusLine></div>;
   if (failure) {
     return (
-      <StatusLine tone="error">
-        {failure} <Button onClick={() => setTaskAttempt((n) => n + 1)}>RETRY</Button>
-      </StatusLine>
+      <div className="task-app">
+        <StatusLine tone="error">
+          {failure} <Button size="sm" onClick={() => setTaskAttempt((n) => n + 1)}>RETRY</Button>
+        </StatusLine>
+      </div>
     );
   }
-  if (!task) return <StatusLine>loading task</StatusLine>;
+  if (!task) return <div className="task-app"><StatusLine>… loading task</StatusLine></div>;
 
   const b = bridge ?? getBridge();
   const isThread = task.source.kind === "thread";
@@ -188,16 +211,25 @@ export function App({ bridge, taskId }: AppProps) {
   };
 
   const prune = optimizer ? (optimizer.enabled ? "ON" : "OFF") : "?";
+  const badge = TASK_BADGE[task.status];
+  const lineCount = rest.length === 0 ? 0 : rest.split("\n").length;
+  const chosenAccount = chosen ? accounts.find((a) => a.provider === chosen.provider) : undefined;
+  const locked = !editable || busy === "starting";
 
   return (
     <div className="task-app">
-      <div className="task-field">
-        <label className="task-label" htmlFor="task-title">title</label>
+      <Region header={{ title: "TASK" }} pad>
+        <div className="task-meta">
+          <Badge kind={badge.kind}>{badge.label}</Badge>
+          <span className="nx-data task-source">{isThread ? "source: slack thread" : "source: manual"}</span>
+        </div>
         <Input
           id="task-title"
+          prefix="TITLE"
+          wrapClassName="task-title-wrap"
           aria-label="title"
           value={title}
-          disabled={!editable || busy === "starting"}
+          disabled={locked}
           onChange={(e) => {
             setTitle(e.target.value);
             if (e.target.value.trim()) setTitleEmpty(false);
@@ -205,64 +237,70 @@ export function App({ bridge, taskId }: AppProps) {
           onBlur={() => void persist()}
         />
         {titleEmpty ? <StatusLine tone="error">title can't be empty</StatusLine> : null}
-      </div>
-
-      <div className="task-field">
-        <span className="task-label">brief</span>
-        {quote ? (
-          <div data-testid="quoted-block" role="note" aria-label="quoted thread, read-only">
-            <div className="task-quote-tag">quoted thread (untrusted, read-only)</div>
-            <pre className="task-quote">{quote}</pre>
-          </div>
-        ) : null}
-        <textarea
-          className="task-brief"
-          aria-label="brief"
-          value={rest}
-          disabled={!editable || busy === "starting"}
-          spellCheck={false}
-          onChange={(e) => setRest(e.target.value)}
-          onBlur={() => void persist()}
-        />
-        <div className="task-quote-tag">{'lines starting with "> " are treated as quoted data by the agent'}</div>
-      </div>
-
-      <div className="task-field">
-        <span className="task-label">code refs</span>
         <div className="task-row">
+          <span className="nx-caption">CODE REFS</span>
           {task.codeRefs.length === 0 ? <Chip>none</Chip> : null}
           {task.codeRefs.map((r) => (
             <Chip key={`${r.path}:${r.startLine}-${r.endLine}:${r.commit}`}>{`${r.path}:${r.startLine}-${r.endLine}`}</Chip>
           ))}
         </div>
-      </div>
+      </Region>
 
-      <div className="task-field">
-        <label className="task-label" htmlFor="task-model">model</label>
+      {quote ? (
+        <Region header={{ title: "SOURCE", children: <span className="nx-label">UNTRUSTED / QUOTED / READ-ONLY</span> }} pad>
+          <div data-testid="quoted-block" role="note" aria-label="quoted thread, read-only">
+            <pre className="nx-quote">{quote}</pre>
+          </div>
+        </Region>
+      ) : null}
+
+      <Region header={{ title: "BRIEF", actions: <span className="nx-count">{`${lineCount} lines · ${rest.length} chars`}</span> }} pad>
+        <textarea
+          className="nx-textarea task-brief"
+          aria-label="brief"
+          value={rest}
+          disabled={locked}
+          spellCheck={false}
+          onChange={(e) => setRest(e.target.value)}
+          onBlur={() => void persist()}
+        />
+        <div className="nx-caption task-hint">{'lines starting with "> " are treated as quoted data by the agent'}</div>
+      </Region>
+
+      <Region header={{ title: "MODEL" }} pad>
         <div className="task-actions">
-          <Select id="task-model" aria-label="model" className="task-model" options={options} value={selected} disabled={!editable || busy === "starting"} onChange={(e) => setSelected(e.target.value)} />
+          <Select id="task-model" aria-label="model" className="task-model" options={options} value={selected} disabled={locked} onChange={(e) => setSelected(e.target.value)} />
           <Chip>{`Prune: ${prune}`}</Chip>
         </div>
+        {chosen ? (
+          <div className="task-row" aria-label="data use of the chosen model">
+            {dataUseChips(chosenAccount, viaPrune).map((c) => (
+              <Chip key={c.label} kind={c.kind}>{c.label}</Chip>
+            ))}
+          </div>
+        ) : null}
         {modelsError ? (
           <StatusLine tone="error">
-            {modelsError} <Button onClick={() => setModelsAttempt((n) => n + 1)}>RETRY</Button>
+            {modelsError} <Button size="sm" onClick={() => setModelsAttempt((n) => n + 1)}>RETRY</Button>
           </StatusLine>
         ) : models.length === 0 ? (
           <EmptyState message="no agent models available" />
         ) : null}
-      </div>
+      </Region>
 
-      <div className="task-actions">
-        <Button variant="primary" disabled={!editable || !chosen || busy !== ""} onClick={start}>START</Button>
-        {fullBrief.length > SUBTASK_THRESHOLD ? (
-          <Button disabled={!editable || busy !== ""} onClick={decompose}>BREAK INTO SUBTASKS</Button>
-        ) : null}
-      </div>
+      <Region pad>
+        <div className="task-actions">
+          <Button variant="primary" disabled={!editable || !chosen || busy !== ""} onClick={start}>START</Button>
+          {fullBrief.length > SUBTASK_THRESHOLD ? (
+            <Button disabled={!editable || busy !== ""} onClick={decompose}>BREAK INTO SUBTASKS</Button>
+          ) : null}
+        </div>
+        {!editable ? <StatusLine>{`task ${task.status}: editing and start are locked`}</StatusLine> : null}
+        {error ? <StatusLine tone="error">{error}</StatusLine> : null}
+        {note ? <StatusLine>{note}</StatusLine> : null}
+      </Region>
 
-      {!editable ? <StatusLine>{`task ${task.status}: editing and start are locked`}</StatusLine> : null}
-      {error ? <StatusLine tone="error">{error}</StatusLine> : null}
-      {note ? <StatusLine>{note}</StatusLine> : null}
-      {plan ? <PlanReview key={plan.id} plan={plan} bridge={b} /> : null}
+      {plan ? <PlanReview key={plan.id} plan={plan} bridge={b} sourceTitle={task.title} /> : null}
     </div>
   );
 }

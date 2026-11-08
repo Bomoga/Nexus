@@ -72,6 +72,7 @@ html, body, #root { height: 100%; }
   .chat-who { max-width: none; }
   .chat-text { grid-column: 1 / -1; }
   .chat-replies-cell { grid-column: 1 / -1; }
+  .chat-coderefs { display: flex; margin-left: 0; margin-top: 2px; }
   .chat-head-extra { display: none; }
   .chat-failed-bar { padding-left: var(--nx-pad-x); flex-wrap: wrap; }
 }
@@ -90,6 +91,8 @@ html, body, #root { height: 100%; }
 .chat-thread-list { flex: 1; }
 .chat-thread-foot { display: flex; align-items: center; gap: var(--nx-gap-2); min-height: var(--nx-control-h); padding: 0 var(--nx-pad-x); border-top: var(--nx-border-w) solid var(--nx-border); font-size: var(--nx-font-ui-sm); }
 .chat-thread-note { color: var(--nx-muted); }
+/* The parent's reply count is the header's count here. */
+.chat-thread .chat-replies-cell { display: none; }
 @media (max-width: 599px) {
   .chat-thread { position: absolute; inset: 0; width: auto; border-left: 0; z-index: 1; }
 }

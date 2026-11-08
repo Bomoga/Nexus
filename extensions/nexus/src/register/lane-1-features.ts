@@ -10,6 +10,7 @@ import type { AccountsService } from "../features/accounts/accounts-service";
 import { secretKeyFor } from "../features/accounts/accounts-service";
 import type { ModelPicker } from "../features/accounts/model-picker";
 import { connectSlackApprovals, type SlackApprovalResolver } from "./slack-approvals";
+import { resolveWorkspaceId, type WorkspaceIdSource } from "./workspace-id";
 import { approvalsHookFor } from "../features/adapters/approvals-hook";
 import type { ApprovalHook, NotifyPort } from "../features/approvals/approvals-controller";
 import { makeConfiguredCibaHook } from "../features/approvals/ciba-wiring";
@@ -122,7 +123,7 @@ export function registerFeatures(context: vscode.ExtensionContext, accounts: Acc
     accounts, optimizer, notify: safeNotifyPort(vscodeNotify()),
     swarms: new SwarmsClient(), getSwarmsKey: () => accounts.getKey("swarms"),
     identity,
-    workspaceId: () => `ws_${(vscode.workspace.workspaceFolders?.[0]?.name ?? "default").toLowerCase().replace(/[^a-z0-9]+/g, "_")}`,
+    workspaceId: () => resolveWorkspaceId(l2.git as WorkspaceIdSource, vscode.workspace.workspaceFolders?.[0]?.name),
     agentModel: () => picker.selected("agent"),
     auth, extraApprovalHooks: [...l2.approvalHooks, cibaHook], log,
   });

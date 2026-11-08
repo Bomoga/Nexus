@@ -1,8 +1,12 @@
 /* Git view (design-night §5.5): three touching regions, tokens and geometry from the kit's theme.css. */
 html, body, #root { height: 100%; }
-.git-app { display: flex; flex-direction: column; height: 100%; min-height: 0; }
-.git-app .nx-region { flex: 0 1 auto; }
-.git-app .nx-region--fill { flex: 1 1 0; }
+/* The view scrolls as a whole: regions never shrink below their content (a short side bar used to squash the tables to
+   a sliver), and the commits region keeps a readable minimum height and takes any slack. */
+.git-app { display: flex; flex-direction: column; height: 100%; min-height: 0; overflow-x: hidden; overflow-y: auto; }
+.git-app .nx-region { flex: 0 0 auto; }
+.git-app .nx-region--fill { flex: 1 0 auto; min-height: 120px; }
+.git-app .nx-region-body { overflow: visible; flex: 0 0 auto; }
+.git-app .nx-table thead th { position: static; }
 .git-branch-name { display: inline-flex; align-items: center; gap: var(--nx-gap-1); min-width: 0; }
 .git-commit-row { display: grid; grid-template-columns: 52px 60px minmax(0, 1fr) auto; column-gap: var(--nx-gap-2); align-items: center; height: var(--nx-list-row-h); padding: 0 var(--nx-pad-x); border-bottom: var(--nx-border-w) solid var(--nx-border); font-size: var(--nx-font-ui-sm); line-height: var(--nx-lh-sm); white-space: nowrap; cursor: pointer; }
 .git-commit-row:hover { background: var(--nx-hover-bg); }

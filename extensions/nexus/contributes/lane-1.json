@@ -65,12 +65,12 @@
         },
         "nexus.auth0.audience": {
           "type": "string",
-          "default": "",
+          "default": "https://nexus-api",
           "description": "Optional API audience to request in the access token."
         },
         "nexus.ciba.serviceUrl": {
           "type": "string",
-          "default": "",
+          "default": "https://nexus-auth-service.atmorton04.workers.dev",
           "description": "Base URL of the Nexus auth service. Phone approval (Auth0 push) is off until this is set and you are signed in."
         }
       }

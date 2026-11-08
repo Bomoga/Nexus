@@ -74,9 +74,13 @@ export function registerLane2(context: vscode.ExtensionContext): Lane2Wiring {
     return workspaceIdPromise;
   };
   // Lane 1 still names its tasks' (and so its agent and Slack events') workspace `ws_<folder slug>`; both ids belong to this repo.
+  // Until the root-commit id is known the list is empty (unknown): sync would otherwise pull with the folder id alone, mark other
+  // machines' git events (tagged with the root id) seen, and never copy them.
   const workspaceIds = async (): Promise<string[]> => {
     if (!folder) return [];
-    return [...new Set([await rootWorkspaceId(), `ws_${workspaceSlug}`].filter((id): id is string => !!id))];
+    const root = await rootWorkspaceId();
+    if (!root) return [];
+    return [...new Set([root, `ws_${workspaceSlug}`])];
   };
   // The shared store's client once it exists; before that (or without TIGER_URL) the query throws, so the strip counts the local copy.
   let sharedClient: TigerClient | undefined;

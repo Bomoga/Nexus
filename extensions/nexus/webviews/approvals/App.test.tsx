@@ -425,8 +425,8 @@ describe("approvals v2 layout", () => {
 
   test("the header shows kind, 8-char session id and T+ requested", async () => {
     await mount([mk("p1", { sessionId: "ses_0123456789", action: { kind: "write_outside_scope", path: "/etc/x" }, requestedAt: "2026-11-07T05:07:00Z" })]);
-    const head = within(row("p1")).getByRole("heading");
-    expect(head.textContent).toContain("write outside scope");
+    const head = row("p1").querySelector(".nx-panel-header") as HTMLElement; // the heading role is on the title only; the strip holds the meta too
+    expect(within(head).getByRole("heading").textContent).toContain("write outside scope");
     expect(within(head).getByText("ses_0123")).toBeTruthy();
     expect(within(head).getByText("T+02:07")).toBeTruthy();
     expect(within(row("p1")).getByText("/etc/x").className).toContain("nx-data");

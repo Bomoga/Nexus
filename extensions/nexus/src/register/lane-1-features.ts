@@ -129,6 +129,7 @@ export function registerFeatures(context: vscode.ExtensionContext, accounts: Acc
   });
 
   ref.lane = lane;
+  lane.sessions.reconcileOrphans().then(n => { if (n > 0) log(`ended ${n} session(s) left running by a previous run`); }).catch(e => log(`could not reconcile sessions: ${e instanceof Error ? e.message : "unknown error"}`));
   connectSlackApprovals(l2, lane.approvals);
 
   const ui = safeCommandUi({

@@ -486,7 +486,11 @@ export function App({ bridge, sessionId: initialId, composeSeq }: AppProps) {
     const sid = sessionId;
     const here = () => sidRef.current === sid;
     b.request("agent.cancel", { sessionId: sid })
-      .then(() => here() && setCancelled({ atSeq }))
+      .then((res) => {
+        if (!here()) return;
+        if (res.status === "running" || res.status === "awaiting_approval") setError("the agent did not stop; try CANCEL again");
+        else setCancelled({ atSeq });
+      })
       .catch((e) => here() && setError(friendlyError(e, "session")))
       .finally(() => here() && setCancelling(false));
   };

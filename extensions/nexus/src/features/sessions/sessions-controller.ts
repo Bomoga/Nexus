@@ -173,7 +173,10 @@ export class SessionsController implements SessionEvents {
     if (!a || a.session.id !== sessionId) {
       const stored = await this.deps.store.getSession(sessionId);
       if (!stored) throw new Error(`No session ${sessionId}.`);
-      return stored;                                            // already over: nothing to cancel
+      if (TERMINAL.has(stored.status)) return stored;           // already over: nothing to cancel
+      // The store says it is running but no agent here is running it (the app restarted, or it runs on another machine).
+      if (stored.machineId !== this.deps.machineId) throw new Error("This session is running on another machine; cancel it there.");
+      return this.endOrphan(stored, "cancelled");
     }
     this.cancelling.add(sessionId);                            // a follow-up in this window would be accepted by the child and never read
     try { await this.deps.host.cancelSession(sessionId); } catch { /* the process may already be gone */ }
@@ -239,6 +242,31 @@ export class SessionsController implements SessionEvents {
     } finally {
       this.reserved = false;
     }
+  }
+
+  /** Ends a session the store still shows as running although no agent runs it: nothing can finish it, so a person's CANCEL must. */
+  private async endOrphan(stored: AgentSession, status: "cancelled" | "failed"): Promise<AgentSession> {
+    const ended: AgentSession = { ...stored, status, endedAt: this.deps.clock.now() };
+    await this.attempt("release approvals", () => this.deps.approvals?.sessionEnded?.(stored.id, status) ?? Promise.resolve());
+    await this.attempt("save the session", () => this.deps.store.putSession(ended));
+    await this.attempt("save the task", async () => {
+      const task = await this.deps.store.getTask(stored.taskId);
+      if (task) await this.putTask({ ...task, status });
+    });
+    if (status === "failed") await this.attempt("record the error", () => this.emit(stored.id, { type: "error", message: "Nexus was restarted while this agent was running, so the run was lost. Send a message to continue it." }));
+    await this.attempt("record the final status", () => this.emit(stored.id, { type: "status", status }));
+    return ended;
+  }
+
+  /** At startup: sessions of this machine still marked running belong to an agent process that no longer exists. */
+  async reconcileOrphans(): Promise<number> {
+    let n = 0;
+    for (const s of await this.deps.store.listSessions()) {
+      if (TERMINAL.has(s.status) || s.machineId !== this.deps.machineId || this.active?.session.id === s.id) continue;
+      await this.endOrphan(s, "failed");
+      n++;
+    }
+    return n;
   }
 
   /** ProcessHost.onSessionFinished */

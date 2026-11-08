@@ -128,6 +128,33 @@ describe("follow-up edge cases", () => {
   });
 });
 
+describe("cancelling a session nothing is running", () => {
+  it("ends a session the store shows as running when no agent runs it, instead of doing nothing", async () => {
+    const s = await setup();
+    const session = await s.c.start("task_01", model);
+    const fresh = new SessionsController({ store: s.store, git: s.git, gate: new MemoryGate({ files: {} }), host: fakeHost(), clock: fakeClock(), machineId: "m_adrian", getKey: async () => "k" });
+    expect(fresh.activeSession).toBeUndefined();                // a restarted app: the store still says running
+    const ended = await fresh.cancel(session.id);
+    expect(ended.status).toBe("cancelled");
+    expect(ended.endedAt).toBeDefined();
+    expect((await s.store.getSession(session.id))!.status).toBe("cancelled");
+    expect(await s.store.getTask("task_01")).toMatchObject({ status: "cancelled" });
+    expect((await s.store.agentEvents(session.id, 0)).at(-1)).toMatchObject({ type: "status", status: "cancelled" });
+  });
+
+  it("refuses to cancel another machine's running session, and fails this machine's orphans at startup", async () => {
+    const s = await setup();
+    const mine = await s.c.start("task_01", model);
+    await s.store.putSession({ ...(await s.store.getSession(mine.id))!, id: "ses_theirs", machineId: "m_brandon" });
+    const fresh = new SessionsController({ store: s.store, git: s.git, gate: new MemoryGate({ files: {} }), host: fakeHost(), clock: fakeClock(), machineId: "m_adrian", getKey: async () => "k" });
+    await expect(fresh.cancel("ses_theirs")).rejects.toThrow("another machine");
+    expect(await fresh.reconcileOrphans()).toBe(1);
+    expect((await s.store.getSession(mine.id))!.status).toBe("failed");
+    expect((await s.store.getSession("ses_theirs"))!.status).toBe("running");
+    expect(await fresh.reconcileOrphans()).toBe(0);
+  });
+});
+
 describe("historyOf", () => {
   it("keeps the person's messages and the agent's replies, newest within the size cap", () => {
     const at = "2026-11-08T00:00:00.000Z";

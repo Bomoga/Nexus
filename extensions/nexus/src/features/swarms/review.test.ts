@@ -693,7 +693,6 @@ describe("total parsing and judge fold, attempt 6", () => {
   it("a getter-backed reply still yields the strict result", async () => {
     // A reply object that exposes its text through a getter (not a plain value) still yields the strict result.
     const reply = { get text(): string { return '{"verdict":"do_not_merge","summary":"s"}'; } };
-    let calls = 0;
     const s = await setup({ runner: { run: async () => ({ text: "x", output }), complete: async () => reply as never } });
     await s.service.onCreated(s.approval());
     expect((await s.service.get("apr_1"))!.verdict).toBe("do_not_merge");

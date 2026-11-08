@@ -73,7 +73,10 @@ export function registerLane2(context: vscode.ExtensionContext): Lane2Wiring {
     const url = (await context.secrets.get(TIGER_SECRET_KEY)) || process.env.TIGER_URL;
     if (!url) return;
     try {
-      const shared = createSharedStore({ connectionString: url, local, machineId: machineId!, redact, log: m => log(`shared store: ${m}`) });
+      const shared = createSharedStore({
+        connectionString: url, local, machineId: machineId!, redact, log: m => log(`shared store: ${m}`),
+        notify: m => { void vscode.window.showWarningMessage(plainNotificationText(m)); },
+      });
       current = shared.store;
       context.subscriptions.push({ dispose: () => { void shared.dispose(); } });
       await shared.sync.start();

@@ -88,4 +88,26 @@ describe("createSharedStore", () => {
     expect(client.end).toHaveBeenCalledTimes(1);
     expect(lines.join("\n")).not.toContain("pw@");
   });
+
+  it("tells the person once a minute when the shared store refuses a change for good", async () => {
+    let t = 1_000_000;
+    // every task insert is refused with a constraint error: permanent, so it is dead-lettered
+    const client = { query: vi.fn(async (text: string) => {
+      if (text.includes("INSERT INTO tasks")) throw Object.assign(new Error("duplicate key"), { code: "23505" });
+      return { rows: [], rowCount: 0 };
+    }), end: vi.fn(async () => undefined) };
+    const notices: string[] = [];
+    const shared = createSharedStore({ connectionString: URL_OK, local: local(), machineId: "m-uuid", redact: x => x, log: () => {}, notify: m => notices.push(m), now: () => t, client, listen: async () => async () => undefined });
+    await shared.store.putTask(fx.task);
+    await shared.store.flushOutbox();
+    await shared.store.putTask({ ...fx.task, id: "task_02" });
+    await shared.store.flushOutbox();
+    expect(notices).toHaveLength(1);
+    expect(notices[0]).toMatch(/refused a tasks change for good \(23505\)/);
+    t += 61_000;
+    await shared.store.putTask({ ...fx.task, id: "task_03" });
+    await shared.store.flushOutbox();
+    expect(notices).toHaveLength(2);
+    await shared.dispose();
+  });
 });

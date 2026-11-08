@@ -51,6 +51,12 @@ export interface SharedStoreInputs {
   machineId: string;
   redact: (text: string) => string;
   log: (message: string) => void;
+  /**
+   * Shows the person something they should know: a write the shared store refused for good (it stays on this machine only),
+   * or this machine's decision replacing someone else's. At most one per kind per minute. Ids and codes only.
+   */
+  notify?: (message: string) => void;
+  now?: () => number;
   /** Test seams. */
   client?: TigerClient & { end?(): Promise<unknown> };
   PoolCtor?: PoolConstructor;
@@ -69,8 +75,22 @@ export function createSharedStore(i: SharedStoreInputs): SharedStore {
   const client = i.client ?? (createTigerPool(i.connectionString, i.PoolCtor) as TigerClient & { end?(): Promise<unknown> });
   const store = new CombinedStore({ machineId: i.machineId, local: i.local, remote: new TigerStore({ client, redact: i.redact }) });
   // Ids and codes only: a dropped write or an overwritten decision must leave a trace, never record contents.
-  store.onDeadLetter(d => i.log(`shared store refused a ${d.table} ${d.op} for good (${d.reason})`));
-  store.onOverride(o => i.log(`the decision on ${o.approvalId} was ${o.from}; this machine runs its agent, so it is now ${o.to}`));
+  const now = i.now ?? (() => Date.now());
+  const lastShown = new Map<string, number>();
+  const tell = (kind: string, message: string) => {
+    const at = now();
+    if (at - (lastShown.get(kind) ?? -Infinity) < 60_000) return;
+    lastShown.set(kind, at);
+    try { i.notify?.(message); } catch { /* showing a notice never breaks the store */ }
+  };
+  store.onDeadLetter(d => {
+    i.log(`shared store refused a ${d.table} ${d.op} for good (${d.reason})`);
+    tell(`dead:${d.table}`, `Nexus: the shared store refused a ${d.table} change for good (${d.reason}). It stays on this machine only; teammates will not see it.`);
+  });
+  store.onOverride(o => {
+    i.log(`the decision on ${o.approvalId} was ${o.from}; this machine runs its agent, so it is now ${o.to}`);
+    tell("override", `Nexus: approval ${o.approvalId} was ${o.from} in the shared store, but this machine's agent already acted on "${o.to}", so ${o.to} now stands for everyone.`);
+  });
   const sync = createSync({
     client, local: i.local, machineId: i.machineId,
     listen: i.listen ?? createTigerListen(i.connectionString),

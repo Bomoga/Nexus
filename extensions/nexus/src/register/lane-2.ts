@@ -3,6 +3,7 @@ import { join } from "node:path";
 import * as vscode from "vscode";
 import { NexusBridgeRouter } from "../bridge/router";
 import { summarizeLogDetail } from "../bridge/log-summary";
+import { homedir } from "node:os";
 import { registerAppPing } from "../bridge/host";
 import { handleAuthUri } from "../features/auth/current";
 import { redact } from "../shared/redact";
@@ -41,10 +42,17 @@ export type Lane2Wiring = Pick<Lane2Services, "router" | "store" | "slack" | "ap
 };
 
 export function registerLane2(context: vscode.ExtensionContext): Lane2Wiring {
-  // The extension host forwards only the first console argument, so the detail is folded into the line as a short summary.
+  // Some console sinks (the dev terminal echo) keep only the first string, so the detail is folded into the line as a short
+  // summary. The whole line is redacted again (the router checks escaped JSON, which some secret patterns miss) and the home
+  // directory is shown as ~.
+  const home = homedir();
   const log = (message: string, detail?: unknown) => {
     const summary = summarizeLogDetail(detail);
-    console.warn(summary ? `Nexus bridge: ${message} (${summary})` : `Nexus bridge: ${message}`);
+    let line = summary ? `Nexus bridge: ${message} (${summary})` : `Nexus bridge: ${message}`;
+    if (home.length > 1) {
+      line = line.split(home).join("~");
+    }
+    console.warn(redact(line));
   };
 
   const router = new NexusBridgeRouter({

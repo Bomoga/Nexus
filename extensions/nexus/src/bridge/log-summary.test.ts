@@ -30,6 +30,11 @@ describe("summarizeLogDetail", () => {
     expect([summarizeLogDetail(undefined), summarizeLogDetail(""), summarizeLogDetail(null)]).toEqual(["", "", ""]);
   });
 
+  it("takes the frame from real stack lines only, not from message lines that name a path", () => {
+    const multi = ["ZodError: [", "  { \"path\": [\"messages\"] },", "  see /x/extensions/nexus/out/evil.js:1:1", "]", "    at parse (/x/extensions/nexus/out/bridge/router.js:88:9)"].join("\n");
+    expect(summarizeLogDetail({ name: "ZodError", message: "[ ... ]", stack: multi })).toBe("ZodError: [ ... ] at bridge/router.js:88");
+  });
+
   it("never throws, even on a hostile detail", () => {
     const hostile = new Proxy({}, { get() { throw new Error("boom"); } });
     expect(summarizeLogDetail(hostile)).toBe("unreadable detail");

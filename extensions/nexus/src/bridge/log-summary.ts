@@ -1,16 +1,17 @@
-// One-line summary of a log detail, for sinks that keep only the first console argument (the extension host's console
-// forwarder drops the rest). vscode-free. The router hands its sink an already secret-checked view of an error (logView in
+// One-line summary of a log detail, for console sinks that keep only the first string (the dev terminal echo; the devtools
+// console shows every argument). vscode-free. The router hands its sink an already secret-checked view of an error (logView in
 // router.ts: name, message, code, stack, cause), so this only shortens it: no message is ever longer than MAX_MESSAGE, and
 // the stack is reduced to the first frame inside the extension's own output, as a relative path.
 
 const MAX_MESSAGE = 160;
 const MAX_DEPTH = 3;
+const STACK_LINE = /^\s+at /;
 const OWN_FRAME = /[\\/]extensions[\\/]nexus[\\/](?:out|dist)[\\/](?<file>[^\s():]+):(?<line>\d+)/;
 
 interface ErrorView { name?: unknown; message?: unknown; code?: unknown; stack?: unknown; cause?: unknown; redacted?: unknown; type?: unknown }
 
 function oneLine(value: string, max: number): string {
-  const flat = value.replace(/\s+/g, " ").trim();
+  const flat = value.slice(0, max * 4).replace(/\s+/g, " ").trim();
   return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
 }
 
@@ -18,7 +19,10 @@ function firstOwnFrame(stack: unknown): string | undefined {
   if (typeof stack !== "string") {
     return undefined;
   }
-  for (const line of stack.split("\n").slice(1, 40)) {
+  for (const line of stack.split("\n")) {
+    if (!STACK_LINE.test(line)) {
+      continue;   // message lines (a multi-line message, or one that names a path) are not frames
+    }
     const m = OWN_FRAME.exec(line);
     if (m?.groups) {
       return `${m.groups.file.replace(/\\/g, "/")}:${m.groups.line}`;

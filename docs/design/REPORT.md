@@ -4,7 +4,10 @@ For the reader who opens Nexus at 08:00 and demos it. Written by the Lane 1 lead
 
 ## 1. Status line
 
-_(filled at the end)_
+- **On `main`** (PR 65 at 03:30, PR 66 at 04:21): tokens v2 and kit v2; Nexus Dark alignment; the layout (Agent view in the secondary side bar, visible by default; Slack · Git · Approvals on the left; `openSession` selects in the view); the new Git view; the globe chrome and scene redesign with the timeline fallback; the Agent view, Slack view and Approvals view redesigns.
+- **On `lane-1`, in the final PR (opened at 04:40, merged after its `extension` check)**: the task editor and plan review restyle (D-09), the polish commits (unused CSS rule, data-use chip tests, heading role on the panel title, no duplicate session panel, https-only Slack links), the design report and the progress file. If the PR is not merged by the time you read this, `lane-1` holds it and `main` is still fully usable.
+- **Abandoned**: nothing. Every task D-00 to D-12 landed; D-10 (git view) was folded into D-04. Two tasks needed a second attempt or a lead fix after review (D-05 cross-session race; D-08 focus-ring padding).
+- **Last full verification** on lane-1 at 04:35: typecheck, lint, `vitest run webviews src/features/views` 41 files / 474 tests, build:webviews, contributes:check, all exit 0. **Last launch check** at 04:37: redesigned globe home with 652 demo events, Agent view open on the right, no error notification (`screens/after/launch-final.png`).
 
 ## 2. Before / after
 

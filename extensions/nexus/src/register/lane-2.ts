@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import * as vscode from "vscode";
 import { NexusBridgeRouter } from "../bridge/router";
+import { summarizeLogDetail } from "../bridge/log-summary";
 import { registerAppPing } from "../bridge/host";
 import { handleAuthUri } from "../features/auth/current";
 import { redact } from "../shared/redact";
@@ -40,7 +41,11 @@ export type Lane2Wiring = Pick<Lane2Services, "router" | "store" | "slack" | "ap
 };
 
 export function registerLane2(context: vscode.ExtensionContext): Lane2Wiring {
-  const log = (message: string, detail?: unknown) => console.warn(`Nexus bridge: ${message}`, detail ?? "");
+  // The extension host forwards only the first console argument, so the detail is folded into the line as a short summary.
+  const log = (message: string, detail?: unknown) => {
+    const summary = summarizeLogDetail(detail);
+    console.warn(summary ? `Nexus bridge: ${message} (${summary})` : `Nexus bridge: ${message}`);
+  };
 
   const router = new NexusBridgeRouter({
     // A body or error that still changes under redaction contains a secret pattern, so it is never posted.

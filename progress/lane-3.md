@@ -125,8 +125,18 @@
 ## PR #43 (L3-06) MERGED 23:30Z after nexus-ci passed on 4d862dd6 — ALL 17 LANE 3 TASKS ARE ON MAIN
 - Before the PR: merged main (39 commits; Lane 2 landed events.activity in src/services/events/activity.ts and Token Vault). Launch check on the demo repo: the activity strip shows real 15-minute bars from Lane 2's events.activity, no Lane 3 change needed (screenshot C:\dev\nexus-launch\launch-l306.png).
 
+## HANDOFF TO ADRIAN (~T+20, Elkin near his usage limit) — Lane 3 is yours if anything needs doing
+- State: all 17 Lane 3 tasks are on main (last PR #43). lane-3 == main + progress notes. No worktrees, workers or open PRs.
+- Integration verified: globe commit click → nexus.openCommit; globe session click → nexus.openSession; task editor START → agent.start → session view; activity strip on Lane 2's real events.activity; globe history from Lane 2's watcher (demo repo).
+- OPEN (Lane 1 side, demo step 4): nexus.makeTaskFromThread creates the draft but never opens the task editor. registerLane3 returns Lane3Views with openTaskEditor(taskId) (and openPlan(planId)); since registerLane1 runs first, pass a callback assigned after registerLane3. Elkin told Adrian.
+- OPEN (Lane 1 side): pass the OptimizerService to registerLane3(context, router, { receipts }) so nexus.openReceipt works.
+- OPEN (Lane 2 side, asked): only the Nexus bot's own bot_id counts as sentVia "bot" (spoofed approval buttons); escape & < > in slack.post; clientId echo + idempotent slack.post.
+- Minor (Lane 3, not in the demo): a globe click on a slack_task event focuses the Slack view but not that thread (needs a host→webview signal).
+- Review follow-ups (optional): MAKE TASK can be sent twice if the pane is reopened mid-request; no DISMISS on failed/unconfirmed sends; BREAK INTO SUBTASKS stays after a plan was accepted.
+- How Lane 3 was run: CLAUDE.md §11 per task (sparse worktree lane-3-wt/<id>, Sonnet worker, independent reviewer — Opus for chat/approvals/bridge/untrusted text — merge only if confirmed); lead checklist = full vitest, both tsc, eslint, build:webviews, contributes:check, control-byte scan (Node script), fixture-string scan of media bundles, launch check on the demo repo (node demo/seed.mjs --out C:\dev\nexus-launch\demo --t0 <now>) before every PR; merge a PR only after nexus-ci `extension` passes on the pushed commit (main has no required checks, so never rely on --auto).
+
 ## In flight
-- (none). Next: cp-2 (T+22–24); review follow-ups as time allows. Next: cp-2 (T+22–24) — Elkin's laptop starts an agent session that should orbit on Adrian's globe. Waiting on: PR #9 (Brandon's approval), the shared router in extension.ts (Adrian), panel body-data and the bot-only/escaping fixes (Brandon), Lane 2's git service (for L3-15). Next per the playbook: wave 6 (L3-06 activity strip, L3-14 task-plan review, L3-16 empty/error states). L3-06 and L3-14 have only a header line in PLAN and depend on Lane 2/Lane 1 work in the same wave.
+- (none). Next: cp-2 (T+22–24). Next: cp-2 (T+22–24) — Elkin's laptop starts an agent session that should orbit on Adrian's globe. Waiting on: PR #9 (Brandon's approval), the shared router in extension.ts (Adrian), panel body-data and the bot-only/escaping fixes (Brandon), Lane 2's git service (for L3-15). Next per the playbook: wave 6 (L3-06 activity strip, L3-14 task-plan review, L3-16 empty/error states). L3-06 and L3-14 have only a header line in PLAN and depend on Lane 2/Lane 1 work in the same wave.
 
 ## Webview host: RESOLVED by Lane 2 (main 0fb28e17, merged into lane-3 at ~T+14)
 - Brandon's host now reads media/<entry>/index.html (our Vite output) and loads its module scripts (with the nonce) and stylesheets; script-src includes cspSource, so our lazy chunks (fakeBridge/fixtures) load too. No Lane 3 build change needed.

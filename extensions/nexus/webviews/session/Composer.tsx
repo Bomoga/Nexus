@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { AgentSession, ModelInfo, OptimizerSetting, ProviderAccount } from "../../src/contracts";
-import { Button, Logo, Select, StatusLine, friendlyError, getBridge, modelLabel } from "../shared";
+import { Button, Select, StatusLine, friendlyError, getBridge, modelLabel } from "../shared";
 import type { BridgeClient } from "../shared";
 
-// The agent view's empty state is a composer, the way an editor's chat side bar is: type what the agent should do, pick
-// a model, START. It creates a manual Task (tasks.create) and starts a session on it (agent.start); the Slack
+// The agent view's empty state is a composer, laid out like an editor's chat side bar: one bordered box at the top
+// with the brief and, along its bottom edge, the model picker (left) and START (right), then a one-line caption. The
+// mark and the past sessions below it are App's. Type what the agent should do, pick a model, START. It creates a manual Task (tasks.create) and starts a session on it (agent.start); the Slack
 // "Make task" flow is the other way in, not the only one.
 
 const modelKey = (m: { provider: string; modelId: string }) => `${m.provider}/${m.modelId}`;
@@ -95,8 +96,7 @@ export function Composer({ bridge, onStarted }: ComposerProps) {
 
   return (
     <div className="sv-compose" aria-label="new agent task">
-      <Logo className="sv-logo" size={56} aria-hidden="true" data-testid="nexus-logo" />
-      <div className="sv-compose-form">
+      <div className="sv-compose-box">
         <textarea
           className="nx-textarea sv-compose-brief"
           aria-label="what should the agent do?"
@@ -116,6 +116,8 @@ export function Composer({ bridge, onStarted }: ComposerProps) {
           <Select aria-label="model" options={options} value={selected} disabled={busy || models.length === 0} onChange={(e) => setSelected(e.target.value)} />
           <Button variant="primary" size="sm" disabled={!canStart} onClick={start} kbd="⏎">{busy ? "STARTING" : "START"}</Button>
         </div>
+      </div>
+      <div className="sv-compose-strip">
         {modelsError ? (
           <StatusLine tone="error">
             {modelsError} <Button size="sm" onClick={() => setAttempt((n) => n + 1)}>RETRY</Button>

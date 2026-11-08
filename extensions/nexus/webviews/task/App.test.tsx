@@ -6,7 +6,7 @@ import { fx } from "../../src/contracts/fixtures";
 import { createBridgeClient } from "../shared";
 import type { Transport } from "../shared";
 import { createFakeTransport } from "../shared/fakeBridge";
-import { App } from "./App";
+import { App, dataUseChips } from "./App";
 
 afterEach(cleanup);
 
@@ -340,5 +340,33 @@ describe("task panel data-use chips", () => {
     const block = await screen.findByTestId("quoted-block");
     expect(block.querySelector(".nx-quote")).not.toBeNull();
     expect(screen.getByText(/UNTRUSTED \/ QUOTED/).className).toContain("nx-label");
+  });
+});
+
+describe("dataUseChips (CLAUDE.md §5: unknown is never shown as favourable)", () => {
+  const account = (over: Partial<{ dataLeavesMachine: boolean; dataUse: "not_used_for_training" | "may_be_used_for_training" | "unknown" }>) =>
+    ({ id: "acc", provider: "anthropic", label: "Anthropic (API key)", status: "connected", dataLeavesMachine: true, dataUse: "unknown", ...over }) as const;
+
+  test("may-be-used is red, unknown is plain, local providers get no leaves-machine chip", () => {
+    expect(dataUseChips(account({ dataUse: "may_be_used_for_training" }), false)).toEqual([
+      { kind: "pending", label: "LEAVES MACHINE" },
+      { kind: "error", label: "MAY BE USED FOR TRAINING" },
+    ]);
+    expect(dataUseChips(account({ dataUse: "unknown" }), false)).toEqual([
+      { kind: "pending", label: "LEAVES MACHINE" },
+      { kind: "default", label: "UNKNOWN" },
+    ]);
+    expect(dataUseChips(account({ dataLeavesMachine: false, dataUse: "not_used_for_training" }), false)).toEqual([{ kind: "ok", label: "NOT USED FOR TRAINING" }]);
+  });
+
+  test("no account, or any account through Prune, shows LEAVES MACHINE and UNKNOWN", () => {
+    expect(dataUseChips(undefined, false)).toEqual([
+      { kind: "pending", label: "LEAVES MACHINE" },
+      { kind: "default", label: "UNKNOWN" },
+    ]);
+    expect(dataUseChips(account({ dataLeavesMachine: false, dataUse: "not_used_for_training" }), true)).toEqual([
+      { kind: "pending", label: "LEAVES MACHINE" },
+      { kind: "default", label: "UNKNOWN" },
+    ]);
   });
 });

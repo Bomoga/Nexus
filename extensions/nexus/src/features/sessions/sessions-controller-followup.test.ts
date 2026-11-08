@@ -18,13 +18,12 @@ function fakeHost() {
   return host;
 }
 
-async function setup(machineId = "m_adrian") {
+async function setup() {
   const store = new MemoryStore();
   await store.putTask({ ...fx.task });
   const git = new FakeGit();
   const host = fakeHost();
   const c = new SessionsController({ store, git, gate: new MemoryGate({ files: {} }), host, clock: fakeClock(), machineId: "m_adrian", getKey: async () => "k" });
-  void machineId;
   return { c, store, host, git };
 }
 
@@ -48,7 +47,7 @@ describe("SessionsController follow-up messages", () => {
     s.host.failMessage = new Error("no running session");
     await expect(s.c.message(session.id, "hello")).rejects.toThrow("did not receive");
     const events = await s.store.agentEvents(session.id, 0);
-    expect(events.slice(-2).map(e => e.type)).toEqual(["user_message", "error"]);
+    expect(events.some(e => e.type === "user_message" && e.text === "hello")).toBe(false);   // nothing stored for an undelivered message
   });
 
   it("resumes a finished session on its own branch with the conversation so far", async () => {
@@ -91,13 +90,41 @@ describe("SessionsController follow-up messages", () => {
     await s.c.onFinished({ sessionId: first.id, outcome: "done", turns: 1 });
     await s.store.putTask({ ...fx.task, id: "task_02", title: "second" });
     await s.c.start("task_02", model);
-    await expect(s.c.message(first.id, "go on")).rejects.toThrow("Another agent session is running");
+    await expect(s.c.message(first.id, "go on")).rejects.toThrow("already running or starting");
     await expect(s.c.message("ses_nope", "go on")).rejects.toThrow();
     const other = await setup();
     const o = await other.c.start("task_01", model);
     await other.c.onFinished({ sessionId: o.id, outcome: "done", turns: 1 });
     await other.store.putSession({ ...(await other.store.getSession(o.id))!, machineId: "m_brandon" });
     await expect(other.c.message(o.id, "go on")).rejects.toThrow("another machine");
+  });
+});
+
+describe("follow-up edge cases", () => {
+  it("rejects a message while the session is being cancelled", async () => {
+    const s = await setup();
+    const session = await s.c.start("task_01", model);
+    let release!: () => void;
+    s.host.cancelSession = () => new Promise(r => { release = () => r({ cancelled: true }); });
+    const cancelling = s.c.cancel(session.id);
+    await expect(s.c.message(session.id, "too late")).rejects.toThrow("being cancelled");
+    release();
+    await cancelling;
+    expect(s.host.sent).toEqual([]);
+  });
+
+  it("waits for a slow ending before resuming, so the old ending cannot overwrite the new run", async () => {
+    const s = await setup();
+    const session = await s.c.start("task_01", model);
+    const origPut = s.store.putTask.bind(s.store);
+    s.store.putTask = async t => { if (t.status === "done") await new Promise(r => setTimeout(r, 40)); return origPut(t); };
+    const ending = s.c.onFinished({ sessionId: session.id, outcome: "done", turns: 1 });
+    await new Promise(r => setTimeout(r, 5));
+    await s.c.message(session.id, "go on");
+    await ending;
+    expect(await s.store.getTask("task_01")).toMatchObject({ status: "running" });
+    expect((await s.store.getSession(session.id))!.status).toBe("running");
+    expect((await s.store.agentEvents(session.id, 0)).at(-1)).toMatchObject({ type: "status", status: "running" });
   });
 });
 

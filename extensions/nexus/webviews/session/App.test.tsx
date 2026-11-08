@@ -721,7 +721,7 @@ describe("reply box", () => {
     render(<App bridge={bridge} sessionId="ses_01" />);
     await waitFor(() => expect(subbed("agent.subscribe").length).toBe(1));
     const box = (await screen.findByLabelText("message to the agent")) as HTMLTextAreaElement;
-    expect(box.placeholder).toMatch(/taken at its next step/);
+    expect(box.placeholder).toMatch(/message the agent/);
     expect((screen.getByRole("button", { name: /send/i }) as HTMLButtonElement).disabled).toBe(true);        // empty: nothing to send
     fireEvent.change(box, { target: { value: "  also cover the empty cart  " } });
     fireEvent.keyDown(box, { key: "Enter" });
@@ -737,11 +737,11 @@ describe("reply box", () => {
     const { bridge, reqs } = setup({ "sessions.get": () => ({ ...fx.session, status: "done" }) });
     render(<App bridge={bridge} sessionId="ses_01" />);
     const box = (await screen.findByLabelText("message to the agent")) as HTMLTextAreaElement;
-    await waitFor(() => expect(box.placeholder).toMatch(/continue this session/));
+    await waitFor(() => expect(box.placeholder).toMatch(/continue the session/));
     fireEvent.change(box, { target: { value: "line one" } });
     fireEvent.keyDown(box, { key: "Enter", shiftKey: true });
     expect(reqs("agent.message")).toHaveLength(0);
-    expect(screen.getByRole("button", { name: /continue/i })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /resume/i })).toBeTruthy();
   });
 
   test("a failed send keeps the text and shows the error", async () => {

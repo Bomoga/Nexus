@@ -26,7 +26,7 @@ export interface ApprovalRequester {
   /** The session is over: release whatever is still waiting and refuse later decisions (a cancelled session's APPROVE must run nothing). */
   sessionEnded?(sessionId: string, how: "cancelled" | "failed" | "done"): Promise<void>;
   /** A finished session was resumed by a follow-up message: it can raise and decide approvals again. */
-  sessionResumed?(sessionId: string): void;
+  sessionResumed?(sessionId: string): Promise<void> | void;
 }
 
 /** The session's single Slack progress message (L1-13, proposed to move to Lane 2). */
@@ -103,6 +103,7 @@ export class SessionsController implements SessionEvents {
   private reserved = false;
   /** Endings in flight, so a second caller waits for the first instead of seeing a half-written session. */
   private readonly ending = new Map<string, Promise<AgentSession>>();
+  private readonly cancelling = new Set<string>();
   private readonly counters = new Map<string, Counter>();
   private readonly subscribers = new Map<string, Set<(e: AgentEvent) => void>>();
   private readonly allSubscribers = new Set<(e: AgentEvent) => void>();
@@ -174,8 +175,9 @@ export class SessionsController implements SessionEvents {
       if (!stored) throw new Error(`No session ${sessionId}.`);
       return stored;                                            // already over: nothing to cancel
     }
+    this.cancelling.add(sessionId);                            // a follow-up in this window would be accepted by the child and never read
     try { await this.deps.host.cancelSession(sessionId); } catch { /* the process may already be gone */ }
-    return this.finalize(sessionId, "cancelled");
+    try { return await this.finalize(sessionId, "cancelled"); } finally { this.cancelling.delete(sessionId); }
   }
 
   /**
@@ -187,14 +189,15 @@ export class SessionsController implements SessionEvents {
     if (text.length === 0) throw new Error("Type a message first.");
     const a = this.active;
     if (a && a.session.id === sessionId) {
-      await this.emit(sessionId, { type: "user_message", text });
+      if (this.cancelling.has(sessionId)) throw new Error("The session is being cancelled; send the message again once it has stopped.");
       try {
         if (!this.deps.host.messageSession) throw new Error("follow-up messages are not available");
         await this.deps.host.messageSession(sessionId, text);
       } catch (e) {
-        await this.attempt("record the error", () => this.emit(sessionId, { type: "error", message: "The agent did not receive that message (it may have just finished). Send it again to continue the session." }));
+        // Nothing was delivered and nothing was stored: the box keeps the text and the person sends it again.
         throw new Error("The agent did not receive the message; it may have just finished. Send it again.", { cause: e });
       }
+      await this.emit(sessionId, { type: "user_message", text });
       return a.session;
     }
     return this.resume(sessionId, text);
@@ -202,9 +205,10 @@ export class SessionsController implements SessionEvents {
 
   private async resume(sessionId: string, text: string): Promise<AgentSession> {
     const { store, host } = this.deps;
-    if (this.reserved || this.active) throw new Error("Another agent session is running; cancel it or wait for it to finish, then send this again.");
+    if (this.reserved || this.active) throw new Error("An agent session is already running or starting here; wait for it, or cancel it, then send this again.");
     this.reserved = true;
     try {
+      await this.ending.get(sessionId)?.catch(() => undefined);   // the previous ending's writes must land before this run's
       const stored = await store.getSession(sessionId);
       if (!stored) throw new Error(`No session ${sessionId}.`);
       if (!TERMINAL.has(stored.status)) throw new Error(`Session ${sessionId} is ${stored.status} and not running here.`);
@@ -217,7 +221,7 @@ export class SessionsController implements SessionEvents {
       const running: Task = { ...task, status: "running", sessionId };
       await store.putSession(session);
       await this.putTask(running);
-      this.deps.approvals?.sessionResumed?.(sessionId);
+      await this.deps.approvals?.sessionResumed?.(sessionId);
       this.active = { session, task: running };
       try {
         await this.emit(sessionId, { type: "user_message", text });

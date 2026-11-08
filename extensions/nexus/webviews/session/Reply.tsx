@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Button, StatusLine, friendlyError, getBridge } from "../shared";
 import type { BridgeClient } from "../shared";
 
@@ -47,13 +47,25 @@ export function Reply({ bridge, sessionId, live }: ReplyProps) {
       });
   };
 
+  // One line tall until the text needs more: the box grows with what is typed, up to a cap, then scrolls.
+  const area = useRef<HTMLTextAreaElement>(null);
+  useLayoutEffect(() => {
+    const el = area.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${Math.min(el.scrollHeight, 120)}px`;
+  }, [text]);
+
   return (
     <div className="sv-reply" aria-label="message the agent">
-      <div className="sv-compose-box">
+      <div className="sv-reply-box">
         <textarea
+          ref={area}
+          rows={1}
           className="nx-textarea sv-reply-text"
           aria-label="message to the agent"
-          placeholder={live ? "message the agent · taken at its next step · enter sends" : "continue this session · enter sends"}
+          placeholder={live ? "message the agent…" : "continue the session…"}
+          title={live ? "Taken at the agent's next step · enter sends, shift+enter for a new line" : "Resumes the session on its own branch · enter sends, shift+enter for a new line"}
           value={text}
           disabled={busy}
           spellCheck={false}
@@ -65,10 +77,7 @@ export function Reply({ bridge, sessionId, live }: ReplyProps) {
             }
           }}
         />
-        <div className="sv-compose-row">
-          <span className="nx-caption sv-reply-hint">{live ? "QUEUED FOR THE AGENT" : "RESUMES ON ITS BRANCH"}</span>
-          <Button variant="primary" size="sm" disabled={!body || busy} onClick={send} kbd="⏎">{busy ? "SENDING" : live ? "SEND" : "CONTINUE"}</Button>
-        </div>
+        <Button variant="primary" size="sm" disabled={!body || busy} onClick={send} title="enter">{busy ? "…" : live ? "SEND" : "RESUME"}</Button>
       </div>
       {error ? <StatusLine tone="error">{error}</StatusLine> : null}
     </div>

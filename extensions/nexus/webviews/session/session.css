@@ -77,11 +77,12 @@ html, body, #root { height: 100%; }
    and, along its bottom edge, the model picker (left) and START (right); a caption strip sits under it, the grey mark
    fills the empty space, and the past sessions are listed at the bottom. */
 .sv-compose { flex: none; display: flex; flex-direction: column; gap: var(--nx-gap-1); padding: var(--nx-gap-2) var(--nx-pad-x) var(--nx-gap-1); }
-.sv-reply { flex: none; display: flex; flex-direction: column; gap: var(--nx-gap-1); padding: var(--nx-gap-1) var(--nx-pad-x) var(--nx-gap-2); border-top: var(--nx-border-w) solid var(--nx-border); }
-.sv-reply-text, .sv-reply-text:focus { min-height: 40px; max-height: 120px; resize: none; border: 0; outline: 0; background: transparent; }
-.sv-reply-hint { flex: 1 1 auto; min-width: 0; color: var(--nx-muted); }
+.sv-reply { flex: none; display: flex; flex-direction: column; gap: var(--nx-gap-1); padding: var(--nx-gap-1) var(--nx-pad-x); border-top: var(--nx-border-w) solid var(--nx-border); }
+.sv-reply-box { display: flex; align-items: flex-end; gap: var(--nx-gap-1); padding: 2px; border: var(--nx-border-w) solid var(--nx-input-border); background: var(--nx-input-bg); }
+.sv-reply-box:focus-within { outline: var(--nx-border-w) solid var(--nx-focus); outline-offset: 1px; border-color: var(--nx-focus); }
+.sv-reply-text, .sv-reply-text:focus { flex: 1 1 0; min-width: 0; height: 20px; min-height: 20px; max-height: 120px; padding: 2px 4px; resize: none; border: 0; outline: 0; background: transparent; line-height: var(--nx-lh-ui); overflow-y: auto; }
 .sv-reply .nx-status-line { border-top: 0; padding: 0; height: auto; min-height: 0; white-space: normal; word-break: break-word; }
-.log-user { border-left: 2px solid var(--nx-accent); padding-left: var(--nx-gap-2); }
+.log-user { border-left: var(--nx-border-w) solid var(--nx-accent); padding-left: var(--nx-gap-2); }
 .log-you { color: var(--nx-accent); font-size: var(--nx-font-ui-sm); letter-spacing: 0.04em; }
 .sv-compose-box { display: flex; flex-direction: column; border: var(--nx-border-w) solid var(--nx-input-border); background: var(--nx-input-bg); }
 .sv-compose-box:focus-within { outline: var(--nx-border-w) solid var(--nx-focus); outline-offset: 1px; border-color: var(--nx-focus); }

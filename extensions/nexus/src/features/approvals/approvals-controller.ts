@@ -382,15 +382,21 @@ export class ApprovalsController implements ApprovalRequester {
   }
 
   /**
+   * A finished session was resumed by a follow-up message: it may raise and decide approvals again. Approvals the earlier run
+   * left undecided have no waiter any more, so they are marked dead: a click on one must never record "approved" for an action that never ran.
+   */
+  async sessionResumed(sessionId: string): Promise<void> {
+    for (const a of await this.deps.store.listApprovals()) {
+      if (a.sessionId === sessionId && !a.decision && !this.dead.has(a.id)) await this.markDead(a);
+    }
+    this.ended.delete(sessionId);
+  }
+
+  /**
    * The session is over. If a human cancelled it, what was waiting counts as their "no" (recorded under their name);
    * for any other ending the waiting gate is released as rejected, locally, without writing a decision. Either way the
    * approvals can no longer be decided afterwards.
    */
-  /** A finished session was resumed by a follow-up message: it may raise and decide approvals again. */
-  sessionResumed(sessionId: string): void {
-    this.ended.delete(sessionId);
-  }
-
   async sessionEnded(sessionId: string, how: "cancelled" | "failed" | "done"): Promise<void> {
     const waiting = [...this.pending].filter(([, s]) => s === sessionId).map(([id]) => id);
     const by: DecidedBy = { via: "app", userId: this.deps.identity() };

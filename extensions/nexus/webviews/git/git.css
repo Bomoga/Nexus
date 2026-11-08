@@ -10,3 +10,10 @@ html, body, #root { height: 100%; }
 .git-commit-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .git-commit-kind { color: var(--nx-accent-hi); text-transform: uppercase; }
 .git-commit-actor { color: var(--nx-muted); }
+/* Narrow side bar: the branch name takes the slack, HEAD and MERGE keep their width. */
+.git-app .nx-table td:not(.nx-truncate), .git-app .nx-table th:not(.nx-truncate) { width: 1%; white-space: nowrap; }
+.git-app .nx-table td.nx-truncate .git-branch-name { max-width: 100%; }
+.git-app .nx-table td.nx-truncate .nx-data { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.git-app .nx-table td.nx-truncate .nx-badge, .git-app .nx-table td.nx-truncate .nx-chip { flex: none; }
+.git-app .nx-table td.nx-right { overflow: visible; }
+.git-app .nx-table td.nx-right, .git-app .nx-table th.nx-right { min-width: 64px; }

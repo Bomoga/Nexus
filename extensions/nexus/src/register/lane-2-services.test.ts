@@ -311,4 +311,22 @@ describe("buildLane2", () => {
     expect(vault.getUserToken).toHaveBeenCalledTimes(1);   // not asked again during the quiet minute
     expect(used.filter(u => u.startsWith("xoxp-pasted")).length).toBeGreaterThan(0);
   });
+
+  it("puts Lane 1's final summary in the closed progress message when it calls finish before storing the end", async () => {
+    const { store, built, api } = setup({ git: new FakeGit() }, { [SLACK_SECRET_KEYS.bot]: "xoxb-1", [SLACK_SECRET_KEYS.app]: "xapp-1" });
+    const task = { ...fx.task, source: { kind: "thread" as const, channelId: "C9", threadTs: "40.000100" } };
+    await store.putTask(task);
+    const session = { ...fx.session, taskId: task.id, status: "running" as const, slackProgress: undefined };
+    await built.observedStore.putSession(session);
+    await vi.waitFor(async () => expect((await store.getSession(session.id))?.slackProgress).toBeDefined());
+    const done = { ...session, status: "done" as const };
+    await built.progress!.finish(done, "Fixed the discount for qty > 1 and added a test.");
+    await built.observedStore.putSession(done);
+    await vi.waitFor(() => expect(api.chat.update).toHaveBeenCalled());
+    const updates = () => api.chat.update.mock.calls as unknown as unknown[][];
+    const texts = updates().map(c => JSON.stringify(c[0]));
+    expect(texts.some(t => t.includes("Fixed the discount for qty"))).toBe(true);
+    await new Promise(r => setTimeout(r, 20));
+    expect(JSON.stringify(updates().at(-1)?.[0])).toContain("Fixed the discount for qty");   // the later store write does not edit it away
+  });
 });

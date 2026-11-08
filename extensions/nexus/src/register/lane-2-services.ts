@@ -110,8 +110,12 @@ export interface Lane2Built extends Pick<Lane2Services, "approvalHooks"> {
    * session runs, follows its agent events, and closes when it ends. Without a repository it is the given store unchanged.
    */
   observedStore: EventStore;
-  /** The session's single Slack progress message; `update` is Lane 1's ProgressPort. Needs a repository (for link ids). */
-  progress?: Pick<ProgressMessages, "update">;
+  /**
+   * The session's single Slack progress message; `update` is Lane 1's ProgressPort. Needs a repository (for link ids).
+   * `finish(session, summary)` adds the agent's final summary (shown labeled model-written): call it just BEFORE storing the
+   * session's terminal status. Storing the terminal status closes the message anyway, without a summary, if nobody did.
+   */
+  progress?: Pick<ProgressMessages, "update" | "finish">;
   /** Call when the Auth0 sign-in changes, so Token Vault is asked again at once instead of after its quiet minute. */
   authChanged(): void;
   /** Lane 1 calls this with its approvals controller's resolve once it exists. Until then a Slack click is refused. */
@@ -295,7 +299,10 @@ export function buildLane2(i: Lane2Inputs): Lane2Built {
     watcherReady,
     approvalHooks: [slackApprovalHook],
     observedStore,
-    ...(progress ? { progress: { update: (s: Parameters<ProgressMessages["update"]>[0], text: string) => progress!.update(s, text) } } : {}),
+    ...(progress ? { progress: {
+      update: (s: Parameters<ProgressMessages["update"]>[0], text: string) => progress!.update(s, text),
+      finish: (s: Parameters<ProgressMessages["finish"]>[0], summary?: string) => progress!.finish(s, summary),
+    } } : {}),
     ...(i.git ? {
       git: i.git,
       makeGate: (hook: ApprovalsHook) => createGate({ git: i.git!, approvals: hook, allowlist: i.allowlist, redact: i.redact }),

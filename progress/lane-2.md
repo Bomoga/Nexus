@@ -67,4 +67,4 @@ T+0 = 22:00 ET, 2026-11-06
 - Token Vault live check once Slack is linked in Auth0 (token-vault.int.test.ts; confirm the not-connected error names and the connect URL).
 - Adrian: l2.machineId + l2.progress in lane-1-features.ts; rerun the git, gate and code-ref tests on Windows.
 - Elkin: nexus.openSlack should reveal the { channelId, threadTs } it is given (it only focuses the view); wire Share to Slack to coderef.create and formatCodeRefForSlack, and sanitise its notification text.
-- Known small gaps: Token Vault's invalidate() is not called on Slack invalid_auth; the final progress edit has no model-written summary.
+- Adrian (optional, for the section 6 final summary): call `l2.progress.finish(session, summary)` just BEFORE storing the session's terminal status; the Slack progress message then shows the summary (labeled model-written). Without it the message still closes, without a summary.

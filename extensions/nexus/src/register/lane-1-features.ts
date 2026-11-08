@@ -23,6 +23,7 @@ import { wireLane1ToRouter } from "../features/wire-bridge";
 import { FakeEventStore } from "../services/events/fake-store";
 import type { Gate } from "../services/gate/types";
 import { FakeSlack } from "../services/slack/fake-slack";
+import type { ProgressPort } from "../features/sessions/sessions-controller";
 import type { SlackService } from "../services/slack/types";
 
 /** What Lane 2 supplies. Anything missing falls back as described on `withFallbacks`. */
@@ -37,6 +38,10 @@ export interface Lane2Services {
   approvalHooks: ApprovalHook[];
   /** Lane 2's Slack APPROVE / REJECT buttons: Lane 1 gives it the approvals controller's resolve once the controller exists. */
   setSlackApprovalResolver?(resolve: SlackApprovalResolver): void;
+  /** This install's id, the one app.ping reports. Sessions carry it as machineId; vscode.env.machineId is a placeholder whenever telemetry is off. */
+  machineId?: string;
+  /** The session's single Slack progress message. */
+  progress?: ProgressPort;
 }
 
 const unavailable = (what: string) => new Error(`${what} is not available in this build yet (Lane 2 has not delivered it).`);
@@ -60,6 +65,8 @@ export function withFallbacks(given: Partial<Lane2Services> = {}, log: (m: strin
     git: pick("git", () => ({ createSessionWorktree: async () => { throw unavailable("The git service"); } })),
     makeGate: pick("makeGate", () => () => ({ request: async () => { throw unavailable("The agent gate"); } })),
     approvalHooks: given.approvalHooks ?? [],
+    ...(given.machineId ? { machineId: given.machineId } : {}),
+    ...(given.progress ? { progress: given.progress } : {}),
     ...(given.setSlackApprovalResolver ? { setSlackApprovalResolver: given.setSlackApprovalResolver } : {}),
   };
   if (missing.length > 0) log(`using stand-ins for Lane 2: ${missing.join(", ")}`);
@@ -104,7 +111,8 @@ export function registerFeatures(context: vscode.ExtensionContext, accounts: Acc
   });
 
   const lane = composeLane1({
-    store: l2.store, git: l2.git, slack: l2.slack, clock, machineId: vscode.env.machineId,
+    store: l2.store, git: l2.git, slack: l2.slack, clock, machineId: l2.machineId ?? vscode.env.machineId,
+    ...(l2.progress ? { progress: l2.progress } : {}),
     makeGate: approvals => l2.makeGate(approvalsHookFor(approvals)) as GatePort,
     createHost: cb => new ProcessHost({
       spawn: forkAgentProcess(entry), handlers: cb.handlers,

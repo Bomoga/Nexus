@@ -14,6 +14,10 @@ const BRIEF_CHARS = 4_000;
 const TEST_CHARS = 2_000;
 const NOTE_CHARS = 300;
 const MAX_JUDGES = 8;
+/** Hard cap on untrusted council text (all judge turns together, and the synthesizer reply), applied BEFORE any scanning. */
+export const MAX_INPUT_CHARS = 64 * 1024;
+const TRUNCATED = " [council input truncated]";
+const SEVERITY: Record<Verdict, number> = { looks_good: 0, concerns: 1, do_not_merge: 2 };
 
 type Verdict = "looks_good" | "concerns" | "do_not_merge";
 type Judge = { modelId: string; verdict: Verdict; notes: string };
@@ -38,37 +42,197 @@ export interface ReviewDeps {
 const clip = (s: string, n: number) => (s.length <= n ? s : `${s.slice(0, n)}…`);
 const asVerdict = (v: unknown): Verdict => (VERDICTS.includes(v as Verdict) ? (v as Verdict) : "concerns");
 
-/** Pulls the first balanced JSON object out of a model reply that may wrap it in prose or a code fence. */
-export function extractJson(text: string): unknown {
-  const start = text.indexOf("{");
-  if (start === -1) return undefined;
-  let depth = 0, inString = false, escaped = false;
-  for (let i = start; i < text.length; i++) {
-    const ch = text[i];
-    if (inString) { if (escaped) escaped = false; else if (ch === "\\") escaped = true; else if (ch === '"') inString = false; continue; }
-    if (ch === '"') inString = true;
-    else if (ch === "{") depth++;
-    else if (ch === "}" && --depth === 0) {
-      try { return JSON.parse(text.slice(start, i + 1)); } catch { return undefined; }
+/** What one scan of a reply found. `suspect`: a repeated key, an escaped key, a stray quote or bracket outside the object, a second object, or mismatched brackets. */
+interface Scan { slices: string[]; open: boolean; capped: boolean; suspect: boolean }
+
+const MAX_KEY_CHARS = 256;
+
+/**
+ * One linear pass over `text` that collects every top-level balanced `{...}` slice, in order. Strings and escapes are tracked, so
+ * braces inside strings do not count. Each character is visited once and scanning resumes after a closed slice. An object still
+ * open at the end of the scan (or of the MAX_INPUT_CHARS cap) swallows everything after its `{`, including any real verdict, so it is
+ * reported in `open`. Input past the cap is not looked at and is reported in `capped`.
+ *
+ * JSON.parse keeps the LAST of a repeated key, and a quote planted in model-copied text can close an object early, so `suspect` is
+ * set (callers then treat the reply as tainted) when: any object repeats a key (a key-set stack, one set per open object, at every
+ * depth), a key is written with escapes, a second top-level object appears, or a stray `"`, `}` or `]` sits outside the object, or
+ * brackets do not match. Keys and brackets are tracked in the same single pass.
+ */
+function scan(text: string, limit = Number.POSITIVE_INFINITY): Scan {
+  const end = Math.min(text.length, MAX_INPUT_CHARS);
+  const slices: string[] = [];
+  const kinds: number[] = [];                              // open containers, innermost last: 1 = object, 0 = array
+  const keySets: Array<Set<string> | undefined> = [];       // parallel: keys seen so far in each open object
+  let start = -1, inString = false, escaped = false, strStart = -1, strEsc = false, pending: string | undefined, suspect = false;
+  for (let i = 0; i < end; i++) {
+    const c = text.charCodeAt(i);
+    if (inString) {
+      if (escaped) escaped = false; else if (c === 92) { escaped = true; strEsc = true; }
+      else if (c === 34) { inString = false; if (kinds[kinds.length - 1] === 1) pending = strEsc ? "\\" : i - strStart <= MAX_KEY_CHARS ? text.slice(strStart + 1, i) : ""; }
+      continue;
+    }
+    if (pending !== undefined && c !== 32 && c !== 9 && c !== 10 && c !== 13) {
+      if (c === 58) {
+        if (pending.includes("\\")) suspect = true;           // an escaped key could spell verdict/judges: not trusted
+        else if (pending) {
+          const top = keySets.length - 1;
+          const set = keySets[top] ?? (keySets[top] = new Set());
+          if (set.has(pending)) suspect = true; else set.add(pending);
+        }
+      }
+      pending = undefined;
+    }
+    const depth = kinds.length;
+    if (c === 34) { if (depth === 0) suspect = true; else { inString = true; strStart = i; strEsc = false; } }
+    else if (c === 123) { if (depth === 0) { if (slices.length > 0) suspect = true; start = i; } kinds.push(1); keySets.push(undefined); }
+    else if (c === 91) { if (depth > 0) { kinds.push(0); keySets.push(undefined); } }
+    else if (c === 125) {
+      if (depth === 0) suspect = true;
+      else {
+        if (kinds.pop() !== 1) suspect = true;
+        keySets.pop();
+        if (kinds.length === 0) { slices.push(text.slice(start, i + 1)); if (slices.length >= limit) return { slices, open: false, capped: false, suspect }; }
+      }
+    } else if (c === 93) {
+      if (depth === 0) suspect = true;
+      else { if (kinds.pop() !== 0) suspect = true; keySets.pop(); }
     }
   }
-  return undefined;
+  return { slices, open: kinds.length > 0, capped: text.length > MAX_INPUT_CHARS, suspect };
 }
 
-/** Turns the council's reply into verdict, summary and judge notes. Tolerant: an unparseable reply is "concerns". */
-export function parseVerdict(text: string): Parsed {
-  const json = extractJson(text);
-  if (json && typeof json === "object") {
-    const o = json as Record<string, unknown>;
-    const judges = Array.isArray(o.judges)
-      ? o.judges.slice(0, MAX_JUDGES).filter((j): j is Record<string, unknown> => !!j && typeof j === "object").map(j => ({
-          modelId: clip(redact(String(j.modelId ?? j.name ?? "judge")), 60), verdict: asVerdict(j.verdict), notes: clip(redact(String(j.notes ?? j.summary ?? "")), NOTE_CHARS),
-        }))
-      : undefined;
-    const summary = typeof o.summary === "string" && o.summary.trim() ? o.summary : "The council gave a verdict without a summary.";
-    return { verdict: asVerdict(o.verdict), summary: clip(redact(summary.trim()), NOTE_CHARS), ...(judges && judges.length > 0 ? { judges } : {}) };
+const tryParse = (slice: string): unknown => { try { return JSON.parse(slice); } catch { return undefined; } };
+
+/** Pulls the first balanced JSON object out of a model reply that may wrap it in prose or a code fence (linear time, capped input). */
+export function extractJson(text: string): unknown {
+  const first = scan(text, 1).slices[0];
+  return first === undefined ? undefined : tryParse(first);
+}
+
+export interface VerdictObject {
+  object?: Record<string, unknown>;
+  /** The reply broke the strict schema, repeated a key, left text or brackets unbalanced, or was cut by the cap: never trust it as looks_good. */
+  tainted: boolean;
+  /** A `verdict` value of do_not_merge exists at ANY depth of ANY parsed object (even where the schema forbids one). */
+  hidden: boolean;
+  /** The token do_not_merge appears anywhere in the (capped) reply text, parsed or not. */
+  deny: boolean;
+}
+
+const worst = (a: Verdict, b: Verdict): Verdict => (SEVERITY[b] > SEVERITY[a] ? b : a);
+
+const TOP_KEYS = new Set(["verdict", "summary", "judges"]);
+const JUDGE_KEYS = new Set(["modelId", "verdict", "notes"]);
+const isPlain = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
+const isVerdict = (v: unknown): v is Verdict => VERDICTS.includes(v as Verdict);
+const strOrAbsent = (v: unknown) => v === undefined || typeof v === "string";
+
+/** The strict reply schema: {verdict, summary?, judges?: [{modelId?, verdict, notes?}]}. Anything else is a reply we did not ask for. */
+function schemaOk(o: Record<string, unknown>): boolean {
+  for (const k of Object.keys(o)) if (!TOP_KEYS.has(k)) return false;
+  if (!isVerdict(o.verdict) || !strOrAbsent(o.summary)) return false;
+  if (o.judges === undefined) return true;
+  if (!Array.isArray(o.judges)) return false;
+  for (const j of o.judges) {
+    if (!isPlain(j) || !isVerdict(j.verdict) || !strOrAbsent(j.modelId) || !strOrAbsent(j.notes)) return false;
+    for (const k of Object.keys(j)) if (!JUDGE_KEYS.has(k)) return false;
   }
-  return { verdict: "concerns", summary: clip(redact(`Unstructured reply: ${text.trim().replace(/\s+/g, " ")}`), NOTE_CHARS) };
+  return true;
+}
+
+/** Iterative walk (no recursion, linear in the parsed size): is there a `verdict` of do_not_merge anywhere in the tree? */
+function hasDeniedVerdict(root: unknown): boolean {
+  const stack: unknown[] = [root];
+  while (stack.length > 0) {
+    const v = stack.pop();
+    if (Array.isArray(v)) { for (const x of v) stack.push(x); }
+    else if (isPlain(v)) {
+      for (const k of Object.keys(v)) {
+        const x = v[k];
+        if (k === "verdict" && x === "do_not_merge") return true;
+        if (x && typeof x === "object") stack.push(x);
+      }
+    }
+  }
+  return false;
+}
+
+/**
+ * The structured verdict object in a synthesizer reply. Every parsed top-level object is checked against the strict schema; a reply
+ * is `tainted` when an object was left open, a balanced object failed to parse, the cap cut it, a key repeats, or the schema is
+ * broken (unknown key, nested `verdict`, malformed judge, missing verdict). The chosen object is the one with the most severe valid
+ * top-level verdict, else the first object. `hidden` and `deny` let callers make a tainted reply STRICTER, never more lenient.
+ * Single linear pass plus linear validation.
+ */
+export function readVerdictObject(text: string): VerdictObject {
+  const raw = typeof text === "string" ? text : "";
+  try {
+    return readVerdictObjectUnsafe(raw);
+  } catch {
+    // Any internal failure (stack overflow on hostile nesting, an engine error) must not lose the taint: tainted, and strict if the raw text names do_not_merge.
+    return { tainted: true, hidden: false, deny: safeIncludes(raw) };
+  }
+}
+
+const safeIncludes = (raw: string): boolean => { try { return raw.slice(0, MAX_INPUT_CHARS).includes("do_not_merge"); } catch { return false; } };
+
+function readVerdictObjectUnsafe(text: string): VerdictObject {
+  const { slices, open, capped, suspect } = scan(text);
+  let best: Record<string, unknown> | undefined;
+  let tainted = open || capped || suspect, hidden = false;
+  for (const slice of slices) {
+    const o = tryParse(slice);
+    if (!isPlain(o)) { tainted = true; continue; }
+    if (!schemaOk(o)) tainted = true;
+    if (hasDeniedVerdict(o)) hidden = true;
+    const v = o.verdict;
+    if (!best || (isVerdict(v) && (!isVerdict(best.verdict) || SEVERITY[v] > SEVERITY[best.verdict]))) best = o;
+  }
+  return { ...(best ? { object: best } : {}), tainted, hidden, deny: text.slice(0, MAX_INPUT_CHARS).includes("do_not_merge") };
+}
+
+/** Applies a reply's taint to a verdict. Only ever stricter: a hidden or named do_not_merge wins, a tainted reply is at least concerns. */
+function applyTaint(v: Verdict, r: VerdictObject): Verdict {
+  if (r.hidden || r.deny) return "do_not_merge";
+  return r.tainted ? worst(v, "concerns") : v;
+}
+
+/**
+ * Turns the council's reply into verdict, summary and judge notes. Tolerant: an unparseable reply is "concerns".
+ * The overall verdict is never more lenient than a tainted reply allows (`concerns`), and never more lenient than a per-judge
+ * `do_not_merge` inside the same object.
+ */
+export function parseVerdict(text: string): Parsed {
+  const r = readVerdictObject(text);
+  const raw = typeof text === "string" ? text : "";
+  try {
+    const first = r.object ?? extractJson(raw);
+    if (isPlain(first)) return buildParsed(first, r);
+  } catch { /* fall through to the strict unstructured result */ }
+  return unstructured(raw, r);
+}
+
+function unstructured(raw: string, r: VerdictObject): Parsed {
+  let summary = "The council reply could not be read.";
+  try { summary = clip(redact(`Unstructured reply: ${raw.slice(0, 4 * NOTE_CHARS).trim().replace(/\s+/g, " ")}`), NOTE_CHARS); } catch { /* keep the fixed summary */ }
+  return { verdict: r.deny || r.hidden ? "do_not_merge" : "concerns", summary };
+}
+
+/** First of `values` that is a string. Unknown values are NEVER stringified: an object's toString can be hostile or missing. */
+const firstString = (...values: unknown[]): string | undefined => values.find((v): v is string => typeof v === "string");
+
+/** Builds the Parsed result from one parsed object and its taint. Total on any JSON-parsed input: only strings are used as text. */
+function buildParsed(o: Record<string, unknown>, r: VerdictObject): Parsed {
+  const judges = Array.isArray(o.judges)
+    ? o.judges.slice(0, MAX_JUDGES).filter(isPlain).map(j => ({
+        modelId: clip(redact(firstString(j.modelId, j.name) ?? "judge"), 60), verdict: asVerdict(j.verdict), notes: clip(redact(firstString(j.notes, j.summary) ?? ""), NOTE_CHARS),
+      }))
+    : undefined;
+  const text = typeof o.summary === "string" && o.summary.trim() ? o.summary : "The council gave a verdict without a summary.";
+  let verdict = asVerdict(o.verdict);
+  if (judges?.some(j => j.verdict === "do_not_merge")) verdict = worst(verdict, "do_not_merge");
+  verdict = applyTaint(verdict, r);
+  return { verdict, summary: clip(redact(text.trim()), NOTE_CHARS), ...(judges && judges.length > 0 ? { judges } : {}) };
 }
 
 const NO_VERDICTS = "The judges returned prose and their verdicts could not be derived; read their notes.";
@@ -84,15 +248,52 @@ const firstSentence = (s: string) => (/^.*?[.!?](?=\s|$)/.exec(s)?.[0] ?? s);
  * judges' redacted prose, or undefined when the output has no judge turns (the caller then treats the output as unreadable).
  */
 export function councilJudges(output: unknown): Array<{ modelId: string; text: string }> | undefined {
+  return readCouncil(output)?.judges;
+}
+
+export interface CouncilRead { judges: Array<{ modelId: string; text: string }>; emptyJudges: number; truncated: boolean }
+
+/** Cuts `raw` to `n` chars without splitting a token: when the cut lands inside a run of non-space characters, that run is dropped (up to 512 chars), so a key can never reach redaction as a bare prefix. */
+export function cutAtWord(raw: string, n: number): string {
+  if (raw.length <= n) return raw;
+  let cut = n;
+  if (!/\s/.test(raw[n] ?? " ")) {
+    const floor = Math.max(0, n - 512);
+    while (cut > floor && !/\s/.test(raw[cut - 1])) cut--;
+    if (cut === floor && !/\s/.test(raw[cut - 1] ?? " ")) cut = floor;
+  }
+  return raw.slice(0, cut);
+}
+
+/** A turn's speaker: `role`, or `name` when the API labels turns that way. Only `*_judge` speakers are judges. */
+const speaker = (t: unknown): string | undefined => {
+  if (!t || typeof t !== "object") return undefined;
+  const o = t as { role?: unknown; name?: unknown };
+  return typeof o.role === "string" ? o.role : typeof o.name === "string" ? o.name : undefined;
+};
+
+/**
+ * Single pass over the turns: judge turns (speaker ends in `_judge`) are read in order, their raw text capped to MAX_INPUT_CHARS in
+ * total BEFORE redaction or any scanning, so hostile output cannot make later steps slow. Empty judges are counted so the caller can
+ * refuse `looks_good`. The `aggregator_agent` turn (and anything else) is never read. Returns undefined when there are no judge turns.
+ */
+export function readCouncil(output: unknown): CouncilRead | undefined {
   if (!Array.isArray(output)) return undefined;
-  const turns = output.filter((t): t is { role: string; content?: unknown } => !!t && typeof t === "object" && typeof (t as { role?: unknown }).role === "string");
-  const judgeTurns = turns.filter(t => /_judge$/i.test(t.role));
-  if (judgeTurns.length === 0) return undefined;
-  // A judge with no text says nothing, so it cannot count toward a verdict.
-  return judgeTurns.slice(0, MAX_JUDGES).map(t => ({
-    modelId: clip(redact(t.role.replace(/_judge$/i, " judge").replace(/_/g, " ")), 60),
-    text: clip(readable(outputText(t.content)), JUDGE_CHARS),
-  })).filter(j => j.text.length > 0);
+  const judges: Array<{ modelId: string; text: string }> = [];
+  let budget = MAX_INPUT_CHARS, emptyJudges = 0, truncated = false, sawJudge = false;
+  for (const t of output) {
+    const who = speaker(t);
+    if (who === undefined || !/_judge$/i.test(who)) continue;
+    sawJudge = true;
+    if (judges.length + emptyJudges >= MAX_JUDGES) { truncated = true; break; }
+    const raw = outputText((t as { content?: unknown }).content);
+    if (raw.length > budget) truncated = true;
+    const text = clip(readable(cutAtWord(raw, budget)), JUDGE_CHARS);
+    budget = Math.max(0, budget - raw.length);
+    if (text.length === 0) { emptyJudges++; continue; }
+    judges.push({ modelId: clip(redact(who.replace(/_judge$/i, " judge").replace(/_/g, " ")), 60), text });
+  }
+  return sawJudge ? { judges, emptyJudges, truncated } : undefined;
 }
 
 /** No verdicts could be derived: each judge's first sentence as its note, "concerns" everywhere. NEVER looks_good. */
@@ -132,11 +333,10 @@ export class SwarmReviewService implements ApprovalHook {
         task: await this.prompt(approval),
         agents: [{ agent_name: "Reviewer", system_prompt: REVIEWER_SYSTEM, max_tokens: 8_000 }],
       });
-      const text = lastTurnText(run.output) || run.text;
-      if (text.trim().length === 0) throw new SwarmsUnavailable("bad_response", "The council returned no text.");
-      const judges = councilJudges(run.output);
-      // Judges answer in prose and the aggregator only echoes the candidate, so a council verdict is derived, never read off the aggregator.
-      const parsed = judges ? await this.derive(judges, apiKey, approval.sessionId) : UNREADABLE;
+      const council = readCouncil(run.output);
+      if (!council && (lastTurnText(run.output) || run.text).trim().length === 0) throw new SwarmsUnavailable("bad_response", "The council returned no text.");
+      // Judges answer in prose and the aggregator only echoes the candidate, so a council verdict is derived from the judge turns, never read off the aggregator.
+      const parsed = council ? await this.derive(council, apiKey, approval.sessionId) : UNREADABLE;
       review = SwarmReview.parse({ ...review, status: "done", ...parsed, durationMs: Date.now() - started });
     } catch (e) {
       const why = e instanceof SwarmsUnavailable ? e.message : redact(e instanceof Error ? e.message : "unknown error");
@@ -177,9 +377,19 @@ export class SwarmReviewService implements ApprovalHook {
   }
 
   /** One text-only call turns the judges' prose into a structured verdict. Any failure or unparseable reply falls back to "concerns", never looks_good. */
-  private async derive(judges: ReadonlyArray<{ modelId: string; text: string }>, apiKey: string, sessionId: string): Promise<Parsed> {
+  private async derive(council: CouncilRead, apiKey: string, sessionId: string): Promise<Parsed> {
     const { swarms } = this.deps;
-    if (judges.length === 0 || !swarms.complete) return fallbackCouncil(judges);
+    const { judges } = council;
+    const finish = (p: Parsed, replyTruncated = false): Parsed => {
+      // A judge that said nothing cannot vouch for the change; truncated input means part of the council was never read.
+      let out = p;
+      if (council.emptyJudges > 0 && out.verdict === "looks_good") out = { ...out, verdict: "concerns" };
+      if (council.truncated || replyTruncated) out = { ...out, summary: `${clip(out.summary, NOTE_CHARS - TRUNCATED.length)}${TRUNCATED}` };
+      return out;
+    };
+    if (judges.length === 0 || !swarms.complete) return finish(fallbackCouncil(judges));
+    let read: VerdictObject | undefined;                      // hoisted: the catch below must still apply the taint it already computed
+    let replyTruncated = false;
     try {
       const task = [
         "Below are written assessments from code-review judges who graded a coding agent's change.",
@@ -188,14 +398,33 @@ export class SwarmReviewService implements ApprovalHook {
         "",
         frame(judges.map(j => ({ label: `judge: ${j.modelId}`, text: j.text }))),
       ].join("\n");
-      const { text } = await swarms.complete({ apiKey, sessionId, system: SYNTH_SYSTEM, task, maxTokens: 700 });
-      const json = extractJson(text);
-      if (!json || typeof json !== "object" || !VERDICTS.includes((json as { verdict?: unknown }).verdict as Verdict)) return fallbackCouncil(judges);
-      const out = parseVerdict(text);
-      return out.judges ? out : { ...out, judges: fallbackCouncil(judges).judges };
+      const reply = await swarms.complete({ apiKey, sessionId, system: SYNTH_SYSTEM, task, maxTokens: 700 });
+      const text = typeof reply?.text === "string" ? reply.text : "";
+      replyTruncated = text.length > MAX_INPUT_CHARS;
+      read = readVerdictObject(text);                         // never throws; capped, one linear pass
+      const { object } = read;
+      if (!object || !isVerdict(object.verdict)) return finish({ ...fallbackCouncil(judges), verdict: applyTaint("concerns", read) }, replyTruncated);
+      let out = buildParsed(object, read);                    // applies the taint
+      const rows = Array.isArray(object.judges) ? object.judges.filter(isPlain) : [];
+      // A judge row that names a judge we actually read cannot be more lenient than the overall: fold it in. (Rows naming unknown judges
+      // are not folded, so a synthesizer that invents its own judge names keeps its overall verdict. A duplicate row for one judge floors looks_good.)
+      const seen = new Set<string>();
+      let dup = false, verdict = out.verdict;
+      const readIds = new Set(judges.map(j => j.modelId.trim().toLowerCase()));
+      for (const row of rows) {
+        const id = typeof row.modelId === "string" ? row.modelId.trim().toLowerCase() : undefined;
+        if (id === undefined) continue;
+        if (seen.has(id)) dup = true;
+        seen.add(id);
+        if (readIds.has(id) && isVerdict(row.verdict)) verdict = worst(verdict, row.verdict);
+      }
+      if (dup && verdict === "looks_good") verdict = "concerns";
+      if (rows.length < judges.length && verdict === "looks_good") verdict = "concerns";
+      out = { ...out, verdict };
+      return finish(out.judges ? out : { ...out, judges: fallbackCouncil(judges).judges }, replyTruncated);
     } catch (e) {
       this.deps.log?.(`swarm review: verdict derivation failed: ${redact(e instanceof Error ? e.message : "unknown error")}`);
-      return fallbackCouncil(judges);
+      return finish({ ...fallbackCouncil(judges), verdict: read ? applyTaint("concerns", read) : "concerns" }, replyTruncated);
     }
   }
 

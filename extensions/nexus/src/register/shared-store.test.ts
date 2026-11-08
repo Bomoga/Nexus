@@ -89,6 +89,19 @@ describe("createSharedStore", () => {
     expect(lines.join("\n")).not.toContain("pw@");
   });
 
+  it("exposes its client and limits the shared events reads to the workspace it was given", async () => {
+    const calls: { text: string; params: unknown[] }[] = [];
+    const client = { query: vi.fn(async (text: string, params: unknown[] = []) => { calls.push({ text, params }); return { rows: [], rowCount: 0 }; }), end: vi.fn(async () => undefined) };
+    const shared = createSharedStore({ connectionString: URL_OK, local: local(), machineId: "m-uuid", redact: t => t, log: () => {}, workspaceId: async () => "ws_here", client, listen: async () => async () => undefined });
+    expect(shared.client).toBe(client);
+    await shared.store.searchEvents("cart", 5);
+    expect(calls.filter(c => c.text.includes("workspace_id = $3")).map(c => c.params.at(-1))).toEqual(["ws_here"]);
+    const unknown = createSharedStore({ connectionString: URL_OK, local: local(), machineId: "m-uuid", redact: t => t, log: () => {}, client, listen: async () => async () => undefined });
+    calls.length = 0;
+    await unknown.store.searchEvents("cart", 5);
+    expect(calls.filter(c => c.text.includes("FROM events"))).toEqual([]);   // no workspace id: the remote side is not asked
+  });
+
   it("tells the person once a minute when the shared store refuses a change for good", async () => {
     let t = 1_000_000;
     // every task insert is refused with a constraint error: permanent, so it is dead-lettered

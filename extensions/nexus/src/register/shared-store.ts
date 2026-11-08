@@ -50,6 +50,8 @@ export interface SharedStoreInputs {
   /** This install's id (the same one its sessions carry): it decides which approvals this machine owns. */
   machineId: string;
   redact: (text: string) => string;
+  /** The open repo's workspace id: the shared `events` reads and the live sync are limited to it (unknown means none). */
+  workspaceId?: () => Promise<string | undefined>;
   log: (message: string) => void;
   /**
    * Shows the person something they should know: a write the shared store refused for good (it stays on this machine only),
@@ -64,6 +66,8 @@ export interface SharedStoreInputs {
 }
 
 export interface SharedStore {
+  /** The shared database client (for the activity strip's aggregate). */
+  client: TigerClient;
   store: CombinedStore;
   sync: Sync;
   /** Stops sync and closes the pool. */
@@ -73,7 +77,7 @@ export interface SharedStore {
 /** Builds the combined store and its sync; nothing connects until `sync.start()` (and the first remote call). */
 export function createSharedStore(i: SharedStoreInputs): SharedStore {
   const client = i.client ?? (createTigerPool(i.connectionString, i.PoolCtor) as TigerClient & { end?(): Promise<unknown> });
-  const store = new CombinedStore({ machineId: i.machineId, local: i.local, remote: new TigerStore({ client, redact: i.redact }) });
+  const store = new CombinedStore({ machineId: i.machineId, local: i.local, remote: new TigerStore({ client, redact: i.redact, ...(i.workspaceId ? { workspaceId: i.workspaceId } : {}) }) });
   // Ids and codes only: a dropped write or an overwritten decision must leave a trace, never record contents.
   const now = i.now ?? (() => Date.now());
   const lastShown = new Map<string, number>();
@@ -92,14 +96,14 @@ export function createSharedStore(i: SharedStoreInputs): SharedStore {
     tell("override", `Nexus: approval ${o.approvalId} was ${o.from} in the shared store, but this machine's agent already acted on "${o.to}", so ${o.to} now stands for everyone.`);
   });
   const sync = createSync({
-    client, local: i.local, machineId: i.machineId,
+    client, local: i.local, machineId: i.machineId, ...(i.workspaceId ? { workspaceId: i.workspaceId } : {}),
     listen: i.listen ?? createTigerListen(i.connectionString),
     flushOutbox: () => store.flushOutbox(),
     setOnline: online => i.local.setOnline(online),
     log: i.log,
   });
   return {
-    store, sync,
+    client, store, sync,
     dispose: async () => {
       await sync.stop();
       try { await client.end?.(); } catch { /* best effort */ }

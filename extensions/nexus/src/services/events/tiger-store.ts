@@ -33,6 +33,11 @@ export interface TigerStoreOptions {
   redact: (text: string) => string;
   /** Fallback Auth0 user id for events written without one. */
   auth0UserId?: string;
+  /**
+   * The open repo's workspace id (sha1 of its root commit). Reads of `events` (window query, search) are limited to it; while it is
+   * unknown (no folder, no commits, or it throws) they return [] without querying, never every repo's events.
+   */
+  workspaceId?: () => Promise<string | undefined>;
 }
 
 // ---- SQL (one statement per operation; exported so tests can pin the text) ----
@@ -100,17 +105,17 @@ ON CONFLICT (id) DO UPDATE SET source_task_id = EXCLUDED.source_task_id, swarm_t
   // Same ranking as the local index: title match 3, sha match 2, orbit or actor match 1; newest first within a score. "!" escapes LIKE wildcards.
   searchEvents: `SELECT *, CASE WHEN lower(title) LIKE $1 ESCAPE '!' THEN 3 WHEN lower(target->>'sha') LIKE $1 ESCAPE '!' THEN 2 ELSE 1 END AS score
 FROM events
-WHERE lower(title) LIKE $1 ESCAPE '!' OR lower(target->>'sha') LIKE $1 ESCAPE '!' OR lower(orbit || chr(10) || actor_name) LIKE $1 ESCAPE '!'
+WHERE workspace_id = $3 AND (lower(title) LIKE $1 ESCAPE '!' OR lower(target->>'sha') LIKE $1 ESCAPE '!' OR lower(orbit || chr(10) || actor_name) LIKE $1 ESCAPE '!')
 ORDER BY score DESC, at DESC
 LIMIT $2`,
 } as const;
 
-/** The events-in-a-window query; the filters add parameters in a fixed order: from, to, [orbits], [kinds], limit. */
+/** The events-in-a-window query; the filters add parameters in a fixed order: from, to, [orbits], [kinds], workspace id, limit. */
 export function queryEventsSql(withOrbits: boolean, withKinds: boolean): string {
   let n = 2;
   const orbits = withOrbits ? ` AND orbit = ANY($${++n}::text[])` : "";
   const kinds = withKinds ? ` AND kind = ANY($${++n}::text[])` : "";
-  return `SELECT * FROM events WHERE at >= $1::timestamptz AND at <= $2::timestamptz${orbits}${kinds} ORDER BY at, id LIMIT $${n + 1}`;
+  return `SELECT * FROM events WHERE at >= $1::timestamptz AND at <= $2::timestamptz${orbits}${kinds} AND workspace_id = $${n + 1} ORDER BY at, id LIMIT $${n + 2}`;
 }
 
 // ---- helpers ----
@@ -163,6 +168,7 @@ export class TigerStore implements EventStore {
   private readonly client: TigerClient;
   private readonly redactText: (text: string) => string;
   private readonly auth0UserId: string | undefined;
+  private readonly workspaceId: () => Promise<string | undefined>;
   private skipped = 0;
   private online = true;
   private eventListeners = new Set<(event: NexusEvent) => void>();
@@ -173,6 +179,10 @@ export class TigerStore implements EventStore {
     this.client = opts.client;
     this.redactText = opts.redact;
     this.auth0UserId = opts.auth0UserId;
+    const getWorkspace = opts.workspaceId;
+    this.workspaceId = async () => {
+      try { return (await getWorkspace?.()) || undefined; } catch { return undefined; }
+    };
   }
 
   /** How many rows were dropped because they did not parse against their contract schema. */
@@ -283,10 +293,12 @@ export class TigerStore implements EventStore {
   // ---- read side ----
   async queryEvents(query: EventQuery) {
     if (!Number.isFinite(Date.parse(query.from)) || !Number.isFinite(Date.parse(query.to))) return [];
+    const workspace = await this.workspaceId();
+    if (!workspace) return [];
     const params: unknown[] = [query.from, query.to];
     if (query.orbits) params.push(query.orbits);
     if (query.kinds) params.push(query.kinds);
-    params.push(clampLimit(query.limit, 2000));
+    params.push(workspace, clampLimit(query.limit, 2000));
     return this.rowsOf(queryEventsSql(!!query.orbits, !!query.kinds), params, r => this.eventOf(r));
   }
 
@@ -294,7 +306,9 @@ export class TigerStore implements EventStore {
     const q = text.trim().toLowerCase();
     if (!q || !(limit > 0)) return [];
     const pattern = `%${q.replace(/[!%_]/g, "!$&")}%`;
-    const res = await this.run(SQL.searchEvents, [pattern, clampLimit(limit, 20)]);
+    const workspace = await this.workspaceId();
+    if (!workspace) return [];
+    const res = await this.run(SQL.searchEvents, [pattern, clampLimit(limit, 20), workspace]);
     const hits: EventSearchHit[] = [];
     for (const row of res.rows) {
       const event = this.eventOf(row);

@@ -47,6 +47,8 @@ export interface SyncDeps {
   listen?: ListenFn;
   local: SyncLocal;
   machineId: string;
+  /** The open repo's workspace id; `events` rows of any other workspace are not copied locally, and none are while it is unknown. */
+  workspaceId?: () => Promise<string | undefined>;
   flushOutbox(): Promise<unknown>;
   setOnline?(online: boolean): void;
   timers?: SyncTimers;
@@ -426,6 +428,9 @@ export function createSync(deps: SyncDeps): Sync {
     switch (table) {
       case "events": {
         if (r.machine_id === machineId) return;
+        let workspace: string | undefined;
+        try { workspace = (await deps.workspaceId?.()) || undefined; } catch { workspace = undefined; }
+        if (!workspace || r.workspace_id !== workspace) return;
         const e = mappers.events(r);
         if (!e) return;
         await quiet("events", e.id, "put", () => local.putNexusEvent(e));

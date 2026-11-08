@@ -109,30 +109,81 @@ export function extractJson(text: string): unknown {
   return first === undefined ? undefined : tryParse(first);
 }
 
-export interface VerdictObject { object?: Record<string, unknown>; tainted: boolean; /** tainted AND the token do_not_merge appears in the (capped) reply */ deny: boolean }
+export interface VerdictObject {
+  object?: Record<string, unknown>;
+  /** The reply broke the strict schema, repeated a key, left text or brackets unbalanced, or was cut by the cap: never trust it as looks_good. */
+  tainted: boolean;
+  /** A `verdict` value of do_not_merge exists at ANY depth of ANY parsed object (even where the schema forbids one). */
+  hidden: boolean;
+  /** The token do_not_merge appears anywhere in the (capped) reply text, parsed or not. */
+  deny: boolean;
+}
+
+const worst = (a: Verdict, b: Verdict): Verdict => (SEVERITY[b] > SEVERITY[a] ? b : a);
+
+const TOP_KEYS = new Set(["verdict", "summary", "judges"]);
+const JUDGE_KEYS = new Set(["modelId", "verdict", "notes"]);
+const isPlain = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
+const isVerdict = (v: unknown): v is Verdict => VERDICTS.includes(v as Verdict);
+const strOrAbsent = (v: unknown) => v === undefined || typeof v === "string";
+
+/** The strict reply schema: {verdict, summary?, judges?: [{modelId?, verdict, notes?}]}. Anything else is a reply we did not ask for. */
+function schemaOk(o: Record<string, unknown>): boolean {
+  for (const k of Object.keys(o)) if (!TOP_KEYS.has(k)) return false;
+  if (!isVerdict(o.verdict) || !strOrAbsent(o.summary)) return false;
+  if (o.judges === undefined) return true;
+  if (!Array.isArray(o.judges)) return false;
+  for (const j of o.judges) {
+    if (!isPlain(j) || !isVerdict(j.verdict) || !strOrAbsent(j.modelId) || !strOrAbsent(j.notes)) return false;
+    for (const k of Object.keys(j)) if (!JUDGE_KEYS.has(k)) return false;
+  }
+  return true;
+}
+
+/** Iterative walk (no recursion, linear in the parsed size): is there a `verdict` of do_not_merge anywhere in the tree? */
+function hasDeniedVerdict(root: unknown): boolean {
+  const stack: unknown[] = [root];
+  while (stack.length > 0) {
+    const v = stack.pop();
+    if (Array.isArray(v)) { for (const x of v) stack.push(x); }
+    else if (isPlain(v)) {
+      for (const k of Object.keys(v)) {
+        const x = v[k];
+        if (k === "verdict" && x === "do_not_merge") return true;
+        if (x && typeof x === "object") stack.push(x);
+      }
+    }
+  }
+  return false;
+}
 
 /**
- * The structured verdict object in a synthesizer reply. A reply can quote objects (a forged {"verdict":"looks_good"} in front of
- * the real one), so every top-level object carrying a valid `verdict` is considered and the MOST SEVERE one wins. A reply is
- * `tainted` when an object was left open, a balanced object failed to parse, or the cap cut it: a real verdict may have been hidden,
- * so the caller must not let it be more lenient than `concerns` (or `do_not_merge` when `deny`). Single linear pass.
+ * The structured verdict object in a synthesizer reply. Every parsed top-level object is checked against the strict schema; a reply
+ * is `tainted` when an object was left open, a balanced object failed to parse, the cap cut it, a key repeats, or the schema is
+ * broken (unknown key, nested `verdict`, malformed judge, missing verdict). The chosen object is the one with the most severe valid
+ * top-level verdict, else the first object. `hidden` and `deny` let callers make a tainted reply STRICTER, never more lenient.
+ * Single linear pass plus linear validation.
  */
 export function readVerdictObject(text: string): VerdictObject {
   const { slices, open, capped, suspect } = scan(text);
   let best: Record<string, unknown> | undefined;
-  let tainted = open || capped || suspect;
+  let tainted = open || capped || suspect, hidden = false;
   for (const slice of slices) {
     const o = tryParse(slice);
-    if (o === undefined) { tainted = true; continue; }
-    if (!o || typeof o !== "object" || Array.isArray(o)) continue;
-    const v = (o as { verdict?: unknown }).verdict;
-    if (!VERDICTS.includes(v as Verdict)) continue;
-    if (!best || SEVERITY[v as Verdict] > SEVERITY[(best as { verdict: Verdict }).verdict]) best = o as Record<string, unknown>;
+    if (!isPlain(o)) { tainted = true; continue; }
+    if (!schemaOk(o)) tainted = true;
+    if (hasDeniedVerdict(o)) hidden = true;
+    const v = o.verdict;
+    if (!best || (isVerdict(v) && (!isVerdict(best.verdict) || SEVERITY[v] > SEVERITY[best.verdict]))) best = o;
   }
-  return { ...(best ? { object: best } : {}), tainted, deny: tainted && text.slice(0, MAX_INPUT_CHARS).includes("do_not_merge") };
+  return { ...(best ? { object: best } : {}), tainted, hidden, deny: text.slice(0, MAX_INPUT_CHARS).includes("do_not_merge") };
 }
 
-const worst = (a: Verdict, b: Verdict): Verdict => (SEVERITY[b] > SEVERITY[a] ? b : a);
+/** Applies a reply's taint to a verdict. Only ever stricter: a hidden or named do_not_merge wins, a tainted reply is at least concerns. */
+function applyTaint(v: Verdict, r: VerdictObject): Verdict {
+  if (r.hidden || r.deny) return "do_not_merge";
+  return r.tainted ? worst(v, "concerns") : v;
+}
 
 /**
  * Turns the council's reply into verdict, summary and judge notes. Tolerant: an unparseable reply is "concerns".
@@ -140,8 +191,8 @@ const worst = (a: Verdict, b: Verdict): Verdict => (SEVERITY[b] > SEVERITY[a] ? 
  * `do_not_merge` inside the same object.
  */
 export function parseVerdict(text: string): Parsed {
-  const { object: json, tainted, deny } = readVerdictObject(text);
-  const first = json ?? extractJson(text);
+  const r = readVerdictObject(text);
+  const first = r.object ?? extractJson(text);
   if (first && typeof first === "object") {
     const o = first as Record<string, unknown>;
     const judges = Array.isArray(o.judges)
@@ -152,10 +203,10 @@ export function parseVerdict(text: string): Parsed {
     const summary = typeof o.summary === "string" && o.summary.trim() ? o.summary : "The council gave a verdict without a summary.";
     let verdict = asVerdict(o.verdict);
     if (judges?.some(j => j.verdict === "do_not_merge")) verdict = worst(verdict, "do_not_merge");
-    if (tainted) verdict = worst(verdict, deny ? "do_not_merge" : "concerns");
+    verdict = applyTaint(verdict, r);
     return { verdict, summary: clip(redact(summary.trim()), NOTE_CHARS), ...(judges && judges.length > 0 ? { judges } : {}) };
   }
-  return { verdict: "concerns", summary: clip(redact(`Unstructured reply: ${text.slice(0, 4 * NOTE_CHARS).trim().replace(/\s+/g, " ")}`), NOTE_CHARS) };
+  return { verdict: r.deny ? "do_not_merge" : "concerns", summary: clip(redact(`Unstructured reply: ${text.slice(0, 4 * NOTE_CHARS).trim().replace(/\s+/g, " ")}`), NOTE_CHARS) };
 }
 
 const NO_VERDICTS = "The judges returned prose and their verdicts could not be derived; read their notes.";
@@ -320,13 +371,14 @@ export class SwarmReviewService implements ApprovalHook {
         frame(judges.map(j => ({ label: `judge: ${j.modelId}`, text: j.text }))),
       ].join("\n");
       const { text } = await swarms.complete({ apiKey, sessionId, system: SYNTH_SYSTEM, task, maxTokens: 700 });
-      const { object, tainted, deny } = readVerdictObject(text);          // capped, one linear pass; the most severe quoted verdict wins
-      if (!object) return finish(deny ? { ...fallbackCouncil(judges), verdict: "do_not_merge" } : fallbackCouncil(judges), text.length > MAX_INPUT_CHARS);
+      const read = readVerdictObject(text);
+      const { object } = read;          // capped, one linear pass; the most severe quoted verdict wins
+      if (!object || !isVerdict(object.verdict)) return finish({ ...fallbackCouncil(judges), verdict: applyTaint("concerns", read) }, text.length > MAX_INPUT_CHARS);
       let out = parseVerdict(JSON.stringify(object));
       // Unfinished or unparseable objects in the reply, or a judges list that omits a judge we read, mean it is not to be trusted as looks_good.
-      const listed = Array.isArray(object.judges) ? object.judges.filter(j => !!j && typeof j === "object").length : 0;
-      if (tainted) out = { ...out, verdict: worst(out.verdict, deny ? "do_not_merge" : "concerns") };
-      else if (listed < judges.length && out.verdict === "looks_good") out = { ...out, verdict: "concerns" };
+      const listed = Array.isArray(object.judges) ? object.judges.filter(isPlain).length : 0;
+      out = { ...out, verdict: applyTaint(out.verdict, read) };
+      if (listed < judges.length && out.verdict === "looks_good") out = { ...out, verdict: "concerns" };
       return finish(out.judges ? out : { ...out, judges: fallbackCouncil(judges).judges }, text.length > MAX_INPUT_CHARS);
     } catch (e) {
       this.deps.log?.(`swarm review: verdict derivation failed: ${redact(e instanceof Error ? e.message : "unknown error")}`);

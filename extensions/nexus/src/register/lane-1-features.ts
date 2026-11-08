@@ -16,6 +16,7 @@ import type { ApprovalHook, NotifyPort } from "../features/approvals/approvals-c
 import { makeConfiguredCibaHook } from "../features/approvals/ciba-wiring";
 import type { Auth0Session } from "../features/auth/auth0-signin";
 import { lane1Commands } from "../features/commands";
+import { openEditorAfterCreate } from "../features/tasks/tasks-controller";
 import { safeCommandUi, safeNotifyPort } from "../features/notify-safe";
 import { composeLane1, type Lane1 } from "../features/compose";
 import type { Clock, GatePort, GitPort, StorePort } from "../features/ports";
@@ -140,7 +141,7 @@ export function registerFeatures(context: vscode.ExtensionContext, accounts: Acc
   });
   const commands = lane1Commands(lane, ui, () => identity().userId, openTaskEditor);
   context.subscriptions.push(
-    wireLane1ToRouter(lane, l2.router),
+    wireLane1ToRouter({ ...lane, handlers: openEditorAfterCreate(lane.handlers, openTaskEditor) }, l2.router),
     { dispose: () => lane.host.dispose?.() },
     ...Object.entries(commands).map(([id, fn]) => vscode.commands.registerCommand(id, (...args: string[]) => (fn as (...a: string[]) => unknown)(...args))),
   );

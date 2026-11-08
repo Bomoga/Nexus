@@ -121,9 +121,8 @@ export function Search({ onPick, search = defaultSearch, t0Ms = DEFAULT_T0_MS }:
         aria-controls="globe-search-list"
         aria-autocomplete="list"
         data-picked={picked && !shown ? "true" : undefined}
-        prefix="SEARCH"
         wrapClassName="globe-search-box"
-        placeholder="events: title, sha, orbit, kind"
+        placeholder="search events"
         value={q}
         onChange={(e) => {
           setPicked(false);

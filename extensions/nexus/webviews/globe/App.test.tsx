@@ -200,3 +200,20 @@ describe("globe App states", () => {
     await waitFor(() => expect(screen.queryByRole("button", { name: /STOP TRACKING/ })).toBeNull());
   });
 });
+
+describe("globe App top bar", () => {
+  test("two rows: the window control and status sit in one toolbar, the search in another, and the search stays when the clock is pinned", async () => {
+    const h = setup(() => [{ ...fx.event, at: new Date().toISOString() }]);
+    render(<App bridge={h.bridge} />);
+    const top = screen.getByRole("toolbar", { name: "Globe window and status" });
+    const searchRow = screen.getByRole("toolbar", { name: "Globe search" });
+    expect(top).not.toBe(searchRow);
+    expect(within(top).getByRole("group", { name: "Time window" })).toBeTruthy();
+    expect(within(top).getByText("LIVE")).toBeTruthy();
+    expect(within(top).queryByRole("combobox")).toBeNull();
+    const box = within(searchRow).getByRole("combobox", { name: "Search events" });
+    expect(box.getAttribute("placeholder")).toBe("search events");
+    expect(await screen.findByText(/\d+ EVENTS/)).toBeTruthy();
+    expect(within(top).getByText(/\d+ EVENTS/)).toBeTruthy();
+  });
+});

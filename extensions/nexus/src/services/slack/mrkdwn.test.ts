@@ -94,8 +94,9 @@ const hostOf = (u: string): string => new URL(u).host;
 describe("urls survive the chat view's linkifier", () => {
   const bank = "https://bank.example";
   const prefixes = ["", "see ", "https://evil.example/", "x", "(", "evil.example/"];
-  const suffixes = ["", "@evil.example/x", ".evil.example", "evil.example", "/path", ":8080", "?q=1", "#frag", ")x", " ok", "https://evil.example/y"];
-  const labels = [undefined, "Sign in", "https://evil.example/x", "evil.example", "bank.example"];
+  const suffixes = ["", "@evil.example/x", ".evil.example", "evil.example", "/path", ":8080", "?q=1", "#frag", ")x", " ok", "https://evil.example/y", ".", ",", ")", ".)", ".@evil.example", "'s"];
+  const labels = [undefined, "Sign in", "https://evil.example/x", "evil.example", "bank.example", "hthttps://tps://evil.example/login",
+    "httphttps://s://evil.example", "HTTPS://evil.example", "https://", "Sign in https://evil.example", "s://evil.example"];
   it("links exactly the host Slack's link goes to", () => {
     for (const pre of prefixes) for (const suf of suffixes) for (const label of labels) {
       const seq = label === undefined ? `<${bank}>` : `<${bank}|${label}>`;
@@ -110,6 +111,52 @@ describe("urls survive the chat view's linkifier", () => {
     expect(toDisplayText("<https://bank.example|Sign in>@evil.example/login")).toBe("Sign in (https://bank.example) @evil.example/login");
     expect(toDisplayText("<https://bank.example>.evil.example")).toBe("https://bank.example .evil.example");
     expect(toDisplayText("https://evil.example/<https://bank.example>")).toBe("https://evil.example/ https://bank.example");
+  });
+});
+
+describe("labels and punctuation around links", () => {
+  const evilHosts = (text: string): string[] => linkified(toDisplayText(text)).map(hostOf).filter(h => h !== "bank.example");
+  it("leaves ordinary punctuation after a link alone", () => {
+    expect(toDisplayText("see <https://x.com>.")).toBe("see https://x.com.");
+    expect(toDisplayText("(<https://x.com>)")).toBe("(https://x.com)");
+    expect(toDisplayText("<https://x.com>, thanks")).toBe("https://x.com, thanks");
+    expect(toDisplayText("<https://x.com|docs>.")).toBe("docs (https://x.com).");
+    expect(toDisplayText("\"<https://x.com>\"!")).toBe("\"https://x.com\"!");
+    for (const t of ["see <https://x.com>.", "(<https://x.com>)", "<https://x.com>, thanks", "<https://x.com|docs>."]) {
+      expect(linkified(toDisplayText(t))).toEqual(["https://x.com"]);
+    }
+  });
+  it("round-trips what a person typed: escapeUserText, Slack's copy (it wraps typed urls in <>), then display text", () => {
+    const cases: [typed: string, slackWraps: (escaped: string) => string][] = [
+      ["see https://x.com.", e => e.replace("https://x.com", "<https://x.com>")],
+      ["(https://x.com)", e => e.replace("https://x.com", "<https://x.com>")],
+      ["https://x.com, thanks", e => e.replace("https://x.com", "<https://x.com>")],
+      ["Map<string> & <@U1> https://x.com!", e => e.replace("https://x.com", "<https://x.com>")],
+    ];
+    for (const [typed, wrap] of cases) expect(toDisplayText(wrap(escapeUserText(typed)))).toBe(typed);
+  });
+  it("never lets a label rebuild a scheme, on any kind of sequence", () => {
+    const tricks = ["hthttps://tps://evil.example/login", "httphttps://s://evil.example", "HTTPS://evil.example", "hTtPhttps://s://evil.example"];
+    for (const t of tricks) {
+      for (const seq of [`<https://bank.example|${t}>`, `<nexus://nexus.nexus/coderef/abc|${t}>`, `<@U1|${t}>`, `<#C1|${t}>`, `<!subteam^S1|${t}>`, `<!date^1|${t}>`, `<mailto:a@b.c|${t}>`, `<ftp://f|${t}>`]) {
+        for (const suf of ["", "@evil.example", "/x"]) expect(evilHosts(seq + suf), seq + suf).toEqual([]);
+      }
+    }
+    expect(toDisplayText("<https://bank.example|hthttps://tps://evil.example/login>")).toBe("evil.example/login (https://bank.example)");
+    expect(toDisplayText("<nexus://nexus.nexus/coderef/abc|https://bank.example>@evil.example")).toBe("bank.example@evil.example");
+  });
+  it("never spells a scheme across a piece boundary", () => {
+    expect(evilHosts("http<!x|s://evil.example>")).toEqual([]);
+    expect(evilHosts("htt<!x|ps://evil.example>")).toEqual([]);
+    expect(evilHosts("https:<!x|//evil.example>")).toEqual([]);
+    expect(evilHosts("<https://bank.example>.<!x|@evil.example>")).toEqual([]);
+    expect(evilHosts("<https://bank.example>)<@U1|@evil.example>")).toEqual([]);
+  });
+  it("lowercases an uppercase scheme so the view still links it, and shows the url alone for an empty label", () => {
+    expect(toDisplayText("<HTTPS://bank.example|Sign in>")).toBe("Sign in (https://bank.example)");
+    expect(linkified(toDisplayText("<HTTPS://bank.example>"))).toEqual(["https://bank.example"]);
+    expect(toDisplayText("<https://bank.example|https://>")).toBe("https://bank.example");
+    expect(toDisplayText("<@U1|https://>", { user: () => "ann" })).toBe("@ann");
   });
 });
 

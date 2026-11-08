@@ -46,67 +46,123 @@ function splitLabel(inner: string): [string, string | undefined] {
   return bar < 0 ? [inner, undefined] : [inner.slice(0, bar), inner.slice(bar + 1)];
 }
 
-interface Converted { s: string; url?: boolean }
+const WEB_SCHEME = /https?:\/\//i;
+const WEB_SCHEME_ALL = /https?:\/\//gi;
+/** The punctuation a chat view's linkifier trims off the end of a link (webviews/chat/MessageRow.tsx TRAILING_PUNCT). */
+const LINK_TRAIL_ONLY = /^[.,;:!?)\]}"']+$/;
+const RUN_BREAK = /[\s<>]/;
+const TAIL = 7;   // "https:/" is the longest proper prefix of a scheme that can straddle a piece boundary
 
-/** A label shown next to its url must not be linkifiable itself, or it would send the reader to a host Slack's link does not. */
+/**
+ * Removes every http(s):// from a label, repeating until none is left (one pass could rebuild one: "hthttps://tps://"), so a
+ * label can never be linkified to a host Slack's link does not go to. The real url is always shown next to it.
+ */
 function plainLabel(label: string): string {
-  return label.replace(/https?:\/\//gi, "");
+  let prev: string;
+  let out = label;
+  do { prev = out; out = out.replace(WEB_SCHEME_ALL, ""); } while (out !== prev);
+  return out;
 }
 
-function convertSeq(inner: string, names: NameResolvers | undefined): Converted {
+/** Lowercases an http(s) scheme so a case-sensitive linkifier still links it. */
+function lowerScheme(url: string): string {
+  return url.replace(/^https?:\/\//i, m => m.toLowerCase());
+}
+
+function convertSeq(inner: string, names: NameResolvers | undefined): string {
   const first = inner[0];
   if (first === "@") {
-    const [id, label] = splitLabel(inner.slice(1));
+    const [id, labelRaw] = splitLabel(inner.slice(1));
     if (USER_ID.test(id)) {
-      if (label) return { s: "@" + decode(label) };
-      return { s: "@" + (names?.user?.(id) || id) };
+      const label = labelRaw === undefined ? "" : plainLabel(decode(labelRaw));
+      return "@" + (label || names?.user?.(id) || id);
     }
   } else if (first === "#") {
-    const [id, label] = splitLabel(inner.slice(1));
+    const [id, labelRaw] = splitLabel(inner.slice(1));
     if (CHANNEL_ID.test(id)) {
-      if (label) return { s: "#" + decode(label) };
-      return { s: "#" + (names?.channel?.(id) || id) };
+      const label = labelRaw === undefined ? "" : plainLabel(decode(labelRaw));
+      return "#" + (label || names?.channel?.(id) || id);
     }
   } else if (first === "!") {
     const [cmd, labelRaw] = splitLabel(inner.slice(1));
-    const label = labelRaw === undefined ? undefined : decode(labelRaw);
-    if (cmd === "here" || cmd === "channel" || cmd === "everyone") return { s: "@" + cmd };
-    if (cmd.startsWith("subteam^")) return { s: label || "@" + decode(cmd.slice(8)) };
-    return { s: label || decode(cmd) };
+    const label = labelRaw === undefined ? "" : plainLabel(decode(labelRaw));
+    if (cmd === "here" || cmd === "channel" || cmd === "everyone") return "@" + cmd;
+    if (cmd.startsWith("subteam^")) return label || "@" + plainLabel(decode(cmd.slice(8)));
+    return label || plainLabel(decode(cmd));
   } else {
     const [urlRaw, labelRaw] = splitLabel(inner);
     const url = decode(urlRaw);
-    const label = labelRaw === undefined ? undefined : decode(labelRaw);
-    if (/^nexus:\/\/(?:nexus\.nexus\/)?coderef\//.test(url)) return label ? { s: label } : { s: url, url: true };
+    const label = labelRaw === undefined ? "" : plainLabel(decode(labelRaw));
+    if (/^nexus:\/\/(?:nexus\.nexus\/)?coderef\//.test(url)) return label || url;
     if (/^https?:\/\//i.test(url)) {
-      if (!label) return { s: url, url: true };
+      const shown = lowerScheme(url);
+      if (!label) return shown;
       const bare = url.replace(/^https?:\/\//i, "");
-      if (label === url || label === bare || label === bare.replace(/\/$/, "")) return { s: url, url: true };
-      return { s: `${plainLabel(label)} (${url})`, url: true };
+      if (label === bare || label === bare.replace(/\/$/, "")) return shown;
+      return `${label} (${shown})`;
     }
     if (/^mailto:/i.test(url)) {
       const addr = url.slice(7);
-      return { s: !label || label === addr ? addr : `${plainLabel(label)} (${addr})`, url: true };
+      return !label || label === addr ? addr : `${label} (${addr})`;
     }
-    if (SCHEME.test(url)) return { s: label ? `${plainLabel(label)} (${url})` : url, url: true };
+    if (SCHEME.test(url)) return label ? `${label} (${url})` : url;
   }
-  return { s: "<" + decode(inner) + ">" };   // not a Slack control sequence: keep what was there
+  return "<" + decode(inner) + ">";   // not a Slack control sequence: keep what was there
+}
+
+/**
+ * Joins converted pieces so a chat view that linkifies the output (https?://[^\s<>]+ with trailing punctuation trimmed) never
+ * links across a piece boundary: a space goes between two pieces when the run of text before the boundary holds a link and the
+ * text after it is more than trailing punctuation, or when the two sides together would spell a new http(s)://. Ordinary
+ * punctuation after a link ("see https://x.com.") is left alone. State is the current run (since the last whitespace, "<" or
+ * ">"): whether it holds a scheme, and its last few characters, so joining is linear.
+ */
+class Joiner {
+  private out = "";
+  private runHasScheme = false;
+  private tail = "";
+
+  add(piece: string): void {
+    if (!piece) return;
+    const head = /^[^\s<>]*/.exec(piece)![0];
+    if (this.out !== "" && head !== "" && this.needsGap(head)) {
+      this.out += " ";
+      this.runHasScheme = false;
+      this.tail = "";
+    }
+    this.out += piece;
+    let lastBreak = -1;
+    for (let i = piece.length - 1; i >= 0; i--) { if (RUN_BREAK.test(piece[i]!)) { lastBreak = i; break; } }
+    if (lastBreak >= 0) {
+      const run = piece.slice(lastBreak + 1);
+      this.runHasScheme = WEB_SCHEME.test(run);
+      this.tail = run.slice(-TAIL);
+    } else {
+      const joined = this.tail + piece;
+      this.runHasScheme = this.runHasScheme || WEB_SCHEME.test(joined);
+      this.tail = joined.slice(-TAIL);
+    }
+  }
+
+  private needsGap(head: string): boolean {
+    if (this.runHasScheme && !LINK_TRAIL_ONLY.test(head)) return true;
+    if (!this.tail) return false;
+    const joined = this.tail + head.slice(0, TAIL + 1);
+    for (const m of joined.matchAll(WEB_SCHEME_ALL)) {
+      if (m.index < this.tail.length) return true;   // a scheme that starts before the boundary and ends after it
+    }
+    return false;
+  }
+
+  toString(): string { return this.out; }
 }
 
 /** Slack message text as the person would read it. Entities are decoded only in plain text and inside converted sequences. */
 export function toDisplayText(raw: string, names?: NameResolvers): string {
   try {
-    // A url piece is kept apart from any adjacent non-space text, so a chat view that linkifies the output cannot merge it with a neighbour.
-    let out = "";
-    let afterUrl = false;
-    const add = (piece: string, url: boolean): void => {
-      if (!piece) return;
-      const gapBefore = out !== "" && !/\s$/.test(out) && (url || afterUrl) && !/^\s/.test(piece);
-      out += (gapBefore ? " " : "") + piece;
-      afterUrl = url;
-    };
-    walk(raw, t => add(decode(t), false), inner => { const c = convertSeq(inner, names); add(c.s, !!c.url); });
-    return out;
+    const j = new Joiner();
+    walk(raw, t => j.add(decode(t)), inner => j.add(convertSeq(inner, names)));
+    return j.toString();
   } catch {
     return raw;
   }

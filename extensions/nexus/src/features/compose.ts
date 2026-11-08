@@ -72,12 +72,14 @@ export function composeLane1(d: Lane1Deps) {
   const requester: ApprovalRequester = {
     request: input => approvals.request(input),
     sessionEnded: (id, how) => approvals.sessionEnded(id, how),
+    sessionResumed: id => approvals.sessionResumed(id),
   };
   const gate = d.makeGate(requester);
   const hostPort: HostPort = {
     startSession: p => host.startSession(p),
     cancelSession: id => host.cancelSession(id),
     endSession: id => host.endSession(id),
+    messageSession: (id, text) => (host.messageSession ? host.messageSession(id, text) : Promise.reject(new Error("follow-up messages are not available"))),
   };
 
   const tasks = new TasksController({

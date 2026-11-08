@@ -386,6 +386,11 @@ export class ApprovalsController implements ApprovalRequester {
    * for any other ending the waiting gate is released as rejected, locally, without writing a decision. Either way the
    * approvals can no longer be decided afterwards.
    */
+  /** A finished session was resumed by a follow-up message: it may raise and decide approvals again. */
+  sessionResumed(sessionId: string): void {
+    this.ended.delete(sessionId);
+  }
+
   async sessionEnded(sessionId: string, how: "cancelled" | "failed" | "done"): Promise<void> {
     const waiting = [...this.pending].filter(([, s]) => s === sessionId).map(([id]) => id);
     const by: DecidedBy = { via: "app", userId: this.deps.identity() };

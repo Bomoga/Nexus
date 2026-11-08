@@ -714,3 +714,43 @@ describe("resolveSessionId", () => {
     document.body.removeAttribute("data-session-id");
   });
 });
+
+describe("reply box", () => {
+  test("a live session queues the message, shows it in the log as YOU, and clears the box", async () => {
+    const { bridge, emit, reqs, subbed } = setup({ "agent.message": () => fx.session });
+    render(<App bridge={bridge} sessionId="ses_01" />);
+    await waitFor(() => expect(subbed("agent.subscribe").length).toBe(1));
+    const box = (await screen.findByLabelText("message to the agent")) as HTMLTextAreaElement;
+    expect(box.placeholder).toMatch(/taken at its next step/);
+    expect((screen.getByRole("button", { name: /send/i }) as HTMLButtonElement).disabled).toBe(true);        // empty: nothing to send
+    fireEvent.change(box, { target: { value: "  also cover the empty cart  " } });
+    fireEvent.keyDown(box, { key: "Enter" });
+    await waitFor(() => expect(reqs("agent.message")).toHaveLength(1));
+    expect(reqs("agent.message")[0].body).toEqual({ sessionId: "ses_01", text: "also cover the empty cart" });
+    await waitFor(() => expect(box.value).toBe(""));
+    emit("agent.subscribe", ev(40, { type: "user_message", text: "also cover the empty cart" }));
+    expect(await screen.findByText("YOU")).toBeTruthy();
+    expect(screen.getByText(/also cover the empty cart/)).toBeTruthy();
+  });
+
+  test("Shift+Enter does not send, and a finished session offers CONTINUE", async () => {
+    const { bridge, reqs } = setup({ "sessions.get": () => ({ ...fx.session, status: "done" }) });
+    render(<App bridge={bridge} sessionId="ses_01" />);
+    const box = (await screen.findByLabelText("message to the agent")) as HTMLTextAreaElement;
+    await waitFor(() => expect(box.placeholder).toMatch(/continue this session/));
+    fireEvent.change(box, { target: { value: "line one" } });
+    fireEvent.keyDown(box, { key: "Enter", shiftKey: true });
+    expect(reqs("agent.message")).toHaveLength(0);
+    expect(screen.getByRole("button", { name: /continue/i })).toBeTruthy();
+  });
+
+  test("a failed send keeps the text and shows the error", async () => {
+    const { bridge } = setup({ "agent.message": () => { throw { code: "internal", message: "Another agent session is running" }; } });
+    render(<App bridge={bridge} sessionId="ses_01" />);
+    const box = (await screen.findByLabelText("message to the agent")) as HTMLTextAreaElement;
+    fireEvent.change(box, { target: { value: "go on" } });
+    fireEvent.click(screen.getByRole("button", { name: /send/i }));
+    await waitFor(() => expect(screen.getByText(/Another agent session is running|message/i)).toBeTruthy());
+    expect(box.value).toBe("go on");
+  });
+});

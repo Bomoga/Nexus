@@ -329,6 +329,87 @@ describe("agent view layout", () => {
   });
 });
 
+describe("async answers after a session switch", () => {
+  const mk = (id: string, m: number): AgentSession => ({ ...fx.session, id, startedAt: new Date(Date.parse(fx.session.startedAt) + m * 60_000).toISOString(), branch: `nexus/agent-${id}` });
+
+  test("a cancel answer that lands after switching never marks the new session cancelled or shows its error", async () => {
+    const list = [mk("ses_b", 5), mk("ses_a", 0)];
+    const h = setup({ "sessions.list": () => list, "sessions.get": (b) => list.find((x) => x.id === b.sessionId) });
+    let answer!: (ok: boolean) => void;
+    const real = h.bridge.request.bind(h.bridge);
+    const bridge = {
+      ...h.bridge,
+      request: (name: string, body: unknown, o?: unknown) =>
+        name === "agent.cancel"
+          ? new Promise((res, rej) => {
+              answer = (ok) => (ok ? res({ ...fx.session, status: "cancelled" }) : rej({ code: "offline", message: "down" }));
+            })
+          : (real as (n: string, b: unknown, o?: unknown) => Promise<unknown>)(name, body, o),
+    } as unknown as typeof h.bridge;
+    render(<App bridge={bridge} sessionId="ses_a" />);
+    await waitFor(() => expect(h.subbed("agent.subscribe").length).toBe(1));
+    for (let i = 0; i < 4; i++) h.emit("agent.subscribe", ev(i, { type: "status", status: "running" }));
+    await waitFor(() => expect((screen.getByRole("combobox", { name: "session" }) as HTMLSelectElement).options.length).toBe(2));
+    fireEvent.click(screen.getByRole("button", { name: /cancel/i }));
+    await waitFor(() => expect(answer).toBeTypeOf("function"));
+    fireEvent.change(screen.getByRole("combobox", { name: "session" }), { target: { value: "ses_b" } });
+    await waitFor(() => expect(h.subbed("agent.subscribe").length).toBe(2));
+    h.emit("agent.subscribe", ev(1, { type: "status", status: "running" }));
+    await act(async () => {
+      answer(true);
+    });
+    expect(statusBadge().textContent).toMatch(/running/i);
+    expect((screen.getByRole("button", { name: /cancel/i }) as HTMLButtonElement).disabled).toBe(false);
+    // the failure path leaks nothing either
+    fireEvent.click(screen.getByRole("button", { name: /cancel/i }));
+    fireEvent.change(screen.getByRole("combobox", { name: "session" }), { target: { value: "ses_a" } });
+    await waitFor(() => expect(h.subbed("agent.subscribe").length).toBe(3));
+    await act(async () => {
+      answer(false);
+    });
+    expect(screen.queryByText(/offline/)).toBeNull();
+    expect((screen.getByRole("button", { name: /cancel/i }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  test("an approval_request whose id is not in approvals.list renders no buttons", async () => {
+    const { bridge, emit, subbed } = setup({ "approvals.list": () => [] });
+    render(<App bridge={bridge} sessionId="ses_01" />);
+    await waitFor(() => expect(subbed("agent.subscribe").length).toBe(1));
+    emit("agent.subscribe", ev(0, { type: "approval_request", approvalId: "apr_ghost" }));
+    expect(await within(rows()[0]).findByText(/apr_ghost · … loading/)).toBeTruthy();
+    expect(within(rows()[0]).queryByRole("button")).toBeNull();
+  });
+
+  test("once approval_resolved was seen, an undecided stored copy shows no buttons", async () => {
+    const { bridge, emit, subbed } = setup();
+    render(<App bridge={bridge} sessionId="ses_01" />);
+    await waitFor(() => expect(subbed("agent.subscribe").length).toBe(1));
+    emit("agent.subscribe", ev(0, { type: "approval_request", approvalId: "apr_01" }));
+    await within(rows()[0]).findByRole("button", { name: /approve/i });
+    emit("agent.subscribe", ev(1, { type: "approval_resolved", approvalId: "apr_01", decision: "approved" }));
+    expect(within(rows()[0]).queryByRole("button", { name: /approve|reject/i })).toBeNull();
+    expect(within(rows()[0]).getByText(/approved \(resolved event\)/)).toBeTruthy();
+  });
+
+  test("the switcher refetches sessions.list on focus and shows a one-line error when that fails", async () => {
+    let down = false;
+    const { bridge, reqs } = setup({
+      "sessions.list": () => {
+        if (down) throw { code: "offline", message: "down" };
+        return [fx.session];
+      },
+    });
+    render(<App bridge={bridge} sessionId="ses_01" />);
+    const select = await screen.findByRole("combobox", { name: "session" });
+    await waitFor(() => expect(reqs("sessions.list").length).toBe(1));
+    down = true;
+    await new Promise((r) => setTimeout(r, 1100));
+    fireEvent.focus(select);
+    expect(await screen.findByText("sessions: offline")).toBeTruthy();
+    expect(reqs("sessions.list").length).toBe(2);
+  });
+});
+
 describe("session resolution", () => {
   const T = (m: number) => new Date(Date.parse(fx.session.startedAt) + m * 60_000).toISOString();
   const mk = (id: string, status: AgentSession["status"], m: number): AgentSession => ({ ...fx.session, id, status, startedAt: T(m), branch: `nexus/agent-${id}` });

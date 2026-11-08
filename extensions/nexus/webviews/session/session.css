@@ -67,7 +67,8 @@ html, body, #root { height: 100%; }
 .sv-mono-line { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* RECEIPTS: at side-bar width the cells wrap (break at hyphens) instead of scrolling sideways. */
-.sv-receipt { display: inline-flex; align-items: center; flex-wrap: wrap; gap: var(--nx-gap-1); }
+.sv-receipt { display: inline-flex; align-items: center; flex-wrap: wrap; gap: var(--nx-gap-1); max-width: 100%; }
+.sv-receipt > span { min-width: 0; overflow-wrap: anywhere; }
 @media (max-width: 480px) {
   .session-body .nx-table td { white-space: normal; max-width: none; height: auto; padding-top: 2px; padding-bottom: 2px; line-height: var(--nx-lh-sm); vertical-align: top; }
 }

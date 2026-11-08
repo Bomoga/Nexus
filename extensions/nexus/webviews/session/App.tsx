@@ -103,8 +103,10 @@ const JUDGE_COLUMNS: readonly TableColumn<Judge>[] = [
   { key: "notes", header: "NOTES", truncate: true },
 ];
 
-function Approval({ approval, fallback, review, busy, now, onResolve }: {
+function Approval({ approval, resolved, fallback, review, busy, now, onResolve }: {
   approval: ApprovalRequest | undefined;
+  /** An approval_resolved event was seen: the stored copy may lag, but the decision is final. */
+  resolved: "approved" | "rejected" | undefined;
   review: SwarmReview | undefined;
   now: number;
   fallback: string;
@@ -119,6 +121,8 @@ function Approval({ approval, fallback, review, busy, now, onResolve }: {
     <StatusLine tone={decided === "approved" ? "ok" : "error"}>
       {`${decided} by ${approval.decidedBy ? `${approval.decidedBy.via} ${approval.decidedBy.userId}` : "unknown"}${approval.decidedAt ? ` at ${tPlus(approval.decidedAt)}` : ""}`}
     </StatusLine>
+  ) : resolved ? (
+    <StatusLine tone={resolved === "approved" ? "ok" : "error"}>{`${resolved} (resolved event)`}</StatusLine>
   ) : (
     <PendingNote requestedAt={approval.requestedAt} now={now} />
   );
@@ -145,7 +149,7 @@ function Approval({ approval, fallback, review, busy, now, onResolve }: {
             {review.judges?.length ? <Table columns={JUDGE_COLUMNS} rows={review.judges} rowKey={(j) => j.modelId} aria-label="swarm judges" /> : null}
           </div>
         ) : null}
-        {decided ? null : (
+        {decided || resolved ? null : (
           <div className="sv-actions">
             <Button variant="primary" disabled={busy} onClick={() => onResolve("approved")}>APPROVE</Button>
             <Button variant="danger" disabled={busy} onClick={() => onResolve("rejected")}>REJECT</Button>
@@ -208,6 +212,10 @@ export function App({ bridge, sessionId: initialId }: AppProps) {
   const now = useNow();
   const [busyApproval, setBusyApproval] = useState("");
   const [cancelling, setCancelling] = useState(false);
+  // The session the view is on right now: async answers for another session are dropped.
+  const sidRef = useRef<string | undefined>(sessionId);
+  sidRef.current = sessionId;
+  const listAt = useRef(0);
 
   const addReceipt = useCallback((r: ModelCallReceipt) => {
     setReceipts((cur) => (cur.some((x) => x.callId === r.callId) ? cur : [...cur, r]));
@@ -224,6 +232,7 @@ export function App({ bridge, sessionId: initialId }: AppProps) {
   }, [bridge]);
 
   const loadList = useCallback(() => {
+    listAt.current = Date.now();
     (bridge ?? getBridge())
       .request("sessions.list", {})
       .then((l) => {
@@ -254,6 +263,9 @@ export function App({ bridge, sessionId: initialId }: AppProps) {
     setApprovals(new Map());
     setCancelled(undefined);
     setError("");
+    setCancelling(false);
+    setBusyApproval("");
+    setTab("log");
     setLoadError("");
     setApprovalsError("");
     setReceiptsError("");
@@ -357,6 +369,9 @@ export function App({ bridge, sessionId: initialId }: AppProps) {
     }
   }, [ordered.length, tab]);
 
+  const refreshList = () => {
+    if (Date.now() - listAt.current > 1000) loadList();
+  };
   const retry = <Button size="sm" onClick={() => setAttempt((n) => n + 1)}>RETRY</Button>;
   if (!sessionId) {
     if (listError) {
@@ -397,33 +412,40 @@ export function App({ bridge, sessionId: initialId }: AppProps) {
   const cancel = () => {
     const atSeq = ordered.length ? ordered[ordered.length - 1].seq : -1;
     setCancelling(true);
-    b.request("agent.cancel", { sessionId })
-      .then(() => setCancelled({ atSeq }))
-      .catch((e) => setError(friendlyError(e, "session")))
-      .finally(() => setCancelling(false));
+    const sid = sessionId;
+    const here = () => sidRef.current === sid;
+    b.request("agent.cancel", { sessionId: sid })
+      .then(() => here() && setCancelled({ atSeq }))
+      .catch((e) => here() && setError(friendlyError(e, "session")))
+      .finally(() => here() && setCancelling(false));
   };
   const resolve = (approvalId: string, decision: "approved" | "rejected") => {
+    const sid = sessionId;
+    const here = () => sidRef.current === sid;
     setBusyApproval(approvalId);
     const settle = async () => {
       try {
         const a = await b.request("approvals.resolve", { approvalId, decision });
-        setApprovals((cur) => putApproval(cur, a));
+        if (here()) setApprovals((cur) => putApproval(cur, a));
       } catch (e) {
         // Someone else decided first: the host answers "conflict" without the winner, so fetch it.
         if (!(e instanceof BridgeError && e.code === "conflict")) throw e;
-        const list = await b.request("approvals.list", { sessionId });
+        const list = await b.request("approvals.list", { sessionId: sid });
+        if (!here()) return;
         setApprovals((cur) => list.reduce(putApproval, cur));
         if (!list.some((a) => a.id === approvalId && a.decision)) setError("already decided elsewhere");
       }
     };
     settle()
-      .catch((e) => setError(friendlyError(e, "approvals")))
-      .finally(() => setBusyApproval(""));
+      .catch((e) => here() && setError(friendlyError(e, "approvals")))
+      .finally(() => here() && setBusyApproval(""));
   };
 
   // Latest diff per path, in order of first appearance.
   const diffs = new Map<string, string>();
   for (const e of ordered) if (e.type === "file_edit") diffs.set(e.path, e.diff);
+  const resolvedIds = new Map<string, "approved" | "rejected">();
+  for (const e of ordered) if (e.type === "approval_resolved") resolvedIds.set(e.approvalId, e.decision);
   const tests = ordered.filter((e): e is Extract<AgentEvent, { type: "test_output" }> => e.type === "test_output");
 
   const badge = status ? statusBadge(status) : undefined;
@@ -445,6 +467,8 @@ export function App({ bridge, sessionId: initialId }: AppProps) {
             aria-label="session"
             value={sessionId}
             onMouseDown={loadList}
+            onFocus={refreshList}
+            onKeyDown={refreshList}
             onChange={(e) => setSessionId(e.target.value)}
             options={switcherOptions(list, session, titles, status)}
           />
@@ -463,6 +487,7 @@ export function App({ bridge, sessionId: initialId }: AppProps) {
       </Region>
       {!session && !loadError ? <StatusLine>… loading</StatusLine> : null}
       {loadError ? <StatusLine tone="error">{loadError} {retry}</StatusLine> : null}
+      {listError ? <StatusLine tone="error">{listError} {retry}</StatusLine> : null}
       {approvalsError ? <StatusLine tone="error">{approvalsError} {retry}</StatusLine> : null}
       {error ? <StatusLine tone="error">{error}</StatusLine> : null}
       {gaps.length ? <StatusLine tone="pending">missing events {gaps.join(", ")}</StatusLine> : null}
@@ -492,6 +517,7 @@ export function App({ bridge, sessionId: initialId }: AppProps) {
                     e.type === "approval_request" ? (
                       <Approval
                         approval={approvals.get(e.approvalId)}
+                        resolved={resolvedIds.get(e.approvalId)}
                         review={reviews.get(e.approvalId)}
                         fallback={e.approvalId}
                         busy={busyApproval === e.approvalId}

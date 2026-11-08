@@ -12,8 +12,8 @@ export function activate(context: vscode.ExtensionContext): void {
   const lane2: Partial<Lane2Services> = registerLane2(context);
   // Lane 1 runs first but "Make task" must open Lane 3's task editor, so hand it a late-bound opener.
   const lane3: { views?: Lane3Views } = {};
-  registerLane1(context, lane2, taskId => lane3.views?.openTaskEditor(taskId));
-  lane3.views = registerLane3(context, lane2.router as NexusBridgeRouter);
+  const lane1 = registerLane1(context, lane2, taskId => lane3.views?.openTaskEditor(taskId));
+  lane3.views = registerLane3(context, lane2.router as NexusBridgeRouter, { receipts: lane1.receipts });
 }
 
 export function deactivate(): void {}

@@ -13,17 +13,19 @@ import { reseedDemoRepo } from "../features/demo/reseed";
 import { HomeKeeper } from "../features/home/open-home";
 import { createProviders } from "../models/registry";
 import { registerFeatures, withFallbacks, type Lane2Services } from "./lane-1-features";
+import type { OptimizerService } from "../features/accounts/optimizer";
 
 // Lane 1 wiring: accounts, models, agent, tasks, sessions, approvals, swarms, auth.
 // Lead-only file until wave 3: tasks list their registration lines and the lead adds them at merge time.
-export function registerLane1(context: vscode.ExtensionContext, lane2: Partial<Lane2Services> = {}, openTaskEditor?: (taskId: string) => void): void {
+export function registerLane1(context: vscode.ExtensionContext, lane2: Partial<Lane2Services> = {}, openTaskEditor?: (taskId: string) => void): { receipts: OptimizerService } {
   const accounts = new AccountsService({ secrets: context.secrets, state: context.globalState, providers: createProviders() });
   const picker = registerModelPicker(context, accounts);
   registerConnectProvider(context, accounts, picker);
   registerReseedDemoRepo(context);
   registerHomeKeeper(context);
   const auth = registerAuth(context);
-  registerFeatures(context, accounts, picker, auth, withFallbacks(lane2, m => console.warn(`Nexus: ${m}`)), openTaskEditor);
+  const lane = registerFeatures(context, accounts, picker, auth, withFallbacks(lane2, m => console.warn(`Nexus: ${m}`)), openTaskEditor);
+  return { receipts: lane.optimizer };
 }
 
 function registerAuth(context: vscode.ExtensionContext): Auth0Session {

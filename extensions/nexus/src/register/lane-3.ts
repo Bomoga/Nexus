@@ -8,6 +8,8 @@ import { openCommit } from "../features/gitviews/open-commit";
 import type { DiffSide } from "../features/gitviews/open-commit";
 import { openReceipt } from "../features/receipts/open-receipt";
 import type { ReceiptSource } from "../features/receipts/open-receipt";
+import { registerShareSelection } from "../features/share/share-selection";
+import type { EditorSelection } from "../features/share/share-selection";
 
 // Lane 3 wiring: webview views and panels, and the commands that open them.
 // The router must be the one every lane serves its handlers on; until extension.ts passes it in, a local router is
@@ -47,6 +49,7 @@ export function registerLane3(context: vscode.ExtensionContext, router?: NexusBr
   context.subscriptions.push(views);
   void views.revealAgentViewOnce();
   registerGitViews(context, shared);
+  registerShare(context, shared, views);
   context.subscriptions.push(
     vscode.commands.registerCommand("nexus.openReceipt", (receiptId?: unknown, sessionId?: unknown) =>
       openReceipt(
@@ -64,6 +67,37 @@ export function registerLane3(context: vscode.ExtensionContext, router?: NexusBr
     ),
   );
   return views;
+}
+
+/** The editor selection as a workspace-relative 1-based range; undefined for untitled or out-of-workspace files. */
+function currentSelection(): EditorSelection | undefined {
+  const editor = vscode.window.activeTextEditor;
+  if (!editor || editor.document.isUntitled || editor.document.uri.scheme !== "file") return undefined;
+  if (!vscode.workspace.getWorkspaceFolder(editor.document.uri)) return undefined;
+  const path = vscode.workspace.asRelativePath(editor.document.uri, false).replace(/\\/g, "/");
+  const sel = editor.selection;
+  let endLine = sel.end.line;
+  // A selection ending at column 0 does not include that line.
+  if (!sel.isEmpty && sel.end.character === 0 && endLine > sel.start.line) endLine -= 1;
+  return { path, startLine: sel.start.line + 1, endLine: endLine + 1 };
+}
+
+/** "Nexus: Share to Slack": code ref and post go through the shared router (Lane 2's coderef.create and slack.post handlers). */
+function registerShare(context: vscode.ExtensionContext, router: NexusBridgeRouter, views: Lane3Views): void {
+  const client = createLoopbackClient(router);
+  context.subscriptions.push(client);
+  registerShareSelection(context, {
+    registerCommand: (id, cb) => vscode.commands.registerCommand(id, cb),
+    getSelection: currentSelection,
+    createRef: (path, startLine, endLine) => client.request("coderef.create", { path, startLine, endLine }),
+    listChannels: () => client.request("slack.channels", {}),
+    showQuickPick: (items, o) => Promise.resolve(vscode.window.showQuickPick(items, { placeHolder: o.placeHolder, matchOnDescription: true })),
+    showInputBox: (o) => Promise.resolve(vscode.window.showInputBox(o)),
+    post: (args) => client.request("slack.post", args),
+    showInfo: (m) => void vscode.window.showInformationMessage(m),
+    showError: (m) => void vscode.window.showErrorMessage(m),
+    revealChat: (channelId, threadTs) => void views.openSlack(threadTs ? { channelId, threadTs } : undefined),
+  });
 }
 
 /** The slice of the built-in git extension's API (extensions/git/src/api/git.d.ts) used for diff URIs. */

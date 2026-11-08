@@ -12,10 +12,22 @@ export interface AppProps {
   bridge?: BridgeClient;
 }
 
+const CHANNEL_ID = /^[A-Z][A-Z0-9_]{0,31}$/;
+const SLACK_TS = /^\d{1,12}\.\d{1,9}$/;
+
+/** The thread the host asked for (`nexus.openSlack {channelId, threadTs}` re-sets `<body data-channel-id data-thread-ts>`). */
+export function bootTarget(dataset: DOMStringMap = document.body.dataset): { channelId: string; threadTs?: string } | undefined {
+  const channelId = dataset.channelId;
+  if (!channelId || !CHANNEL_ID.test(channelId)) return undefined;
+  const threadTs = dataset.threadTs;
+  return threadTs && SLACK_TS.test(threadTs) ? { channelId, threadTs } : { channelId };
+}
+
 export function App({ bridge }: AppProps) {
-  const [selectedId, setSelectedId] = useState<string | undefined>();
+  const [boot] = useState(() => bootTarget());
+  const [selectedId, setSelectedId] = useState<string | undefined>(boot?.channelId);
   const [channels, setChannels] = useState<Channel[]>([]);
-  const [thread, setThread] = useState<{ channelId: string; threadTs: string } | undefined>();
+  const [thread, setThread] = useState<{ channelId: string; threadTs: string } | undefined>(boot?.threadTs ? { channelId: boot.channelId, threadTs: boot.threadTs } : undefined);
   // One outbox for the page: sends and drafts outlive the history and thread views (not a webview reload).
   const outbox = useMemo(() => createOutbox(bridge ?? getBridge()), [bridge]);
   // Links in Slack text are untrusted: only https goes to the host, which validates again before opening the system browser.

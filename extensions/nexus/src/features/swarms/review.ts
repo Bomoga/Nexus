@@ -43,7 +43,7 @@ const clip = (s: string, n: number) => (s.length <= n ? s : `${s.slice(0, n)}…
 const asVerdict = (v: unknown): Verdict => (VERDICTS.includes(v as Verdict) ? (v as Verdict) : "concerns");
 
 /** What one scan of a reply found. `tainted`: an object was left open at the end, or a balanced one did not parse, so text may be hidden. */
-interface Scan { slices: string[]; open: boolean; capped: boolean }
+interface Scan { slices: string[]; open: boolean; capped: boolean; dupKeys: boolean }
 
 /**
  * One linear pass over `text` that collects every top-level balanced `{...}` slice, in order. Strings and escapes are tracked, so
@@ -55,16 +55,31 @@ interface Scan { slices: string[]; open: boolean; capped: boolean }
 function scan(text: string, limit = Number.POSITIVE_INFINITY): Scan {
   const end = Math.min(text.length, MAX_INPUT_CHARS);
   const slices: string[] = [];
-  let start = -1, depth = 0, inString = false, escaped = false;
+  let start = -1, depth = 0, inString = false, escaped = false, strStart = -1, strEsc = false;
+  // Duplicate-key guard: JSON.parse keeps the LAST duplicate, so a repeated `verdict` or `judges` at depth 1 could replace the real
+  // one (a planted unescaped quote copied into a note does exactly that). A string closing at depth 1 and followed by `:` is a key.
+  let key: string | undefined, seenVerdict = false, seenJudges = false, dupKeys = false;
   for (let i = 0; i < end; i++) {
     const c = text.charCodeAt(i);
-    if (inString) { if (escaped) escaped = false; else if (c === 92) escaped = true; else if (c === 34) inString = false; continue; }
-    if (depth === 0) { if (c === 123) { start = i; depth = 1; } continue; }
-    if (c === 34) inString = true;
+    if (inString) {
+      if (escaped) escaped = false; else if (c === 92) { escaped = true; strEsc = true; }
+      else if (c === 34) { inString = false; if (depth === 1) key = strEsc ? "\\" : i - strStart <= 24 ? text.slice(strStart + 1, i) : ""; }
+      continue;
+    }
+    if (key !== undefined && c !== 32 && c !== 9 && c !== 10 && c !== 13) {
+      if (c === 58) {
+        if (key === "verdict") { if (seenVerdict) dupKeys = true; seenVerdict = true; }
+        else if (key === "judges") { if (seenJudges) dupKeys = true; seenJudges = true; }
+        else if (key.includes("\\")) dupKeys = true;           // an escaped key name could spell verdict/judges: not trusted
+      }
+      key = undefined;
+    }
+    if (depth === 0) { if (c === 123) { start = i; depth = 1; seenVerdict = seenJudges = false; key = undefined; } continue; }
+    if (c === 34) { inString = true; strStart = i; strEsc = false; }
     else if (c === 123) depth++;
-    else if (c === 125 && --depth === 0) { slices.push(text.slice(start, i + 1)); if (slices.length >= limit) return { slices, open: false, capped: false }; }
+    else if (c === 125 && --depth === 0) { slices.push(text.slice(start, i + 1)); if (slices.length >= limit) return { slices, open: false, capped: false, dupKeys }; }
   }
-  return { slices, open: depth > 0, capped: text.length > MAX_INPUT_CHARS };
+  return { slices, open: depth > 0, capped: text.length > MAX_INPUT_CHARS, dupKeys };
 }
 
 const tryParse = (slice: string): unknown => { try { return JSON.parse(slice); } catch { return undefined; } };
@@ -84,9 +99,9 @@ export interface VerdictObject { object?: Record<string, unknown>; tainted: bool
  * so the caller must not let it be more lenient than `concerns`. Single linear pass.
  */
 export function readVerdictObject(text: string): VerdictObject {
-  const { slices, open, capped } = scan(text);
+  const { slices, open, capped, dupKeys } = scan(text);
   let best: Record<string, unknown> | undefined;
-  let tainted = open || capped;
+  let tainted = open || capped || dupKeys;
   for (const slice of slices) {
     const o = tryParse(slice);
     if (o === undefined) { tainted = true; continue; }
@@ -96,10 +111,6 @@ export function readVerdictObject(text: string): VerdictObject {
     if (!best || SEVERITY[v as Verdict] > SEVERITY[(best as { verdict: Verdict }).verdict]) best = o as Record<string, unknown>;
   }
   return { ...(best ? { object: best } : {}), tainted };
-}
-
-export function extractVerdictObject(text: string): Record<string, unknown> | undefined {
-  return readVerdictObject(text).object;
 }
 
 const worst = (a: Verdict, b: Verdict): Verdict => (SEVERITY[b] > SEVERITY[a] ? b : a);
@@ -294,7 +305,7 @@ export class SwarmReviewService implements ApprovalHook {
       if (!object) return finish(fallbackCouncil(judges), text.length > MAX_INPUT_CHARS);
       let out = parseVerdict(JSON.stringify(object));
       // Unfinished or unparseable objects in the reply, or a judges list that omits a judge we read, mean it is not to be trusted as looks_good.
-      const listed = Array.isArray(object.judges) ? object.judges.length : 0;
+      const listed = Array.isArray(object.judges) ? object.judges.filter(j => !!j && typeof j === "object").length : 0;
       if ((tainted || listed < judges.length) && out.verdict === "looks_good") out = { ...out, verdict: "concerns" };
       return finish(out.judges ? out : { ...out, judges: fallbackCouncil(judges).judges }, text.length > MAX_INPUT_CHARS);
     } catch (e) {

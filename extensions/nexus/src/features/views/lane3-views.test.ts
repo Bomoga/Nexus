@@ -3,11 +3,12 @@ import { Lane3Views, escapeAttr, readBodyData, withBodyData, type Lane3Deps, typ
 
 const PAGE = '<!doctype html>\n<html lang="en">\n<head></head>\n<body>\n<div id="root"></div>\n</body>\n</html>';
 
-function setup(opts: { focusFails?: boolean } = {}) {
+function setup(opts: { focusFails?: boolean; state?: Map<string, unknown> } = {}) {
   const commands = new Map<string, (...args: unknown[]) => unknown>();
   const registered: string[] = [];
   const opened: { viewId: string; entry: string; title: string; panel: PanelLike & { reveals: number; dispose(): void } }[] = [];
   const executed: string[] = [];
+  const executedArgs: unknown[][] = [];
   const errors: string[] = [];
   const resolvers = new Map<string, (view: ViewLike) => void>();
   /** Simulate VS Code resolving a contributed view: returns the fake view. */
@@ -57,15 +58,24 @@ function setup(opts: { focusFails?: boolean } = {}) {
       commands.set(id, fn);
       return { dispose: () => commands.delete(id) };
     },
-    executeCommand: async (id) => {
+    executeCommand: async (id, ...args) => {
       executed.push(id);
+      executedArgs.push(args);
       if (opts.focusFails && id.endsWith(".focus")) throw new Error(`no such view: ${id}`);
     },
     showError: (m) => errors.push(m),
+    workspaceState: opts.state
+      ? {
+          get: <T,>(key: string) => opts.state!.get(key) as T | undefined,
+          update: async (key: string, value: unknown) => {
+            opts.state!.set(key, value);
+          },
+        }
+      : undefined,
   };
   const views = new Lane3Views(deps).register();
   const run = (id: string, ...args: unknown[]) => commands.get(id)!(...args);
-  return { views, commands, registered, opened, executed, errors, run, resolveView };
+  return { views, commands, registered, opened, executed, executedArgs, errors, run, resolveView };
 }
 
 describe("Lane3Views", () => {
@@ -121,8 +131,10 @@ describe("Lane3Views", () => {
     const view = resolveView("nexus.agent");
     expect(view.webview.html).toContain('<body data-session-id="ses_07">');
     view.dispose();
+    await run("nexus.openSession", "ses_08");
+    expect(view.webview.html).toContain("ses_07"); // the disposed view is no longer written to
     const again = resolveView("nexus.agent");
-    expect(again.webview.html).toContain('<body data-session-id="ses_07">');
+    expect(again.webview.html).toContain('<body data-session-id="ses_08">');
   });
 
   it("falls back to one session panel per id when the agent view cannot be focused", async () => {
@@ -188,6 +200,32 @@ describe("Lane3Views", () => {
     const { views, commands } = setup();
     views.dispose();
     expect(commands.size).toBe(0);
+  });
+});
+
+describe("revealAgentViewOnce", () => {
+  it("reveals the agent view without stealing focus, once per workspace", async () => {
+    const state = new Map<string, unknown>();
+    const { views, executed, executedArgs } = setup({ state });
+    await views.revealAgentViewOnce();
+    await views.revealAgentViewOnce();
+    expect(executed).toEqual(["nexus.agent.focus"]);
+    expect(executedArgs[0]).toEqual([{ preserveFocus: true }]);
+    expect(state.get("nexus.agentViewRevealed")).toBe(true);
+    const again = setup({ state });
+    await again.views.revealAgentViewOnce();
+    expect(again.executed).toEqual([]);
+  });
+
+  it("does nothing without workspace state, and keeps retrying while the view cannot be focused", async () => {
+    const none = setup();
+    await none.views.revealAgentViewOnce();
+    expect(none.executed).toEqual([]);
+    const state = new Map<string, unknown>();
+    const failing = setup({ state, focusFails: true });
+    await failing.views.revealAgentViewOnce();
+    expect(failing.executed).toEqual(["nexus.agent.focus"]);
+    expect(state.has("nexus.agentViewRevealed")).toBe(false);
   });
 });
 

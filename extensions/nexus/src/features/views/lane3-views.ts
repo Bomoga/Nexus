@@ -32,9 +32,14 @@ export interface Lane3Deps {
   /** Host one webview entry (media/<entry>/) under a view or panel id. `onResolveView` fires once per resolved view. */
   makeHost(viewId: string, entry: string, onResolveView?: (view: ViewLike) => void): Pick<WebviewHost, "register"> & { openPanel(title: string): PanelLike };
   registerCommand(id: string, fn: (...args: unknown[]) => unknown): { dispose(): void };
-  executeCommand(id: string): Thenable<unknown>;
+  executeCommand(id: string, ...args: unknown[]): Thenable<unknown>;
   showError(message: string): void;
+  /** Per-workspace memory (vscode workspaceState) for one-time behaviour such as the first reveal of the agent view. */
+  workspaceState?: { get<T>(key: string): T | undefined; update(key: string, value: unknown): Thenable<void> };
 }
+
+/** workspaceState key: the agent view was revealed once in this workspace (after that the user's layout choice stands). */
+export const AGENT_REVEALED_KEY = "nexus.agentViewRevealed";
 
 /** Session and task ids arrive from URIs and notifications: short, plain characters only (they end up in tab titles and HTML). */
 export function isPanelId(id: unknown): id is string {
@@ -102,6 +107,24 @@ export class Lane3Views {
       }),
     );
     return this;
+  }
+
+  /**
+   * Show the secondary side bar with the Agent view the first time a workspace opens. The workbench computes the bar's
+   * startup visibility before this extension activates (onStartupFinished), finds no view container in it (the built-in
+   * Chat is disabled), records it as empty and hides it; the core default `workbench.secondarySideBar.defaultVisibility:
+   * visible` is not enough on its own. Done once per workspace (workspaceState), so a user who hides the bar is not
+   * fought on the next start. Focus stays where it was.
+   */
+  async revealAgentViewOnce(): Promise<void> {
+    const state = this.deps.workspaceState;
+    if (!state || state.get<boolean>(AGENT_REVEALED_KEY)) return;
+    try {
+      await this.deps.executeCommand(`${AGENT_VIEW}.focus`, { preserveFocus: true });
+      await state.update(AGENT_REVEALED_KEY, true);
+    } catch {
+      // no secondary side bar (or the view is not registered): nothing to reveal, try again next start
+    }
   }
 
   /** The globe home: at most one, revealed if already open. */

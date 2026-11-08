@@ -40,10 +40,12 @@ export function registerLane3(context: vscode.ExtensionContext, router?: NexusBr
   const views = new Lane3Views({
     makeHost: (viewId, entry, onResolveView) => createWebviewHost(context, viewId, entry, shared, undefined, { onResolveView }),
     registerCommand: (id, fn) => vscode.commands.registerCommand(id, fn),
-    executeCommand: (id) => vscode.commands.executeCommand(id),
+    executeCommand: (id, ...args) => vscode.commands.executeCommand(id, ...args),
     showError: (m) => void vscode.window.showErrorMessage(m),
+    workspaceState: context.workspaceState,
   }).register();
   context.subscriptions.push(views);
+  void views.revealAgentViewOnce();
   registerGitViews(context, shared);
   context.subscriptions.push(
     vscode.commands.registerCommand("nexus.openReceipt", (receiptId?: unknown, sessionId?: unknown) =>

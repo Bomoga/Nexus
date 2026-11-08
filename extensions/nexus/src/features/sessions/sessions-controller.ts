@@ -212,8 +212,8 @@ export class SessionsController implements SessionEvents {
       const task = await store.getTask(stored.taskId);
       if (!task) throw new Error(`No task ${stored.taskId}.`);
       const history = historyOf(await store.agentEvents(sessionId, 0));
-      const { endedAt: _ended, ...rest } = stored;
-      const session: AgentSession = { ...rest, status: "running" };
+      const session: AgentSession = { ...stored, status: "running" };
+      delete session.endedAt;
       const running: Task = { ...task, status: "running", sessionId };
       await store.putSession(session);
       await this.putTask(running);

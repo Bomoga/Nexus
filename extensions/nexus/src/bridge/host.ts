@@ -145,7 +145,12 @@ export interface WebviewHost {
  * destroy an unretained page while `visible` stays true, so a panel keeps its subscriptions across a hide. Moving a panel
  * to another window still reloads it; the reloaded page's reused ids replace the old subscriptions.
  */
-export function createWebviewHost(ctx: vscode.ExtensionContext, viewId: string, entry: string, router: NexusBridgeRouter, api: HostApi = realApi()): WebviewHost {
+export interface WebviewHostOptions {
+  /** Called once per resolved view, after its HTML is set and it is attached to the router (the caller may re-set `webview.html`, e.g. to add body data). */
+  onResolveView?(view: vscode.WebviewView): void;
+}
+
+export function createWebviewHost(ctx: vscode.ExtensionContext, viewId: string, entry: string, router: NexusBridgeRouter, api: HostApi = realApi(), options: WebviewHostOptions = {}): WebviewHost {
   const provider: vscode.WebviewViewProvider = {
     resolveWebviewView(view) {
       configureWebview(api, ctx, entry, view.webview, view.title ?? viewId);
@@ -154,6 +159,7 @@ export function createWebviewHost(ctx: vscode.ExtensionContext, viewId: string, 
         onDidDispose: cb => view.onDidDispose(cb),
         onDidChangeVisibility: cb => view.onDidChangeVisibility(() => cb(view.visible)),
       });
+      options.onResolveView?.(view);
     },
   };
   return {

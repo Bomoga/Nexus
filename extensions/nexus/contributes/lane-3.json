@@ -20,10 +20,19 @@
         { "command": "nexus.openSession", "when": "false" }
       ]
     },
+    "viewsContainers": {
+      "secondarySidebar": [
+        { "id": "nexus-agent", "title": "Agent", "icon": "resources/nexus.svg" }
+      ]
+    },
     "views": {
       "nexus": [
         { "type": "webview", "id": "nexus.chat", "name": "Slack" },
+        { "type": "webview", "id": "nexus.git", "name": "Git" },
         { "type": "webview", "id": "nexus.approvals", "name": "Approvals" }
+      ],
+      "nexus-agent": [
+        { "type": "webview", "id": "nexus.agent", "name": "Agent" }
       ]
     }
   },

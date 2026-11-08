@@ -458,7 +458,7 @@ describe("session resolution", () => {
   test("an empty list shows one hint line and makes no session requests", async () => {
     const { bridge, reqs, subbed } = setup({ "sessions.list": () => [] });
     render(<App bridge={bridge} sessionId={undefined} />);
-    expect(await screen.findByText("no agent session yet · start one from a Slack thread")).toBeTruthy();
+    expect(await screen.findByText("no agent session yet · make a task from a Slack thread")).toBeTruthy();
     expect(screen.queryByRole("button")).toBeNull();
     expect(reqs("sessions.get").length + subbed("agent.subscribe").length).toBe(0);
   });

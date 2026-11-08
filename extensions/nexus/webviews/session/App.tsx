@@ -383,7 +383,7 @@ export function App({ bridge, sessionId: initialId }: AppProps) {
     }
     return (
       <div className="session-app">
-        {list ? <EmptyState message="no agent session yet · start one from a Slack thread" /> : <StatusLine>… loading</StatusLine>}
+        {list ? <EmptyState message="no agent session yet · make a task from a Slack thread" /> : <StatusLine>… loading</StatusLine>}
       </div>
     );
   }

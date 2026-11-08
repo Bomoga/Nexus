@@ -202,10 +202,12 @@ describe("timeline view", () => {
     expect(await screen.findByText("no events in this window")).toBeTruthy();
   });
 
+  // Renders 5,000 fixture events in jsdom: a few seconds on a quiet laptop, over 20 s with other suites running, so it
+  // gets its own budget. The assertion is unchanged.
   test("shows a truncated line when the query hit the limit", async () => {
     const many = Array.from({ length: 5000 }, (_, i) => commit(`c${i}`, "main", 1 + (i % 30) / 10));
     const { bridge } = setup(many);
     render(<App bridge={bridge} nowMs={NOW} />);
-    expect(await screen.findByText(/truncated/i)).toBeTruthy();
-  });
+    expect(await screen.findByText(/truncated/i, {}, { timeout: 30_000 })).toBeTruthy();
+  }, 40_000);
 });

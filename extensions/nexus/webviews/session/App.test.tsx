@@ -6,7 +6,7 @@ import { fx } from "../../src/contracts/fixtures";
 import { scriptedAgentEvents, scriptedReceipts } from "../../src/contracts/fixtures/stream";
 import { createBridgeClient } from "../shared";
 import type { Transport } from "../shared";
-import { App } from "./App";
+import { App, formatAge } from "./App";
 import { resolveSessionId } from "./sessionId";
 
 afterEach(() => {
@@ -525,20 +525,38 @@ describe("session resolution", () => {
     expect(subbed("agent.subscribe").length).toBe(0);
   });
 
-  test("NEW on a session opens the composer with the sessions one switch away; picking one shows it again", async () => {
+  test("NEW on a session opens the composer with the past sessions listed; clicking one shows it again", async () => {
     const { bridge, subbed } = setup({ ...composerAnswers, "sessions.list": () => [mk("ses_x", "running", 50), fx.session] });
     render(<App bridge={bridge} sessionId={undefined} />);
     await waitFor(() => expect(subbed("agent.subscribe").length).toBe(1));
     fireEvent.click(screen.getByRole("button", { name: "NEW" }));
     expect(await screen.findByTestId("nexus-logo")).toBeTruthy();
-    const select = screen.getByRole("combobox", { name: "session" }) as HTMLSelectElement;
-    expect(select.value).toBe("");
-    expect(select.options[0].label).toBe("NEW TASK");
+    expect(screen.queryByRole("combobox", { name: "session" })).toBeNull(); // the NEW TASK dropdown is gone
     expect(subbed("agent.subscribe").length).toBe(1); // no new subscription while composing
-    fireEvent.change(select, { target: { value: "ses_01" } });
+    const rows = within(screen.getByRole("region", { name: "past sessions" })).getAllByRole("button");
+    expect(rows.length).toBe(2);
+    fireEvent.click(rows[1]);
     await waitFor(() => expect(subbed("agent.subscribe").length).toBe(2));
     expect(subbed("agent.subscribe")[1].body).toEqual({ sessionId: "ses_01", fromSeq: 0 });
     expect(screen.queryByTestId("nexus-logo")).toBeNull();
+  });
+
+  test("the composer state reads top to bottom: composer, the mark, past sessions (newest first, with an age)", async () => {
+    const { bridge } = setup({ ...composerAnswers, "sessions.list": () => [mk("ses_old", "done", 0), mk("ses_new", "done", 30)] });
+    render(<App bridge={bridge} sessionId={undefined} composeSeq={1} />);
+    const logo = await screen.findByTestId("nexus-logo");
+    const composer = screen.getByLabelText("new agent task");
+    const past = await screen.findByRole("region", { name: "past sessions" });
+    expect(composer.compareDocumentPosition(logo) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(logo.compareDocumentPosition(past) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // The model Select and START sit inside the composer box with the textarea.
+    expect(within(composer).getByRole("combobox", { name: "model" })).toBeTruthy();
+    expect(within(composer).getByRole("button", { name: /START/ })).toBeTruthy();
+    expect(within(composer).getByText(/the agent works on its own branch/)).toBeTruthy();
+    const rows = within(past).getAllByRole("button");
+    expect(rows.map((r) => r.getAttribute("data-session"))).toEqual(["ses_new", "ses_old"]);
+    expect(within(rows[0]).getByText("DONE")).toBeTruthy();
+    expect(within(rows[0]).getByText(/^\d+[mhd]$|^now$/)).toBeTruthy();
   });
 
   test("a compose seq from the host boots on the composer even when sessions exist", async () => {
@@ -547,7 +565,18 @@ describe("session resolution", () => {
     expect(await screen.findByTestId("nexus-logo")).toBeTruthy();
     await waitFor(() => expect(reqs("sessions.list").length).toBe(1));
     expect(subbed("agent.subscribe").length).toBe(0);
-    expect((screen.getByRole("combobox", { name: "session" }) as HTMLSelectElement).options.length).toBe(3);
+    expect(within(await screen.findByRole("region", { name: "past sessions" })).getAllByRole("button").length).toBe(2);
+  });
+
+  test("formatAge: now under a minute, then m, h and d", () => {
+    const t = Date.parse("2026-01-01T12:00:00Z");
+    const ago = (ms: number) => formatAge(new Date(t - ms).toISOString(), t);
+    expect(ago(20_000)).toBe("now");
+    expect(ago(51 * 60_000)).toBe("51m");
+    expect(ago(125 * 60_000)).toBe("2h");
+    expect(ago(3 * 86_400_000 + 5000)).toBe("3d");
+    expect(ago(-5000)).toBe("now"); // clock skew never shows a negative age
+    expect(formatAge("garbage", t)).toBe("");
   });
 
   test("a failing sessions.list shows an error with RETRY", async () => {

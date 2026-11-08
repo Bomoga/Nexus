@@ -171,16 +171,8 @@ export function App({ bridge: injected }: AppProps = {}) {
 
   return (
     <div className="globe-app">
-      <div className="nx-panel-header globe-bar" role="toolbar" aria-label="Globe controls">
+      <div className="nx-panel-header globe-bar globe-bar-top" role="toolbar" aria-label="Globe window and status">
         <SegmentedControl aria-label="Time window" options={WINDOW_OPTIONS} value={window_} onChange={onWindow} />
-        <div className="globe-bar-center">
-          <Search onPick={onSearchPick} search={search} />
-          {tracked ? (
-            <Button size="sm" kbd="ESC" onClick={release}>
-              STOP TRACKING
-            </Button>
-          ) : null}
-        </div>
         <span className="globe-bar-right">
           {pinnedNow !== undefined ? (
             <>
@@ -194,6 +186,14 @@ export function App({ bridge: injected }: AppProps = {}) {
           )}
           <span className="nx-count">{`${visible.length} EVENTS`}</span>
         </span>
+      </div>
+      <div className="nx-panel-header globe-bar globe-bar-search" role="toolbar" aria-label="Globe search">
+        <Search onPick={onSearchPick} search={search} />
+        {tracked ? (
+          <Button size="sm" kbd="ESC" onClick={release}>
+            STOP TRACKING
+          </Button>
+        ) : null}
       </div>
       {truncated ? <StatusLine tone="pending">{`truncated: showing newest ${events.length}`}</StatusLine> : null}
       {error ? (

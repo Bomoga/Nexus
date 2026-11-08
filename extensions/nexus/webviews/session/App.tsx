@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import type { AgentEvent, AgentSession, ApprovalRequest, ModelCallReceipt, SpendSummary, SwarmReview } from "../../src/contracts";
-import { BridgeError, Badge, Button, EmptyState, MonoBlock, PendingNote, Region, Select, StatusLine, StoreStatusLine, Table, Tabs, friendlyError, getBridge, statusBadge, useNow } from "../shared";
+import { BridgeError, Badge, Button, EmptyState, ListRow, Logo, MonoBlock, PendingNote, Region, Select, StatusLine, StoreStatusLine, Table, Tabs, friendlyError, getBridge, statusBadge, useNow } from "../shared";
 import type { BadgeKind, BridgeClient, TableColumn } from "../shared";
 import { formatEventTime } from "../globe/model/picking";
 import { Composer } from "./Composer";
@@ -22,6 +22,17 @@ const isLive = (s: AgentSession) => s.status === "running" || s.status === "awai
 /** Newest first, with running and awaiting_approval sessions ahead of finished ones. */
 export function orderSessions(list: readonly AgentSession[]): AgentSession[] {
   return [...list].sort((a, b) => Number(isLive(b)) - Number(isLive(a)) || Date.parse(b.startedAt) - Date.parse(a.startedAt));
+}
+
+/** "now" under a minute, then "51m", "2h", "3d" from an ISO time; "" when the time does not parse. */
+export function formatAge(iso: string, now: number): string {
+  const t = Date.parse(iso);
+  if (Number.isNaN(t)) return "";
+  const m = Math.floor(Math.max(0, now - t) / 60_000);
+  if (m < 1) return "now";
+  if (m < 60) return `${m}m`;
+  if (m < 1440) return `${Math.floor(m / 60)}h`;
+  return `${Math.floor(m / 1440)}d`;
 }
 
 /** Missing seqs between 0 and the highest seen, as "4" or "6-8" ranges. */
@@ -404,23 +415,11 @@ export function App({ bridge, sessionId: initialId, composeSeq }: AppProps) {
         </div>
       );
     }
-    // No session on screen: the composer (grey mark, brief, model, START). Existing sessions stay one switch away.
+    // No session on screen, laid out like an editor's chat side bar: the composer on top, the grey mark in the empty
+    // space, and the earlier sessions at the bottom (newest first); a click shows one.
     return (
       <div className="session-app">
         {listError ? <StatusLine tone="error">{listError} {retry}</StatusLine> : null}
-        {list && list.length ? (
-          <Region flush className="sv-head" aria-label="agent session">
-            <div className="sv-head-row">
-              <Select
-                aria-label="session"
-                value=""
-                onMouseDown={loadList}
-                onChange={(e) => { if (e.target.value) show(e.target.value); }}
-                options={[{ value: "", label: "NEW TASK" }, ...switcherOptions(list, undefined, titles)]}
-              />
-            </div>
-          </Region>
-        ) : null}
         <Composer
           bridge={bridge}
           onStarted={(s) => {
@@ -428,6 +427,33 @@ export function App({ bridge, sessionId: initialId, composeSeq }: AppProps) {
             loadList();
           }}
         />
+        <div className="sv-empty-mark">
+          <Logo className="sv-logo" size={72} aria-hidden="true" data-testid="nexus-logo" />
+        </div>
+        {list && list.length ? (
+          <Region className="sv-past" aria-label="past sessions" header={{ title: "PAST SESSIONS", count: list.length }} bodyClassName="sv-past-body">
+            {list.map((x) => {
+              const b = statusBadge(x.status);
+              const title = titles.get(x.taskId) ?? x.taskId;
+              return (
+                <ListRow
+                  key={x.id}
+                  data-session={x.id}
+                  title={title}
+                  titleText={title}
+                  meta={
+                    <span className="sv-past-meta">
+                      <Badge kind={b.kind}>{b.label}</Badge>
+                      <span className="sv-past-model">{x.model.modelId}</span>
+                    </span>
+                  }
+                  trailing={<span className="sv-past-age">{formatAge(x.startedAt, now)}</span>}
+                  onClick={() => show(x.id)}
+                />
+              );
+            })}
+          </Region>
+        ) : null}
       </div>
     );
   }

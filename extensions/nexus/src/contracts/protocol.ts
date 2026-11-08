@@ -35,6 +35,7 @@ export const Requests = {
   "slack.users":         { req: z.object({ ids: z.array(z.string()).optional() }), res: z.array(C.SlackUser) },
   "slack.post":          { req: z.object({ channelId: z.string(), text: z.string().min(1), threadTs: z.string().optional(), clientId: z.string() }), res: C.ChatMessage },   // as the USER; clientId matches the pending echo
   "tasks.createFromThread": { req: z.object({ channelId: z.string(), threadTs: z.string() }), res: T.Task },  // status "draft"
+  "tasks.create":        { req: z.object({ title: z.string().min(1).max(200), brief: z.string().min(1).max(20000) }), res: T.Task },  // status "draft", source manual: typed in the agent view
   "tasks.get":           { req: z.object({ taskId: Id }), res: T.Task },
   "tasks.list":          { req: z.object({ status: T.TaskStatus.optional() }), res: z.array(T.Task) },
   "tasks.update":        { req: z.object({ taskId: Id, title: z.string().optional(), brief: z.string().optional() }), res: T.Task }, // only while draft

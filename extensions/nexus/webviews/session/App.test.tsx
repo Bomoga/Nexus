@@ -455,12 +455,99 @@ describe("session resolution", () => {
     expect(subbed("agent.subscribe").length).toBe(1);
   });
 
-  test("an empty list shows one hint line and makes no session requests", async () => {
-    const { bridge, reqs, subbed } = setup({ "sessions.list": () => [] });
+  const composerAnswers: Answers = {
+    "models.list": () => fx.models.filter((m) => m.supportsTools),
+    "accounts.list": () => fx.providerAccounts,
+    "optimizer.get": () => fx.optimizer,
+  };
+
+  test("an empty list shows the grey mark and a composer (no Slack thread needed), and makes no session requests", async () => {
+    const { bridge, reqs, subbed } = setup({ ...composerAnswers, "sessions.list": () => [] });
     render(<App bridge={bridge} sessionId={undefined} />);
-    expect(await screen.findByText("no agent session yet · make a task from a Slack thread")).toBeTruthy();
-    expect(screen.queryByRole("button")).toBeNull();
+    expect(await screen.findByTestId("nexus-logo")).toBeTruthy();
+    const brief = screen.getByRole("textbox", { name: "what should the agent do?" }) as HTMLTextAreaElement;
+    expect(brief.value).toBe("");
+    const start = screen.getByRole("button", { name: /START/ }) as HTMLButtonElement;
+    expect(start.disabled).toBe(true); // nothing typed yet
+    // The first agent model is preselected, with its data-use line.
+    await waitFor(() => expect((screen.getByRole("combobox", { name: "model" }) as HTMLSelectElement).value).toBe("anthropic/claude-sonnet-4-5"));
+    expect(screen.queryByText("no agent session yet · make a task from a Slack thread")).toBeNull();
+    expect(screen.queryByRole("combobox", { name: "session" })).toBeNull(); // no sessions to switch to
     expect(reqs("sessions.get").length + subbed("agent.subscribe").length).toBe(0);
+  });
+
+  test("START creates a manual task titled from the brief's first line, starts an agent on the chosen model and shows that session", async () => {
+    const created: Record<string, unknown>[] = [];
+    const started: Record<string, unknown>[] = [];
+    const { bridge, reqs, subbed } = setup({
+      ...composerAnswers,
+      "sessions.list": () => [],
+      "tasks.create": (b) => {
+        created.push(b);
+        return { ...fx.task, id: "task_new", title: b.title, brief: b.brief, source: { kind: "manual" }, status: "draft", codeRefs: [] };
+      },
+      "agent.start": (b) => {
+        started.push(b);
+        return { ...fx.session, id: "ses_new", taskId: "task_new", model: b.model };
+      },
+      "sessions.get": () => ({ ...fx.session, id: "ses_new", taskId: "task_new" }),
+    });
+    render(<App bridge={bridge} sessionId={undefined} />);
+    const brief = (await screen.findByRole("textbox", { name: "what should the agent do?" })) as HTMLTextAreaElement;
+    await waitFor(() => expect((screen.getByRole("combobox", { name: "model" }) as HTMLSelectElement).value).toBe("anthropic/claude-sonnet-4-5"));
+    fireEvent.change(screen.getByRole("combobox", { name: "model" }), { target: { value: "google/gemini-3-flash-preview" } });
+    fireEvent.change(brief, { target: { value: "Fix the cart total\n\nThe discount comes off once per line instead of once per unit." } });
+    fireEvent.keyDown(brief, { key: "Enter", shiftKey: true }); // a new line, not a start
+    expect(created.length).toBe(0);
+    fireEvent.keyDown(brief, { key: "Enter" });
+    await waitFor(() => expect(subbed("agent.subscribe").length).toBe(1));
+    expect(created).toEqual([{ title: "Fix the cart total", brief: "Fix the cart total\n\nThe discount comes off once per line instead of once per unit." }]);
+    expect(started).toEqual([{ taskId: "task_new", model: { provider: "google", modelId: "gemini-3-flash-preview" } }]);
+    expect(subbed("agent.subscribe")[0].body).toEqual({ sessionId: "ses_new", fromSeq: 0 });
+    expect(reqs("sessions.list").length).toBe(2); // refreshed so the switcher lists the new session
+  });
+
+  test("a failed start stays on the composer with the brief kept and the error shown", async () => {
+    const { bridge, subbed } = setup({
+      ...composerAnswers,
+      "sessions.list": () => [],
+      "tasks.create": () => {
+        throw { code: "offline", message: "down" };
+      },
+    });
+    render(<App bridge={bridge} sessionId={undefined} />);
+    const brief = (await screen.findByRole("textbox", { name: "what should the agent do?" })) as HTMLTextAreaElement;
+    await waitFor(() => expect((screen.getByRole("combobox", { name: "model" }) as HTMLSelectElement).value).not.toBe(""));
+    fireEvent.change(brief, { target: { value: "do a thing" } });
+    fireEvent.click(screen.getByRole("button", { name: /START/ }));
+    expect(await screen.findByText("task: offline")).toBeTruthy();
+    expect((screen.getByRole("textbox", { name: "what should the agent do?" }) as HTMLTextAreaElement).value).toBe("do a thing");
+    expect(subbed("agent.subscribe").length).toBe(0);
+  });
+
+  test("NEW on a session opens the composer with the sessions one switch away; picking one shows it again", async () => {
+    const { bridge, subbed } = setup({ ...composerAnswers, "sessions.list": () => [mk("ses_x", "running", 50), fx.session] });
+    render(<App bridge={bridge} sessionId={undefined} />);
+    await waitFor(() => expect(subbed("agent.subscribe").length).toBe(1));
+    fireEvent.click(screen.getByRole("button", { name: "NEW" }));
+    expect(await screen.findByTestId("nexus-logo")).toBeTruthy();
+    const select = screen.getByRole("combobox", { name: "session" }) as HTMLSelectElement;
+    expect(select.value).toBe("");
+    expect(select.options[0].label).toBe("NEW TASK");
+    expect(subbed("agent.subscribe").length).toBe(1); // no new subscription while composing
+    fireEvent.change(select, { target: { value: "ses_01" } });
+    await waitFor(() => expect(subbed("agent.subscribe").length).toBe(2));
+    expect(subbed("agent.subscribe")[1].body).toEqual({ sessionId: "ses_01", fromSeq: 0 });
+    expect(screen.queryByTestId("nexus-logo")).toBeNull();
+  });
+
+  test("a compose seq from the host boots on the composer even when sessions exist", async () => {
+    const { bridge, reqs, subbed } = setup({ ...composerAnswers, "sessions.list": () => [mk("ses_x", "running", 50), fx.session] });
+    render(<App bridge={bridge} sessionId={undefined} composeSeq={1} />);
+    expect(await screen.findByTestId("nexus-logo")).toBeTruthy();
+    await waitFor(() => expect(reqs("sessions.list").length).toBe(1));
+    expect(subbed("agent.subscribe").length).toBe(0);
+    expect((screen.getByRole("combobox", { name: "session" }) as HTMLSelectElement).options.length).toBe(3);
   });
 
   test("a failing sessions.list shows an error with RETRY", async () => {

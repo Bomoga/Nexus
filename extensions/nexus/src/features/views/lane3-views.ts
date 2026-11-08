@@ -89,6 +89,8 @@ export class Lane3Views {
   private home: PanelLike | undefined;
   private timeline: PanelLike | undefined;
   private agentView: ViewLike | undefined;
+  /** How many times "New task" asked for a blank composer; 0 means never (the view picks a session as usual). */
+  private agentComposeSeq = 0;
   /** The session the agent view should show once it resolves (or re-show after a reload). */
   private agentSessionId: string | undefined;
   private chatView: ViewLike | undefined;
@@ -113,6 +115,7 @@ export class Lane3Views {
       d.registerCommand("nexus.openTimeline", () => this.openTimeline()),
       d.registerCommand("nexus.openSlack", (target?: unknown) => this.openSlack(target)),
       d.registerCommand("nexus.openApprovals", () => d.executeCommand(`${APPROVALS_VIEW}.focus`)),
+      d.registerCommand("nexus.newTask", () => this.newTask()),
       // nexus.shareSelectionToSlack is registered by src/register/lane-3.ts (registerShareSelection over the shared router).
       d.registerCommand("nexus.openSession", (sessionId?: unknown) => {
         if (!isPanelId(sessionId)) {
@@ -175,6 +178,22 @@ export class Lane3Views {
    * page and replays from seq 0, then the view is focused. If the view cannot be focused (no secondary side bar), the
    * session opens as an editor panel instead, one per session id.
    */
+  /**
+   * A blank composer in the agent view ("New task", the + on the view title, or the palette): the view forgets the
+   * session it showed and boots with <body data-compose-seq="n">, a new n each time, so the page reloads on the
+   * composer even when it was already there. Nothing is created until the user presses START in it.
+   */
+  async newTask(): Promise<void> {
+    this.agentSessionId = undefined;
+    this.agentComposeSeq += 1;
+    if (this.agentView) this.pointAgentCompose(this.agentView);
+    try {
+      await this.deps.executeCommand(`${AGENT_VIEW}.focus`);
+    } catch {
+      // no agent view (no secondary side bar): nothing to show
+    }
+  }
+
   async openSession(sessionId: string): Promise<void> {
     this.agentSessionId = sessionId;
     if (this.agentView) this.pointAgentView(this.agentView, sessionId);
@@ -217,6 +236,7 @@ export class Lane3Views {
     });
     this.disposables.push(listener);
     if (this.agentSessionId) this.pointAgentView(view, this.agentSessionId);
+    else if (this.agentComposeSeq > 0) this.pointAgentCompose(view);
   }
 
   private onChatViewResolved(view: ViewLike): void {
@@ -240,6 +260,11 @@ export class Lane3Views {
   private pointAgentView(view: ViewLike, sessionId: string): void {
     if (readBodyData(view.webview.html, "session-id") === sessionId) return;
     view.webview.html = withBodyData(view.webview.html, "session-id", sessionId);
+  }
+
+  /** No session id and the current compose seq: the page reloads on the composer (webviews/session reads both at boot). */
+  private pointAgentCompose(view: ViewLike): void {
+    view.webview.html = withBodyData(withBodyData(view.webview.html, "session-id", ""), "compose-seq", String(this.agentComposeSeq));
   }
 
   private single(current: PanelLike | undefined, viewId: string, entry: string, title: string, forget: (p: undefined) => void): PanelLike {

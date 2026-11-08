@@ -73,5 +73,16 @@ html, body, #root { height: 100%; }
   .session-body .nx-table td { white-space: normal; max-width: none; height: auto; padding-top: 2px; padding-bottom: 2px; line-height: var(--nx-lh-sm); vertical-align: top; }
 }
 
+/* Composer: the empty agent view. The grey mark sits in the middle of the bar with the brief box under it, like an
+   editor's chat side bar; nothing here needs a Slack thread. */
+.sv-compose { flex: 1; min-height: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: var(--nx-gap-2); padding: var(--nx-gap-2) var(--nx-pad-x); overflow: auto; }
+.sv-logo { flex: none; color: var(--nx-muted); opacity: 0.55; }
+.sv-compose-form { width: 100%; max-width: 560px; display: flex; flex-direction: column; gap: var(--nx-gap-1); }
+.sv-compose-brief { min-height: 72px; resize: vertical; }
+.sv-compose-row { display: flex; align-items: center; gap: var(--nx-gap-1); }
+.sv-compose-row .nx-select { flex: 1 1 0; min-width: 0; width: 0; text-overflow: ellipsis; }
+.sv-compose .nx-status-line { border-top: 0; padding: 0; height: auto; min-height: 0; white-space: normal; word-break: break-word; }
+.sv-compose .nx-caption { color: var(--nx-muted); font-size: var(--nx-font-ui-sm); line-height: var(--nx-lh-sm); }
+
 /* The empty hint is a sentence, not a status: let it wrap in a narrow side bar instead of truncating. */
 .session-app .nx-empty, .session-app .nx-empty-message { white-space: normal; height: auto; min-height: var(--nx-control-h); line-height: var(--nx-lh-ui); padding-top: 3px; padding-bottom: 3px; }

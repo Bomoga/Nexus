@@ -161,6 +161,18 @@ export interface SocketOptions {
 
 const SEEN_LIMIT = 2_000;
 const MAX_MENTION_LOOKUPS = 20;
+const MENTION_LOOKUP_MS = 1500;   // a live message is never held longer than this for a mentioned name
+const MAX_CACHED_USERS = 2000;
+
+/** The promise's value, or undefined if it takes longer than ms. The timer is always cleared. */
+async function withinMs<T>(p: Promise<T | undefined>, ms: number): Promise<T | undefined> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([p, new Promise<undefined>(resolve => { timer = setTimeout(() => resolve(undefined), ms); })]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 type Listener = { fn: (evt: SlackMessageEvent) => void; channelIds?: string[] };
 
@@ -305,7 +317,7 @@ export class SlackSocket {
       // Mentioned users are resolved through the same cached lookup, bounded per message; an unknown one shows as @U….
       const mentioned = new Map<string, string>();
       await Promise.all(mentionedUserIds(raw.text ?? "", true).slice(0, MAX_MENTION_LOOKUPS).map(async id => {
-        const u = await this.lookupUser(app, id);   // never throws: a failed lookup is just an unknown user
+        const u = await withinMs(this.lookupUser(app, id), MENTION_LOOKUP_MS);   // never throws; a slow or failed lookup is just an unknown user
         if (u) mentioned.set(id, u.displayName || u.name);
       }));
       const message = mapSlackMessage(channelId, raw, known, this.nexusBot, { user: id => mentioned.get(id) });
@@ -327,11 +339,18 @@ export class SlackSocket {
     try {
       const u = (await app.client.users.info({ user: id })).user;
       const user = u ? toSlackUser(id, u) : undefined;
-      this.users.set(id, { user, at: this.now() });
+      this.rememberUser(id, { user, at: this.now() });
       return user;
     } catch {
-      this.users.set(id, { at: this.now() });
+      this.rememberUser(id, { at: this.now() });
       return undefined;
     }
+  }
+
+  /** Mentioned ids come from untrusted text, so the cache is bounded (oldest entry dropped first). */
+  private rememberUser(id: string, entry: { user?: SlackUser; at: number }): void {
+    this.users.delete(id);
+    this.users.set(id, entry);
+    while (this.users.size > MAX_CACHED_USERS) this.users.delete(this.users.keys().next().value as string);
   }
 }

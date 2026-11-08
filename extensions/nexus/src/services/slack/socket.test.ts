@@ -65,6 +65,17 @@ describe("SlackSocket events", () => {
     expect(msg.text).toContain("@bob");
   });
 
+  it("does not hold a live message longer than the mention-lookup limit when users.info hangs", async () => {
+    const { bolt, socket, events } = setup();
+    await socket.start();
+    const real = bolt.info.getMockImplementation()!;
+    bolt.info.mockImplementation(a => (a.user === "U_SLOW" ? new Promise(() => undefined) : real(a)));
+    const t0 = Date.now();
+    await bolt.message({ type: "message", channel: "C1", user: "U_ADRIAN", ts: "15.2", text: "ping <@U_SLOW>" });
+    expect(Date.now() - t0).toBeLessThan(3000);
+    expect((events[0] as { message: ChatMessage }).message.text).toBe("ping @U_SLOW");
+  }, 10_000);
+
   it("maps a person's own Nexus post (user + bot_id + app_id) to human", async () => {
     const { bolt, socket, events } = setup();
     await socket.start();

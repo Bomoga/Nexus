@@ -17,6 +17,27 @@ export interface CommandUi {
 
 const failure = (e: unknown, fallback: string) => (e instanceof Error && e.message ? plain(e.message) : fallback);
 
+/**
+ * What happens once MAKE TASK has created a draft, from the Slack view's button (a bridge request) and from the command alike:
+ * "Make task" means an agent works on it, so one starts with the model chosen in the status bar and its session is shown.
+ * Without a chosen model, or when the start fails (another session is running), the draft opens in the task editor instead.
+ */
+export async function handleNewTask(lane: Lane1, ui: CommandUi, openTaskEditor: ((taskId: string) => void) | undefined, task: { id: string; title: string }): Promise<void> {
+  const model = lane.agentModel?.();
+  if (model) {
+    try {
+      const session = await lane.sessions.start(task.id, model);
+      ui.openSession?.(session.id);
+      ui.info(`Agent started on: ${plain(task.title, 200)}`);
+      return;
+    } catch (e) { ui.error(`${failure(e, "The agent did not start.")} The task is saved as a draft.`); }
+  }
+  if (openTaskEditor) {
+    try { openTaskEditor(task.id); return; } catch { /* fall through to the notice */ }
+  }
+  ui.info(`Created a draft task: ${plain(task.title, 200)}`);
+}
+
 export function lane1Commands(lane: Lane1, ui: CommandUi, identity: () => string, openTaskEditor?: (taskId: string) => void) {
   async function decide(approvalId: string | undefined, decision: "approved" | "rejected"): Promise<void> {
     try {
@@ -44,21 +65,7 @@ export function lane1Commands(lane: Lane1, ui: CommandUi, identity: () => string
       if (!channelId || !threadTs) { ui.info("Choose \"Make task\" on a thread in the Slack view."); return; }
       try {
         const task = await lane.tasks.createFromThread(channelId, threadTs);
-        // "Make task" means an agent works on it: start one with the model chosen in the status bar and show it. Without a
-        // chosen model (or when a session is already running) the draft opens in the task editor to choose and start there.
-        const model = lane.agentModel?.();
-        if (model) {
-          try {
-            const session = await lane.sessions.start(task.id, model);
-            ui.openSession?.(session.id);
-            ui.info(`Agent started on: ${plain(task.title, 200)}`);
-            return;
-          } catch (e) { ui.error(`${failure(e, "The agent did not start.")} The task is saved as a draft.`); }
-        }
-        if (openTaskEditor) {
-          try { openTaskEditor(task.id); return; } catch { /* fall through to the notice */ }
-        }
-        ui.info(`Created a draft task: ${plain(task.title, 200)}`);
+        await handleNewTask(lane, ui, openTaskEditor, task);
       } catch (e) { ui.error(failure(e, "Could not make a task from that thread.")); }
     },
 

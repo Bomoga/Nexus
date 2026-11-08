@@ -29,6 +29,7 @@ describe("CodeRefChip", () => {
     render(<CodeRefChip codeRef={fx.codeRef} bridge={client} />);
     const btn = screen.getByRole("button", { name: /cart\.ts:42-48 @3f2a9c1/ });
     expect(btn.className).not.toContain("stale");
+    expect(btn.className).toContain("nx-chip--accent");
     fireEvent.click(btn);
     await waitFor(() => expect(client.request).toHaveBeenCalledWith("coderef.open", { ref: fx.codeRef }));
     expect(btn.className).not.toContain("stale");
@@ -40,6 +41,7 @@ describe("CodeRefChip", () => {
     const btn = screen.getByRole("button");
     fireEvent.click(btn);
     await waitFor(() => expect(btn.className).toContain("chat-coderef--stale"));
+    expect(btn.className).toContain("nx-chip--stale");
   });
 
   test("a failed open shows the message in the tooltip and does not crash", async () => {

@@ -68,17 +68,22 @@ export function Composer({ onSend, placeholder = "message", initialText = "", on
 }
 
 /**
- * One line under a send that is not confirmed: red "not sent" when the host said no, amber "not confirmed"
- * when no answer came in time (it may still have posted; RETRY re-sends with the same clientId).
+ * One 20 px line under a send that is not confirmed: red "not sent" when the host said no, amber "not confirmed"
+ * when no answer came in time (it may still have posted; RETRY re-sends with the same clientId; DISMISS drops it).
  */
-export function EchoBar({ state, onRetry }: { state: "failed" | "unconfirmed"; onRetry: () => void }) {
+export function EchoBar({ state, onRetry, onDismiss }: { state: "failed" | "unconfirmed"; onRetry: () => void; onDismiss?: () => void }) {
   const unconfirmed = state === "unconfirmed";
   return (
     <div className={unconfirmed ? "chat-failed-bar chat-failed-bar--unconfirmed" : "chat-failed-bar"}>
-      <span>{unconfirmed ? "not confirmed: may have posted, check before retrying" : "not sent"}</span>
-      <button type="button" className="chat-retry" onClick={onRetry}>
+      <span className="chat-failed-text">{unconfirmed ? "not confirmed: may have posted, check before retrying" : "not sent"}</span>
+      <Button size="sm" onClick={onRetry}>
         RETRY
-      </button>
+      </Button>
+      {onDismiss ? (
+        <Button size="sm" variant="ghost" onClick={onDismiss}>
+          DISMISS
+        </Button>
+      ) : null}
     </div>
   );
 }

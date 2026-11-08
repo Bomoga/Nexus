@@ -52,6 +52,7 @@ export function App({ bridge }: AppProps) {
                 bridge={bridge}
                 channelId={selectedId}
                 channelName={selected?.name}
+                channel={selected}
                 onOpenLink={openLink}
                 onOpenThread={(m: ChatMessage) => setThread({ channelId: m.channelId, threadTs: m.threadTs ?? m.ts })}
               />

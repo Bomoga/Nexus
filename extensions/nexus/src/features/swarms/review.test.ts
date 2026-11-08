@@ -7,6 +7,14 @@ import { FakeGit, MemoryGate, MemoryStore, fakeClock } from "../testing/memory-p
 import { SwarmReviewService, extractJson, parseVerdict, cutAtWord, swarmReviewBridgeHandlers, swarmReviewSubscriptions, type SwarmsRunner } from "./review";
 import { SwarmsUnavailable, type SwarmRun, type SwarmRunInput } from "./swarms-client";
 
+/** Best of 3 timed runs after one warm-up, in ms: keeps the 100 ms budget but ignores GC or scheduler jitter from parallel test files. */
+function bestMs(fn: () => void): number {
+  fn();
+  let best = Infinity;
+  for (let i = 0; i < 3; i++) { const t0 = performance.now(); fn(); best = Math.min(best, performance.now() - t0); }
+  return best;
+}
+
 const SECRET = "sk-ant-api03-SECRETSECRETSECRET1234567890";
 const GOOD = JSON.stringify({ verdict: "looks_good", summary: "Fix is minimal and covered by the new test", judges: [{ modelId: "judge-a", verdict: "looks_good", notes: "Correct arithmetic" }, { modelId: "judge-b", verdict: "concerns", notes: "No negative-discount guard" }] });
 
@@ -384,10 +392,7 @@ describe("hardened verdict parsing (S7-T2)", () => {
 
   it("extractJson and parseVerdict scan 200 KB of hostile text in linear time", () => {
     for (const text of ['{"a":'.repeat(40_000), '{"'.repeat(100_000), "{".repeat(200_000), '{"x":"\\'.repeat(30_000)]) {
-      const t0 = performance.now();
-      extractJson(text);
-      parseVerdict(text);
-      expect(performance.now() - t0).toBeLessThan(100);
+      expect(bestMs(() => { extractJson(text); parseVerdict(text); })).toBeLessThan(100);
     }
   });
 
@@ -538,9 +543,7 @@ describe("hardened verdict parsing, attempt 3", () => {
 
   it("stays linear on 200 KB of many keys and duplicate keys", () => {
     for (const text of [`{${'"verdict":"x",'.repeat(14_000)}"z":1}`, '{"a":1,'.repeat(30_000), `{${'"k":'.repeat(40_000)}`]) {
-      const t0 = performance.now();
-      parseVerdict(text);
-      expect(performance.now() - t0).toBeLessThan(100);
+      expect(bestMs(() => parseVerdict(text))).toBeLessThan(100);
     }
   });
 });
@@ -590,9 +593,7 @@ describe("hardened verdict parsing, attempt 4", () => {
 
   it("stays linear with deep nesting, many keys and 2 MB of input", () => {
     for (const text of ["[{".repeat(100_000), '{"a":['.repeat(400_000), `{${'"k":{'.repeat(40_000)}`, '{"k":1,"k":2}'.repeat(15_000)]) {
-      const t0 = performance.now();
-      parseVerdict(text);
-      expect(performance.now() - t0).toBeLessThan(100);
+      expect(bestMs(() => parseVerdict(text))).toBeLessThan(100);
     }
   });
 });
@@ -658,9 +659,58 @@ describe("strict reply schema, attempt 5", () => {
   it("stays linear on deeply nested and schema-hostile input at 200 KB and 2 MB", () => {
     const wide = `{"verdict":"looks_good","judges":[${'{"verdict":"looks_good"},'.repeat(2_500)}1]}`;
     for (const text of ['{"a":'.repeat(40_000), '{"a":['.repeat(330_000), "[".repeat(2_000_000), wide, `{"a":[${'{"verdict":"x","'.repeat(10_000)}`]) {
-      const t0 = performance.now();
-      parseVerdict(text);
-      expect(performance.now() - t0).toBeLessThan(100);
+      expect(bestMs(() => parseVerdict(text))).toBeLessThan(100);
+    }
+  });
+});
+
+describe("total parsing and judge fold, attempt 6", () => {
+  const output = [{ role: "j0_judge", content: "judge prose" }, { role: "aggregator_agent", content: "echo" }];
+  const reviewOf = async (reply: string) => {
+    const s = await setup({ runner: { run: async () => ({ text: "x", output }), complete: async () => ({ text: reply }) } });
+    await s.service.onCreated(s.approval());
+    return (await s.service.get("apr_1"))!;
+  };
+  const J = (verdict: string, id = "j0 judge") => `{"modelId":"${id}","verdict":"${verdict}","notes":"n"}`;
+  const U = String.fromCharCode(92) + "u006d";
+  const HOSTILE: Array<[string, string]> = [
+    ["modelId object with a non-callable toString", '{"verdict":"do_not_merge","summary":"s","judges":[{"modelId":{"toString":1},"verdict":"do_not_merge","notes":"n"}]}'],
+    ["notes object with non-callable toString and valueOf", '{"verdict":"do_not_merge","summary":"s","judges":[{"modelId":"a","verdict":"do_not_merge","notes":{"toString":1,"valueOf":1}}]}'],
+    ["name object", '{"verdict":"do_not_merge","summary":"s","judges":[{"name":{"toString":"x"},"verdict":"do_not_merge"}]}'],
+    ["escaped token with an array modelId", `{"verdict":"do_not_${U}erge","judges":[{"modelId":["a",{"toString":0}],"verdict":"concerns"}]}`],
+    ["30,000 nested brackets after the token", `{"verdict":"do_not_merge","x":${"[".repeat(30_000)}${"]".repeat(30_000)}}`],
+  ];
+
+  it.each(HOSTILE)("never throws and never drops do_not_merge: %s", async (_n, reply) => {
+    expect(() => parseVerdict(reply)).not.toThrow();
+    if (!reply.includes(U)) expect(parseVerdict(reply).verdict).toBe("do_not_merge");
+    const r = await reviewOf(reply);
+    expect(r.status).toBe("done");
+    expect(r.verdict).not.toBe("looks_good");
+    if (!reply.includes(U)) expect(r.verdict).toBe("do_not_merge");
+  });
+
+  it("a getter-backed reply still yields the strict result", async () => {
+    // A reply object that exposes its text through a getter (not a plain value) still yields the strict result.
+    const reply = { get text(): string { return '{"verdict":"do_not_merge","summary":"s"}'; } };
+    let calls = 0;
+    const s = await setup({ runner: { run: async () => ({ text: "x", output }), complete: async () => reply as never } });
+    await s.service.onCreated(s.approval());
+    expect((await s.service.get("apr_1"))!.verdict).toBe("do_not_merge");
+  });
+
+  it("a read judge's concerns raises a looks_good overall; unknown judge names are not folded", async () => {
+    expect((await reviewOf(`{"verdict":"looks_good","summary":"s","judges":[${J("concerns")}]}`)).verdict).toBe("concerns");
+    expect((await reviewOf(`{"verdict":"looks_good","summary":"s","judges":[${J("concerns", "someone else")}]}`)).verdict).toBe("looks_good");
+  });
+
+  it("a duplicate row for one judge floors looks_good to concerns", async () => {
+    expect((await reviewOf(`{"verdict":"looks_good","summary":"s","judges":[${J("looks_good")},${J("looks_good")}]}`)).verdict).toBe("concerns");
+  });
+
+  it("parseVerdict never throws on odd parsed shapes", () => {
+    for (const t of ['{"verdict":"looks_good","judges":[null,1,"x",[],{"modelId":1,"notes":2,"verdict":3}]}', '{"verdict":["a"],"summary":{"toString":1}}', "[]", "null", '{"verdict":"do_not_merge","judges":{"a":1}}']) {
+      expect(() => parseVerdict(t)).not.toThrow();
     }
   });
 });

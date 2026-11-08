@@ -165,6 +165,18 @@ function hasDeniedVerdict(root: unknown): boolean {
  * Single linear pass plus linear validation.
  */
 export function readVerdictObject(text: string): VerdictObject {
+  const raw = typeof text === "string" ? text : "";
+  try {
+    return readVerdictObjectUnsafe(raw);
+  } catch {
+    // Any internal failure (stack overflow on hostile nesting, an engine error) must not lose the taint: tainted, and strict if the raw text names do_not_merge.
+    return { tainted: true, hidden: false, deny: safeIncludes(raw) };
+  }
+}
+
+const safeIncludes = (raw: string): boolean => { try { return raw.slice(0, MAX_INPUT_CHARS).includes("do_not_merge"); } catch { return false; } };
+
+function readVerdictObjectUnsafe(text: string): VerdictObject {
   const { slices, open, capped, suspect } = scan(text);
   let best: Record<string, unknown> | undefined;
   let tainted = open || capped || suspect, hidden = false;
@@ -192,21 +204,35 @@ function applyTaint(v: Verdict, r: VerdictObject): Verdict {
  */
 export function parseVerdict(text: string): Parsed {
   const r = readVerdictObject(text);
-  const first = r.object ?? extractJson(text);
-  if (first && typeof first === "object") {
-    const o = first as Record<string, unknown>;
-    const judges = Array.isArray(o.judges)
-      ? o.judges.slice(0, MAX_JUDGES).filter((j): j is Record<string, unknown> => !!j && typeof j === "object").map(j => ({
-          modelId: clip(redact(String(j.modelId ?? j.name ?? "judge")), 60), verdict: asVerdict(j.verdict), notes: clip(redact(String(j.notes ?? j.summary ?? "")), NOTE_CHARS),
-        }))
-      : undefined;
-    const summary = typeof o.summary === "string" && o.summary.trim() ? o.summary : "The council gave a verdict without a summary.";
-    let verdict = asVerdict(o.verdict);
-    if (judges?.some(j => j.verdict === "do_not_merge")) verdict = worst(verdict, "do_not_merge");
-    verdict = applyTaint(verdict, r);
-    return { verdict, summary: clip(redact(summary.trim()), NOTE_CHARS), ...(judges && judges.length > 0 ? { judges } : {}) };
-  }
-  return { verdict: r.deny ? "do_not_merge" : "concerns", summary: clip(redact(`Unstructured reply: ${text.slice(0, 4 * NOTE_CHARS).trim().replace(/\s+/g, " ")}`), NOTE_CHARS) };
+  const raw = typeof text === "string" ? text : "";
+  try {
+    const first = r.object ?? extractJson(raw);
+    if (isPlain(first)) return buildParsed(first, r);
+  } catch { /* fall through to the strict unstructured result */ }
+  return unstructured(raw, r);
+}
+
+function unstructured(raw: string, r: VerdictObject): Parsed {
+  let summary = "The council reply could not be read.";
+  try { summary = clip(redact(`Unstructured reply: ${raw.slice(0, 4 * NOTE_CHARS).trim().replace(/\s+/g, " ")}`), NOTE_CHARS); } catch { /* keep the fixed summary */ }
+  return { verdict: r.deny || r.hidden ? "do_not_merge" : "concerns", summary };
+}
+
+/** First of `values` that is a string. Unknown values are NEVER stringified: an object's toString can be hostile or missing. */
+const firstString = (...values: unknown[]): string | undefined => values.find((v): v is string => typeof v === "string");
+
+/** Builds the Parsed result from one parsed object and its taint. Total on any JSON-parsed input: only strings are used as text. */
+function buildParsed(o: Record<string, unknown>, r: VerdictObject): Parsed {
+  const judges = Array.isArray(o.judges)
+    ? o.judges.slice(0, MAX_JUDGES).filter(isPlain).map(j => ({
+        modelId: clip(redact(firstString(j.modelId, j.name) ?? "judge"), 60), verdict: asVerdict(j.verdict), notes: clip(redact(firstString(j.notes, j.summary) ?? ""), NOTE_CHARS),
+      }))
+    : undefined;
+  const text = typeof o.summary === "string" && o.summary.trim() ? o.summary : "The council gave a verdict without a summary.";
+  let verdict = asVerdict(o.verdict);
+  if (judges?.some(j => j.verdict === "do_not_merge")) verdict = worst(verdict, "do_not_merge");
+  verdict = applyTaint(verdict, r);
+  return { verdict, summary: clip(redact(text.trim()), NOTE_CHARS), ...(judges && judges.length > 0 ? { judges } : {}) };
 }
 
 const NO_VERDICTS = "The judges returned prose and their verdicts could not be derived; read their notes.";
@@ -362,6 +388,8 @@ export class SwarmReviewService implements ApprovalHook {
       return out;
     };
     if (judges.length === 0 || !swarms.complete) return finish(fallbackCouncil(judges));
+    let read: VerdictObject | undefined;                      // hoisted: the catch below must still apply the taint it already computed
+    let replyTruncated = false;
     try {
       const task = [
         "Below are written assessments from code-review judges who graded a coding agent's change.",
@@ -370,19 +398,33 @@ export class SwarmReviewService implements ApprovalHook {
         "",
         frame(judges.map(j => ({ label: `judge: ${j.modelId}`, text: j.text }))),
       ].join("\n");
-      const { text } = await swarms.complete({ apiKey, sessionId, system: SYNTH_SYSTEM, task, maxTokens: 700 });
-      const read = readVerdictObject(text);
-      const { object } = read;          // capped, one linear pass; the most severe quoted verdict wins
-      if (!object || !isVerdict(object.verdict)) return finish({ ...fallbackCouncil(judges), verdict: applyTaint("concerns", read) }, text.length > MAX_INPUT_CHARS);
-      let out = parseVerdict(JSON.stringify(object));
-      // Unfinished or unparseable objects in the reply, or a judges list that omits a judge we read, mean it is not to be trusted as looks_good.
-      const listed = Array.isArray(object.judges) ? object.judges.filter(isPlain).length : 0;
-      out = { ...out, verdict: applyTaint(out.verdict, read) };
-      if (listed < judges.length && out.verdict === "looks_good") out = { ...out, verdict: "concerns" };
-      return finish(out.judges ? out : { ...out, judges: fallbackCouncil(judges).judges }, text.length > MAX_INPUT_CHARS);
+      const reply = await swarms.complete({ apiKey, sessionId, system: SYNTH_SYSTEM, task, maxTokens: 700 });
+      const text = typeof reply?.text === "string" ? reply.text : "";
+      replyTruncated = text.length > MAX_INPUT_CHARS;
+      read = readVerdictObject(text);                         // never throws; capped, one linear pass
+      const { object } = read;
+      if (!object || !isVerdict(object.verdict)) return finish({ ...fallbackCouncil(judges), verdict: applyTaint("concerns", read) }, replyTruncated);
+      let out = buildParsed(object, read);                    // applies the taint
+      const rows = Array.isArray(object.judges) ? object.judges.filter(isPlain) : [];
+      // A judge row that names a judge we actually read cannot be more lenient than the overall: fold it in. (Rows naming unknown judges
+      // are not folded, so a synthesizer that invents its own judge names keeps its overall verdict. A duplicate row for one judge floors looks_good.)
+      const seen = new Set<string>();
+      let dup = false, verdict = out.verdict;
+      const readIds = new Set(judges.map(j => j.modelId.trim().toLowerCase()));
+      for (const row of rows) {
+        const id = typeof row.modelId === "string" ? row.modelId.trim().toLowerCase() : undefined;
+        if (id === undefined) continue;
+        if (seen.has(id)) dup = true;
+        seen.add(id);
+        if (readIds.has(id) && isVerdict(row.verdict)) verdict = worst(verdict, row.verdict);
+      }
+      if (dup && verdict === "looks_good") verdict = "concerns";
+      if (rows.length < judges.length && verdict === "looks_good") verdict = "concerns";
+      out = { ...out, verdict };
+      return finish(out.judges ? out : { ...out, judges: fallbackCouncil(judges).judges }, replyTruncated);
     } catch (e) {
       this.deps.log?.(`swarm review: verdict derivation failed: ${redact(e instanceof Error ? e.message : "unknown error")}`);
-      return finish(fallbackCouncil(judges));
+      return finish({ ...fallbackCouncil(judges), verdict: read ? applyTaint("concerns", read) : "concerns" }, replyTruncated);
     }
   }
 

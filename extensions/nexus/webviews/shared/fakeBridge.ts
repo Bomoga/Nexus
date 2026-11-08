@@ -42,6 +42,7 @@ function buildHandlers(): Handlers {
   const tasks = [fx.task];
   const sessions = [fx.session];
   let optimizer = fx.optimizer;
+  let selectedModel: { provider: string; modelId: string } | null = { ...fx.session.model };
   let plan = fx.plan;
   const thread = demoScenario.thread;
   const summary = (calls: typeof demoScenario.receipts) => ({
@@ -56,6 +57,8 @@ function buildHandlers(): Handlers {
     "accounts.list": () => demoScenario.accounts,
     "accounts.test": ({ accountId }) => demoScenario.accounts.find((a) => a.id === accountId) ?? demoScenario.accounts[0],
     "models.list": ({ role }) => (role === "agent" ? demoScenario.models.filter((m) => m.supportsTools) : demoScenario.models),
+    "models.selected": () => selectedModel,
+    "models.select": ({ provider, modelId }) => (selectedModel = { provider, modelId }),
     "optimizer.get": () => optimizer,
     "optimizer.set": (body) => (optimizer = body),
     "receipts.list": ({ sessionId, limit }) => {

@@ -25,6 +25,8 @@ export const Requests = {
   "accounts.list":       { req: Empty, res: z.array(A.ProviderAccount) },
   "accounts.test":       { req: z.object({ accountId: Id }), res: A.ProviderAccount },               // re-runs listModels
   "models.list":         { req: z.object({ role: A.ModelRole.optional() }), res: z.array(A.ModelInfo) }, // role filters out Swarms for "agent"
+  "models.selected":     { req: z.object({ role: A.ModelRole.default("agent") }), res: z.object({ provider: z.string(), modelId: z.string() }).nullable() }, // the status-bar picker's remembered choice; null until one is picked
+  "models.select":       { req: z.object({ role: A.ModelRole.default("agent"), provider: z.string(), modelId: z.string() }), res: z.object({ provider: z.string(), modelId: z.string() }) }, // same store as the status-bar picker, which updates
   "optimizer.get":       { req: Empty, res: P.OptimizerSetting },
   "optimizer.set":       { req: P.OptimizerSetting, res: P.OptimizerSetting },
   "receipts.list":       { req: z.object({ sessionId: Id.optional(), limit: z.number().int().max(500).default(100) }), res: z.object({ receipts: z.array(P.ModelCallReceipt), summary: P.SpendSummary }) },

@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fx } from "../../contracts/fixtures";
 import type { AgentEvent, DecidedBy, NexusEvent } from "../../contracts";
 import { LocalStore } from "./local-store";
@@ -344,6 +344,20 @@ describe("sync: agent event edge cases", () => {
     await settle();
     expect(remote.log.filter(l => l === SYNC_SQL.agentFrom)).toHaveLength(1);
     expect((await local.agentEvents("ses_n", 0)).map(e => e.seq)).toEqual([0]);
+  });
+});
+
+describe("sync: long sessions", () => {
+  it("reads a session's local event log once, not on every NOTIFY tick", async () => {
+    await make({ listen: "ok" }).start();
+    const reads = vi.spyOn(local, "agentEvents");
+    for (let seq = 0; seq < 30; seq++) {
+      remote.put("agent_events", agentRow(msg("ses_long", seq)), T(80 + seq));
+      notify!(JSON.stringify({ table: "agent_events", id: `ses_long:${seq}`, session_id: "ses_long" }));
+      await settle();   // one tick per event, like a live session
+    }
+    expect((await local.agentEvents("ses_long", 0)).map(e => e.seq)).toEqual(Array.from({ length: 30 }, (_, i) => i));
+    expect(reads.mock.calls.filter(([sid]) => sid === "ses_long").length).toBeLessThanOrEqual(2);   // the first load (+ the check above)
   });
 });
 

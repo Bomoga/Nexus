@@ -323,13 +323,30 @@ export function createSync(deps: SyncDeps): Sync {
     }
   }
 
+  /**
+   * The seqs this machine already has for a session, read from the local copy once and then kept up to date as events are
+   * applied, so a NOTIFY never copies a long session's whole event log again.
+   */
+  const seqCache = new Map<string, { have: Set<number>; max: number }>();
+  async function seqsOf(sessionId: string): Promise<{ have: Set<number>; max: number }> {
+    let c = seqCache.get(sessionId);
+    if (!c) {
+      const have = new Set((await local.agentEvents(sessionId, 0)).map(e => e.seq));
+      let max = -1;
+      for (const n of have) if (n > max) max = n;
+      c = seqCache.get(sessionId) ?? { have, max };   // another caller may have loaded it meanwhile
+      seqCache.set(sessionId, c);
+    }
+    return c;
+  }
+
   async function applyAgentRows(sessionId: string, rows: Row[]): Promise<void> {
-    const mine = await local.agentEvents(sessionId, 0);
-    const have = new Set(mine.map(e => e.seq));
+    const known = await seqsOf(sessionId);
+    const have = known.have;
     const bad = badSeqs.get(sessionId) ?? new Set<number>();
     badSeqs.set(sessionId, bad);
     for (const n of bad) have.add(n);
-    let max = have.size ? Math.max(...have) : -1;
+    let max = known.max;
     const bySeq = new Map<number, Row>();
     for (const r of rows) bySeq.set(Number(r.seq), r);
     const prev = held.get(sessionId);
@@ -342,10 +359,10 @@ export function createSync(deps: SyncDeps): Sync {
       const seq = Number(r.seq);
       if (have.has(seq)) return;
       const e = mappers.agent_events(r);
-      if (!e) { bad.add(seq); have.add(seq); if (seq > max) max = seq; return; }   // counted once; never a gap behind it
+      if (!e) { bad.add(seq); have.add(seq); if (seq > max) max = known.max = seq; return; }   // counted once; never a gap behind it
       await quiet("agent_events", `${sessionId}:${seq}`, "put", () => local.appendAgentEvent(e as AgentEvent));
       have.add(seq);
-      if (seq > max) max = seq;
+      if (seq > max) max = known.max = seq;
       stats.applied++;
     };
 
@@ -358,11 +375,11 @@ export function createSync(deps: SyncDeps): Sync {
         stats.gapFetches++;
         const from = max + 1;
         const fill = (await q(SYNC_SQL.agentRange, [sessionId, from, seq])).sort((a, b) => Number(a.seq) - Number(b.seq));
-        const known = max !== -1;
+        const hadAny = max !== -1;
         for (const f of fill) await apply(f);
         // Every session's seq starts at 0 (the contracts' fixtures and the runtime both number from 0), so with nothing local
         // the run must still be contiguous from 0: a missing seq 0 is a hole like any other.
-        const lo = known ? from : 0;
+        const lo = hadAny ? from : 0;
         let hole = false;
         for (let n = lo; n < seq; n++) if (!have.has(n)) { hole = true; break; }
         if (hole) {
@@ -566,8 +583,7 @@ export function createSync(deps: SyncDeps): Sync {
   /** One fetch per session per tick, however many NOTIFYs arrived; sessions this machine runs are already local. */
   async function syncSession(sid: string): Promise<void> {
     if (await ownsSession(sid)) return;
-    const mine = await local.agentEvents(sid, 0);
-    let from = mine.length ? Math.max(...mine.map(e => e.seq)) + 1 : 0;
+    let from = (await seqsOf(sid)).max + 1;
     for (;;) {
       const rows = await q(SYNC_SQL.agentFrom, [sid, from, batch]);
       if (rows.length) await applyAgentRows(sid, rows);

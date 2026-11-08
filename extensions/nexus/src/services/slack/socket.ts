@@ -188,6 +188,7 @@ export class SlackSocket {
   private readonly listeners = new Set<Listener>();
   private readonly connectionListeners = new Set<(connected: boolean) => void>();
   private readonly users = new Map<string, { user?: SlackUser; at: number }>();
+  private readonly lookups = new Map<string, Promise<SlackUser | undefined>>();
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly now: () => number;
 
@@ -333,9 +334,18 @@ export class SlackSocket {
   }
 
   /** users.info, cached; a failed lookup is remembered briefly so a flood of messages does not hammer Slack. */
-  private async lookupUser(app: BoltLike, id: string): Promise<SlackUser | undefined> {
+  private lookupUser(app: BoltLike, id: string): Promise<SlackUser | undefined> {
     const hit = this.users.get(id);
-    if (hit && (hit.user || this.now() - hit.at < 60_000)) return hit.user;
+    if (hit && (hit.user || this.now() - hit.at < 60_000)) return Promise.resolve(hit.user);
+    let p = this.lookups.get(id);   // one users.info in flight per id, so a hanging call is not started again by every message
+    if (!p) {
+      p = this.fetchUser(app, id).finally(() => { this.lookups.delete(id); });
+      this.lookups.set(id, p);
+    }
+    return p;
+  }
+
+  private async fetchUser(app: BoltLike, id: string): Promise<SlackUser | undefined> {
     try {
       const u = (await app.client.users.info({ user: id })).user;
       const user = u ? toSlackUser(id, u) : undefined;

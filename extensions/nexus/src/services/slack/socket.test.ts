@@ -74,6 +74,8 @@ describe("SlackSocket events", () => {
     await bolt.message({ type: "message", channel: "C1", user: "U_ADRIAN", ts: "15.2", text: "ping <@U_SLOW>" });
     expect(Date.now() - t0).toBeLessThan(3000);
     expect((events[0] as { message: ChatMessage }).message.text).toBe("ping @U_SLOW");
+    await bolt.message({ type: "message", channel: "C1", user: "U_ADRIAN", ts: "15.3", text: "again <@U_SLOW>" });
+    expect(bolt.info.mock.calls.filter(c => c[0].user === "U_SLOW")).toHaveLength(1);   // the hanging call is not started again
   }, 10_000);
 
   it("maps a person's own Nexus post (user + bot_id + app_id) to human", async () => {

@@ -75,13 +75,13 @@ function convertSeq(inner: string, names: NameResolvers | undefined): string {
     const [id, labelRaw] = splitLabel(inner.slice(1));
     if (USER_ID.test(id)) {
       const label = labelRaw === undefined ? "" : plainLabel(decode(labelRaw));
-      return "@" + (label || names?.user?.(id) || id);
+      return "@" + (label || plainLabel(names?.user?.(id) ?? "") || id);   // a display name is the person's own text: never a link
     }
   } else if (first === "#") {
     const [id, labelRaw] = splitLabel(inner.slice(1));
     if (CHANNEL_ID.test(id)) {
       const label = labelRaw === undefined ? "" : plainLabel(decode(labelRaw));
-      return "#" + (label || names?.channel?.(id) || id);
+      return "#" + (label || plainLabel(names?.channel?.(id) ?? "") || id);
     }
   } else if (first === "!") {
     const [cmd, labelRaw] = splitLabel(inner.slice(1));

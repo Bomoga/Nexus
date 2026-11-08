@@ -9,6 +9,8 @@ import { z } from "zod";
 import { ChatMessage as ChatMessageSchema } from "../../contracts";
 import type { ChatMessage } from "../../contracts";
 import type { BotPostOptions, Disposable, HistoryPage, PostOptions, SlackMessageEvent, SlackService } from "./types";
+import { toDisplayText } from "./mrkdwn";
+import { escapeUserText, extractCodeRefs } from "./web-client";
 
 /** Slack ids are alphanumeric (fixtures use underscores). Anything else could name a path outside the directory. */
 const CHANNEL_ID = /^[A-Za-z0-9_]{1,64}$/;
@@ -457,8 +459,10 @@ function wrapService(cache: SlackCache, service: SlackService): SlackService {
 /** The unconfirmed copy of a send: memory only, replaced by the confirmed message carrying the same clientId. */
 function localEcho(opts: PostOptions, me: { userId: string; name: string } | null): ChatMessage {
   const ts = (Date.now() / 1000).toFixed(6);
+  // What Slack will show for this send (the confirmed copy is display text), so the echo looks the same and text matching retires it.
+  const sent = escapeUserText(opts.text);
   return {
     id: `${opts.channelId}:${ts}`, channelId: opts.channelId, ts, ...(opts.threadTs ? { threadTs: opts.threadTs } : {}),
-    author: { id: me?.userId ?? "", name: me?.name ?? "", isBot: false }, text: opts.text, codeRefs: [], sentVia: "user", pending: true, clientId: opts.clientId,
+    author: { id: me?.userId ?? "", name: me?.name ?? "", isBot: false }, text: toDisplayText(sent), codeRefs: extractCodeRefs(sent), sentVia: "user", pending: true, clientId: opts.clientId,
   };
 }

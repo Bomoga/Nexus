@@ -145,6 +145,12 @@ describe("labels and punctuation around links", () => {
     expect(toDisplayText("<https://bank.example|hthttps://tps://evil.example/login>")).toBe("evil.example/login (https://bank.example)");
     expect(toDisplayText("<nexus://nexus.nexus/coderef/abc|https://bank.example>@evil.example")).toBe("bank.example@evil.example");
   });
+  it("never turns a resolved display name into a link", () => {
+    const evil = "https://bank.example@evil.example/login";
+    expect(toDisplayText("<@U1>", { user: () => evil })).toBe("@bank.example@evil.example/login");
+    expect(linkified(toDisplayText("<@U1> <#C1>", { user: () => evil, channel: () => "hthttps://tps://evil.example" }))).toEqual([]);
+    expect(toDisplayText("<@U1>", { user: () => "https://" })).toBe("@U1");
+  });
   it("never spells a scheme across a piece boundary", () => {
     expect(evilHosts("http<!x|s://evil.example>")).toEqual([]);
     expect(evilHosts("htt<!x|ps://evil.example>")).toEqual([]);

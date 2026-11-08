@@ -100,7 +100,7 @@ describe("globe App activity strip", () => {
     const h = setup(() => []);
     render(<App bridge={h.bridge} />);
     await waitFor(() => expect(h.activity()).toBe(1));
-    fireEvent.change(screen.getByRole("combobox", { name: "Time window" }), { target: { value: "24h" } });
+    fireEvent.click(within(screen.getByRole("group", { name: "Time window" })).getByRole("button", { name: "24H" }));
     await waitFor(() => expect(h.activity()).toBe(2));
   });
 });

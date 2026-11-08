@@ -139,7 +139,7 @@ describe("timeline view", () => {
     await waitFor(() => expect(reqs("events.search").length).toBe(1));
     await screen.findByRole("listbox");
     fireEvent.keyDown(box, { key: "Enter" });
-    await waitFor(() => expect((screen.getByLabelText("Time window") as HTMLSelectElement).value).toBe("7d"));
+    await waitFor(() => expect(within(screen.getByRole("group", { name: "Time window" })).getByRole("button", { name: "7D" }).getAttribute("aria-pressed")).toBe("true"));
     await waitFor(() => expect(reqs("ui.setTimeWindow")[0]?.body).toEqual({ window: "7d" }));
     await waitFor(() => expect(markFor("c-old")).toBeTruthy());
     const strip = screen.getByRole("group", { name: "Selected event" });

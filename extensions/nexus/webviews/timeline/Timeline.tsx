@@ -126,7 +126,7 @@ export function Timeline({ events, now, window: w, selected, onSelect, reveal, t
           {ticks.map((k) => (
             <g key={k.atMs} className="tl-tick">
               <line x1={k.x} x2={k.x} y1={AXIS_H - 4} y2={AXIS_H + height} />
-              <text x={Math.min(k.x + 3, PLOT_W - 40)} y={AXIS_H - 5} className="nx-data">
+              <text x={Math.min(k.x + 3, PLOT_W - 52)} y={AXIS_H - 5} className="nx-data">
                 {formatEventTime(k.atMs, t0Ms)}
               </text>
             </g>

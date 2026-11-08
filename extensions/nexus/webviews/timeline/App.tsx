@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { NexusEvent, TimeWindow } from "../../src/contracts";
-import { Button, EmptyState, Select, StatusLine, StoreStatusLine, friendlyError, getBridge, isFakeMode } from "../shared";
+import { Badge, Button, EmptyState, SegmentedControl, StatusLine, StoreStatusLine, friendlyError, getBridge, isFakeMode } from "../shared";
 import type { BridgeClient } from "../shared";
 import { DetailStrip } from "../globe/DetailStrip";
 import { Search } from "../globe/Search";
-import { QUERY_LIMIT, TIME_WINDOWS, keepNewest, visibleEvents, windowMs } from "../globe/model";
+import { QUERY_LIMIT, WINDOW_OPTIONS, keepNewest, visibleEvents, windowMs } from "../globe/model";
 import { insertLive, scriptedNow } from "../globe/model/arcs";
 import { chooseWindow, withEvent } from "../globe/model/tracking";
 import { useDriftNow } from "../globe/scene/live";
@@ -15,7 +15,6 @@ import type { Reveal } from "./Timeline";
 const NOW_TICK_MS = 5_000;
 const FAKE_SPAN_MS = 36 * 3_600_000;
 const SEARCH_LIMIT = 20;
-const OPTIONS = TIME_WINDOWS.map((w) => ({ value: w, label: w }));
 
 export interface AppProps {
   /** Defaults to the real bridge. */
@@ -97,8 +96,7 @@ export function App({ bridge: injected, nowMs }: AppProps) {
   }, [window_, ready, bridge, attempt]);
 
   const onWindow = useCallback(
-    (value: string) => {
-      const w = value as TimeWindow;
+    (w: TimeWindow) => {
       setWindow(w);
       bridge.request("ui.setTimeWindow", { window: w }).catch(() => undefined);
     },
@@ -159,23 +157,32 @@ export function App({ bridge: injected, nowMs }: AppProps) {
 
   return (
     <div className="tl-app">
-      <StoreStatusLine bridge={bridge} />
-      <div className="tl-bar">
-        <Select aria-label="Time window" value={window_} options={OPTIONS} onChange={(e) => onWindow(e.target.value)} />
-        <Search onPick={onSearchPick} search={search} />
-        {selected ? <Button onClick={() => setSelected(undefined)}>CLEAR</Button> : null}
-        <span className="nx-data">{visible.length} events</span>
+      <div className="nx-panel-header globe-bar" role="toolbar" aria-label="Timeline controls">
+        <SegmentedControl aria-label="Time window" options={WINDOW_OPTIONS} value={window_} onChange={onWindow} />
+        <div className="globe-bar-center">
+          <Search onPick={onSearchPick} search={search} />
+          {selected ? (
+            <Button size="sm" onClick={() => setSelected(undefined)}>
+              CLEAR
+            </Button>
+          ) : null}
+        </div>
+        <span className="globe-bar-right">
+          <Badge kind="live">LIVE</Badge>
+          <span className="nx-count">{`${visible.length} EVENTS`}</span>
+        </span>
       </div>
       {truncated ? <StatusLine tone="pending">{`truncated: showing newest ${events.length}`}</StatusLine> : null}
       {error ? (
         <StatusLine tone="error">
-          {error} <Button onClick={() => setAttempt((n) => n + 1)}>RETRY</Button>
+          {error} <Button size="sm" onClick={() => setAttempt((n) => n + 1)}>RETRY</Button>
         </StatusLine>
       ) : null}
       {loaded && !error && visible.length === 0 ? <EmptyState message="no events in this window" /> : null}
       {notice ? <StatusLine tone="pending">{notice}</StatusLine> : null}
       <div className="tl-stage">{now === null ? null : <Timeline events={visible} now={now} window={window_} selected={selected} onSelect={onSelect} reveal={reveal} />}</div>
       <DetailStrip event={selected} open={open} />
+      <StoreStatusLine bridge={bridge} />
     </div>
   );
 }

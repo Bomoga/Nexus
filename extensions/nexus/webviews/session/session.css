@@ -81,6 +81,8 @@ html, body, #root { height: 100%; }
 .sv-reply-box { display: flex; align-items: flex-end; gap: var(--nx-gap-1); padding: 2px; border: var(--nx-border-w) solid var(--nx-input-border); background: var(--nx-input-bg); }
 .sv-reply-box:focus-within { outline: var(--nx-border-w) solid var(--nx-focus); outline-offset: 1px; border-color: var(--nx-focus); }
 .sv-reply-text, .sv-reply-text:focus { flex: 1 1 0; min-width: 0; height: 20px; min-height: 20px; max-height: 120px; padding: 2px 4px; resize: none; border: 0; outline: 0; background: transparent; line-height: var(--nx-lh-ui); overflow-y: auto; }
+/* An approval card sits inside a log row, which strips status lines bare; its decided footer keeps the card's own padding and rule, and wraps a long user id instead of clipping it. */
+.log-row .sv-approval > .nx-status-line { border-top: var(--nx-border-w) solid var(--nx-border); padding: 2px var(--nx-pad-x); }
 .sv-reply .nx-status-line { border-top: 0; padding: 0; height: auto; min-height: 0; white-space: normal; word-break: break-word; }
 .log-user { border-left: var(--nx-border-w) solid var(--nx-accent); padding-left: var(--nx-gap-2); }
 .log-you { color: var(--nx-accent); font-size: var(--nx-font-ui-sm); letter-spacing: 0.04em; }

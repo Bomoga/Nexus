@@ -204,7 +204,7 @@ describe("globe App states", () => {
 describe("globe App top bar", () => {
   test("two rows: the window control and status sit in one toolbar, the search in another, and the search stays when the clock is pinned", async () => {
     const h = setup(() => [{ ...fx.event, at: new Date().toISOString() }]);
-    render(<App bridge={h.bridge} />);
+    const { container } = render(<App bridge={h.bridge} />);
     const top = screen.getByRole("toolbar", { name: "Globe window and status" });
     const searchRow = screen.getByRole("toolbar", { name: "Globe search" });
     expect(top).not.toBe(searchRow);
@@ -215,5 +215,32 @@ describe("globe App top bar", () => {
     expect(box.getAttribute("placeholder")).toBe("search events");
     expect(await screen.findByText(/\d+ EVENTS/)).toBeTruthy();
     expect(within(top).getByText(/\d+ EVENTS/)).toBeTruthy();
+
+    // Pin the clock: the VIEWING badge and BACK TO LIVE join the top row; the search row is unchanged.
+    const svg = (await waitFor(() => {
+      const el = container.querySelector("svg.globe-activity-svg");
+      if (!el) throw new Error("no strip yet");
+      return el;
+    })) as SVGSVGElement;
+    svg.getBoundingClientRect = () => ({ left: 0, width: 1000, top: 0, height: 30, right: 1000, bottom: 30, x: 0, y: 0, toJSON: () => ({}) });
+    fireEvent.click(svg, { clientX: 1 });
+    await within(top).findByRole("button", { name: "BACK TO LIVE" });
+    expect(within(top).getByText(/VIEWING/)).toBeTruthy();
+    expect(within(top).queryByRole("combobox")).toBeNull();
+    expect(within(searchRow).queryByText(/VIEWING/)).toBeNull();
+    const pinnedBox = within(screen.getByRole("toolbar", { name: "Globe search" })).getByRole("combobox", { name: "Search events" });
+    expect(pinnedBox.getAttribute("placeholder")).toBe("search events");
+  });
+
+  test("STOP TRACKING sits in the search row, not the window and status row", async () => {
+    const e: NexusEvent = { ...fx.event, id: "tracked", title: "tracked event", at: new Date().toISOString() };
+    const h = setup(() => [e], e);
+    render(<App bridge={h.bridge} />);
+    fireEvent.change(screen.getByRole("combobox", { name: "Search events" }), { target: { value: "tracked" } });
+    const list = await screen.findByRole("listbox", { name: "Search results" }, { timeout: 2000 });
+    fireEvent.mouseDown(within(list).getByRole("option"));
+    const stop = await screen.findByRole("button", { name: /STOP TRACKING/ });
+    expect(within(screen.getByRole("toolbar", { name: "Globe search" })).getByRole("button", { name: /STOP TRACKING/ })).toBe(stop);
+    expect(within(screen.getByRole("toolbar", { name: "Globe window and status" })).queryByRole("button", { name: /STOP TRACKING/ })).toBeNull();
   });
 });

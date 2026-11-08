@@ -17,7 +17,6 @@ body { overflow: hidden; }
 
 /* Search */
 .globe-search { position: relative; flex: 1 1 auto; min-width: 160px; }
-.globe-search .globe-search-box { display: flex; width: 100%; }
 .globe-search > .nx-input { display: block; width: 100%; box-sizing: border-box; height: var(--nx-toolbar-h); }
 .globe-search-list { position: absolute; z-index: 5; top: calc(100% + 1px); left: 0; right: 0; margin: 0; padding: 0; list-style: none; max-height: 220px; overflow-y: auto; background: var(--nx-surface-2); border: var(--nx-border-w) solid var(--nx-border-strong); }
 .globe-search-row { display: flex; align-items: center; gap: var(--nx-gap-2); height: var(--nx-row-h); padding: 0 var(--nx-pad-x); overflow: hidden; white-space: nowrap; font-size: var(--nx-font-ui-sm); cursor: default; }

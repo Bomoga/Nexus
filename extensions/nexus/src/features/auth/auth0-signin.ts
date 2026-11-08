@@ -2,6 +2,7 @@ import { createHash, randomBytes } from "node:crypto";
 import type { Res } from "../../contracts";
 import { redact } from "../../shared/redact";
 import type { SecretStore } from "../accounts/accounts-service";
+import type { LoopbackListener } from "./loopback";
 
 // Auth0 sign-in for the desktop app (PLAN L1-14): Authorization Code + PKCE in the system browser, the callback arriving
 // as nexus://auth/callback, only the REFRESH token kept (in SecretStorage), the access token in memory. This is Nexus's
@@ -25,6 +26,8 @@ export interface AuthDeps {
   config(): Auth0Config | undefined;
   secrets: SecretStore;
   openExternal(url: string): Promise<boolean>;
+  /** When given, the redirect goes to http://127.0.0.1 (no protocol handler needed); if it cannot start, sign-in falls back to nexus://. */
+  loopback?: LoopbackListener;
   fetch?: typeof fetch;
   random?: (bytes: number) => Buffer;
   /** Epoch seconds. */
@@ -39,6 +42,9 @@ interface Pending {
   state: string;
   nonce: string;
   verifier: string;
+  redirectUri: string;
+  closeLoopback?: () => void;
+  exchanging?: boolean;                   // the code is being traded for tokens: any further callback is ignored
   resolve(): void;
   reject(e: Error): void;
   timer: ReturnType<typeof setTimeout>;
@@ -64,6 +70,7 @@ export function decodeJwtClaims(jwt: string): Record<string, unknown> | undefine
 
 export class Auth0Session {
   private pending?: Pending;
+  private starting = false;
   private access?: { token: string; expiresAt: number };
   private identity?: { sub: string; name?: string };
 
@@ -87,24 +94,44 @@ export class Auth0Session {
   /** Opens the browser and resolves once the callback has been exchanged for tokens. One sign-in at a time. */
   async signIn(): Promise<AuthStatus> {
     const cfg = this.cfg();
-    if (this.pending) throw new Error("A sign-in is already waiting for the browser.");
+    if (this.pending || this.starting) throw new Error("A sign-in is already waiting for the browser.");
     const random = this.deps.random ?? randomBytes;
     const verifier = b64url(random(32));
     const state = b64url(random(16));
     const nonce = b64url(random(16));
+    let redirectUri = AUTH_REDIRECT_URI;
+    let closeLoopback: (() => void) | undefined;
+    if (this.deps.loopback) {
+      this.starting = true;
+      try {
+        const h = await this.deps.loopback.start(search => {
+          // A web page can make the browser hit 127.0.0.1, so on this path an answer with the wrong state is ignored, not allowed to cancel the real sign-in.
+          if (new URLSearchParams(search).get("state") !== this.pending?.state) { this.deps.log?.("loopback callback with an unknown state; ignored"); return; }
+          void this.handleCallback(`${AUTH_REDIRECT_URI}${search}`);
+        });
+        redirectUri = h.redirectUri;
+        closeLoopback = h.close;
+      } catch {
+        this.deps.log?.("loopback listener unavailable; using the nexus:// callback");
+      } finally {
+        this.starting = false;
+      }
+    }
     const url = new URL(`https://${cfg.domain}/authorize`);
     url.search = new URLSearchParams({
-      response_type: "code", client_id: cfg.clientId, redirect_uri: AUTH_REDIRECT_URI, scope: SCOPE,
+      response_type: "code", client_id: cfg.clientId, redirect_uri: redirectUri, scope: SCOPE,
       state, nonce, code_challenge: challengeFor(verifier), code_challenge_method: "S256",
       ...(cfg.audience ? { audience: cfg.audience } : {}),
     }).toString();
 
     const done = new Promise<void>((resolve, reject) => {
-      const timer = setTimeout(() => { this.pending = undefined; reject(new Error("Sign-in timed out waiting for the browser.")); }, this.deps.callbackTimeoutMs ?? DEFAULT_CALLBACK_TIMEOUT_MS);
-      this.pending = { state, nonce, verifier, resolve, reject, timer };
+      const timer = setTimeout(() => this.fail(new Error("Sign-in timed out waiting for the browser.")), this.deps.callbackTimeoutMs ?? DEFAULT_CALLBACK_TIMEOUT_MS);
+      this.pending = { state, nonce, verifier, redirectUri, ...(closeLoopback ? { closeLoopback } : {}), resolve, reject, timer };
     });
     done.catch(() => undefined);                                  // the caller awaits it below; never an unhandled rejection
-    if (!(await this.deps.openExternal(url.toString()))) {
+    let opened = false;
+    try { opened = await this.deps.openExternal(url.toString()); } catch { /* handled below */ }
+    if (!opened) {
       this.fail(new Error("The browser could not be opened."));
     }
     await done;
@@ -115,6 +142,7 @@ export class Auth0Session {
   async handleCallback(uri: string): Promise<void> {
     const p = this.pending;
     if (!p) { this.deps.log?.("auth callback with no sign-in waiting; ignored"); return; }
+    if (p.exchanging) { this.deps.log?.("auth callback while the code is being exchanged; ignored"); return; }
     let params: URLSearchParams;
     try {
       const u = new URL(uri);
@@ -134,8 +162,9 @@ export class Auth0Session {
     if (err) { this.fail(new Error(`Sign-in was refused: ${redact(params.get("error_description") ?? err).slice(0, 200)}`)); return; }
     const code = params.get("code");
     if (!code) { this.fail(new Error("The sign-in response had no code.")); return; }
+    p.exchanging = true;
     try {
-      const tokens = await this.tokenRequest({ grant_type: "authorization_code", code, code_verifier: p.verifier, redirect_uri: AUTH_REDIRECT_URI });
+      const tokens = await this.tokenRequest({ grant_type: "authorization_code", code, code_verifier: p.verifier, redirect_uri: p.redirectUri });
       this.acceptTokens(tokens, p.nonce);
       if (tokens.refresh_token) await this.deps.secrets.store(REFRESH_SECRET_KEY, tokens.refresh_token);
       this.finish();
@@ -186,6 +215,7 @@ export class Auth0Session {
     if (!p) return;
     clearTimeout(p.timer);
     this.pending = undefined;
+    p.closeLoopback?.();
     p.resolve();
   }
 
@@ -194,6 +224,7 @@ export class Auth0Session {
     if (!p) return;
     clearTimeout(p.timer);
     this.pending = undefined;
+    p.closeLoopback?.();
     p.reject(e);
   }
 

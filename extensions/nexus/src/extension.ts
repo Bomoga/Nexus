@@ -11,9 +11,9 @@ export function activate(context: vscode.ExtensionContext): void {
   // While registerLane2 is still a stub that returns nothing, Lane 1 falls back to its stand-ins.
   const lane2: Partial<Lane2Services> = registerLane2(context);
   // Lane 1 runs first but "Make task" must open Lane 3's task editor, so hand it a late-bound opener.
-  let views: Lane3Views | undefined;
-  registerLane1(context, lane2, taskId => views?.openTaskEditor(taskId));
-  views = registerLane3(context, lane2.router as NexusBridgeRouter);
+  const lane3: { views?: Lane3Views } = {};
+  registerLane1(context, lane2, taskId => lane3.views?.openTaskEditor(taskId));
+  lane3.views = registerLane3(context, lane2.router as NexusBridgeRouter);
 }
 
 export function deactivate(): void {}

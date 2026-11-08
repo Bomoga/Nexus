@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { ChatMessage } from "../../contracts";
+import { ChatMessage, encodeCodeRef } from "../../contracts";
 import { SlackBot, type BotApi } from "./bot";
 import { webClientOptions } from "./web-client";
 
@@ -25,6 +25,14 @@ describe("SlackBot", () => {
     expect(makeApi).toHaveBeenCalledWith("xoxb-SECRET");
     expect(ChatMessage.parse(m)).toEqual(m);
     expect(m).toMatchObject({ id: "C1:20.000100", threadTs: "19.000100", sentVia: "bot", text: "working (confirmed)", clientId: "c1", author: { id: "U_BOT", name: "nexus", isBot: true } });
+  });
+
+  it("serves display text with code refs taken from the raw text", async () => {
+    const { bot } = make();
+    const ref = { workspaceId: "w", commit: "a".repeat(40), path: "src/a.ts", startLine: 3, endLine: 5 };
+    const m = await bot.postAsBot({ channelId: "C1", text: `see <${encodeCodeRef(ref)}|src/a.ts:3-5> &lt;b&gt;` });
+    expect(m.text).toBe("see src/a.ts:3-5 <b> (confirmed)");
+    expect(m.codeRefs).toEqual([ref]);
   });
 
   it("posts Block Kit blocks and returns them on the message", async () => {

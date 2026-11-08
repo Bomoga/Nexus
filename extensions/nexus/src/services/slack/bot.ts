@@ -2,6 +2,7 @@
 import { WebClient } from "@slack/web-api";
 import type { ChatMessage } from "../../contracts";
 import type { BotPostOptions } from "./types";
+import { toDisplayText } from "./mrkdwn";
 import { extractCodeRefs, safeError, webClientOptions, type SlackMsg } from "./web-client";
 
 /** Both Slack tokens the live path needs. Supplied on demand by the host (SecretStorage or env); never logged, never returned. */
@@ -80,7 +81,7 @@ export class SlackBot {
       id: `${channelId}:${ts}`, channelId, ts,
       ...(threadTs && threadTs !== ts ? { threadTs } : {}),
       author: { id: me.userId, name: me.name, isBot: true },
-      text, codeRefs: extractCodeRefs(text), sentVia: "bot",
+      text: toDisplayText(text), codeRefs: extractCodeRefs(text), sentVia: "bot",
       ...(blocks !== undefined ? { blocks } : {}),
       ...(clientId !== undefined ? { clientId } : {}),
     };

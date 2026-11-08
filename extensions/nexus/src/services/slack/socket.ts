@@ -4,6 +4,7 @@ import { App, LogLevel, SocketModeReceiver } from "@slack/bolt";
 import type { ChatMessage, SlackUser } from "../../contracts";
 import type { BotIdentity, BotTokenProvider, BotTokens } from "./bot";
 import type { Disposable, SlackMessageEvent } from "./types";
+import { mentionedUserIds } from "./mrkdwn";
 import { isShownSlackMsg, mapSlackMessage, toSlackUser, type SlackMsg, type SlackUserInfo } from "./web-client";
 
 /** A Slack `message` event as delivered over Socket Mode (loose: the payload is untrusted). */
@@ -159,6 +160,19 @@ export interface SocketOptions {
 }
 
 const SEEN_LIMIT = 2_000;
+const MAX_MENTION_LOOKUPS = 20;
+const MENTION_LOOKUP_MS = 1500;   // a live message is never held longer than this for a mentioned name
+const MAX_CACHED_USERS = 2000;
+
+/** The promise's value, or undefined if it takes longer than ms. The timer is always cleared. */
+async function withinMs<T>(p: Promise<T | undefined>, ms: number): Promise<T | undefined> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([p, new Promise<undefined>(resolve => { timer = setTimeout(() => resolve(undefined), ms); })]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 type Listener = { fn: (evt: SlackMessageEvent) => void; channelIds?: string[] };
 
@@ -174,6 +188,7 @@ export class SlackSocket {
   private readonly listeners = new Set<Listener>();
   private readonly connectionListeners = new Set<(connected: boolean) => void>();
   private readonly users = new Map<string, { user?: SlackUser; at: number }>();
+  private readonly lookups = new Map<string, Promise<SlackUser | undefined>>();
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly now: () => number;
 
@@ -300,7 +315,13 @@ export class SlackSocket {
       this.seen.set(key, true);
       if (this.seen.size > SEEN_LIMIT) this.seen.delete(this.seen.keys().next().value as string);
       const known = raw.user ? await this.lookupUser(app, raw.user) : undefined;
-      const message = mapSlackMessage(channelId, raw, known, this.nexusBot);
+      // Mentioned users are resolved through the same cached lookup, bounded per message; an unknown one shows as @U….
+      const mentioned = new Map<string, string>();
+      await Promise.all(mentionedUserIds(raw.text ?? "", true).slice(0, MAX_MENTION_LOOKUPS).map(async id => {
+        const u = await withinMs(this.lookupUser(app, id), MENTION_LOOKUP_MS);   // never throws; a slow or failed lookup is just an unknown user
+        if (u) mentioned.set(id, u.displayName || u.name);
+      }));
+      const message = mapSlackMessage(channelId, raw, known, this.nexusBot, { user: id => mentioned.get(id) });
       this.emit({ type: changed ? "message_changed" : "message", message });
     } catch { /* an odd payload must not take the handler (and the socket) down */ }
   }
@@ -313,17 +334,33 @@ export class SlackSocket {
   }
 
   /** users.info, cached; a failed lookup is remembered briefly so a flood of messages does not hammer Slack. */
-  private async lookupUser(app: BoltLike, id: string): Promise<SlackUser | undefined> {
+  private lookupUser(app: BoltLike, id: string): Promise<SlackUser | undefined> {
     const hit = this.users.get(id);
-    if (hit && (hit.user || this.now() - hit.at < 60_000)) return hit.user;
+    if (hit && (hit.user || this.now() - hit.at < 60_000)) return Promise.resolve(hit.user);
+    let p = this.lookups.get(id);   // one users.info in flight per id, so a hanging call is not started again by every message
+    if (!p) {
+      p = this.fetchUser(app, id).finally(() => { this.lookups.delete(id); });
+      this.lookups.set(id, p);
+    }
+    return p;
+  }
+
+  private async fetchUser(app: BoltLike, id: string): Promise<SlackUser | undefined> {
     try {
       const u = (await app.client.users.info({ user: id })).user;
       const user = u ? toSlackUser(id, u) : undefined;
-      this.users.set(id, { user, at: this.now() });
+      this.rememberUser(id, { user, at: this.now() });
       return user;
     } catch {
-      this.users.set(id, { at: this.now() });
+      this.rememberUser(id, { at: this.now() });
       return undefined;
     }
+  }
+
+  /** Mentioned ids come from untrusted text, so the cache is bounded (oldest entry dropped first). */
+  private rememberUser(id: string, entry: { user?: SlackUser; at: number }): void {
+    this.users.delete(id);
+    this.users.set(id, entry);
+    while (this.users.size > MAX_CACHED_USERS) this.users.delete(this.users.keys().next().value as string);
   }
 }

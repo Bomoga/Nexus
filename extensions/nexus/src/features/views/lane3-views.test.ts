@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { Lane3Views, escapeAttr, readBodyData, withBodyData, type Lane3Deps, type PanelLike, type ViewLike } from "./lane3-views";
+import { Lane3Views, asSlackTarget, escapeAttr, readBodyData, withBodyData, type Lane3Deps, type PanelLike, type ViewLike } from "./lane3-views";
 
 const PAGE = '<!doctype html>\n<html lang="en">\n<head></head>\n<body>\n<div id="root"></div>\n</body>\n</html>';
 
@@ -83,7 +83,7 @@ describe("Lane3Views", () => {
     const { registered, commands } = setup();
     expect({ registered, commands: [...commands.keys()].sort() }).toEqual({
       registered: ["nexus.chat:chat", "nexus.git:git", "nexus.approvals:approvals", "nexus.agent:session"],
-      commands: ["nexus.openApprovals", "nexus.openHome", "nexus.openSession", "nexus.openSlack", "nexus.openTimeline", "nexus.searchEvents", "nexus.shareSelectionToSlack"],
+      commands: ["nexus.openApprovals", "nexus.openHome", "nexus.openSession", "nexus.openSlack", "nexus.openTimeline", "nexus.searchEvents"],
     });
   });
 
@@ -204,6 +204,33 @@ describe("Lane3Views", () => {
     expect(executed).toEqual(["nexus.chat.focus", "nexus.approvals.focus"]);
   });
 
+  it("opens a thread target in the resolved Slack view by re-setting its body data, then focuses it", async () => {
+    const { run, executed, resolveView } = setup();
+    const view = resolveView("nexus.chat");
+    await run("nexus.openSlack", { channelId: "C_DEMO", threadTs: "1762466100.000100" });
+    expect(readBodyData(view.webview.html, "channel-id")).toBe("C_DEMO");
+    expect(readBodyData(view.webview.html, "thread-ts")).toBe("1762466100.000100");
+    expect(readBodyData(view.webview.html, "open-seq")).toBe("1");
+    expect(executed).toEqual(["nexus.chat.focus"]);
+    // the same thread again still reloads the page (a new open-seq), so a closed thread pane reopens
+    await run("nexus.openSlack", { channelId: "C_DEMO", threadTs: "1762466100.000100" });
+    expect(readBodyData(view.webview.html, "open-seq")).toBe("2");
+    expect(view.webview.html.match(/data-channel-id=/g)).toHaveLength(1);
+  });
+
+  it("applies a pending thread target when the Slack view resolves later, and ignores invalid targets", async () => {
+    const { run, executed, resolveView } = setup();
+    await run("nexus.openSlack", { channelId: "C_DEMO", threadTs: "1762466100.000100" });
+    const view = resolveView("nexus.chat");
+    expect(readBodyData(view.webview.html, "thread-ts")).toBe("1762466100.000100");
+    const before = view.webview.html;
+    await run("nexus.openSlack", { channelId: 'C"><script>', threadTs: "1762466100.000100" });
+    await run("nexus.openSlack", { channelId: "C_DEMO", threadTs: "not-a-ts" });
+    await run("nexus.openSlack", "C_DEMO");
+    expect(view.webview.html).toBe(before);
+    expect(executed.filter((c) => c === "nexus.chat.focus")).toHaveLength(4);
+  });
+
   it("disposes every command it registered", () => {
     const { views, commands } = setup();
     views.dispose();
@@ -234,6 +261,16 @@ describe("revealAgentViewOnce", () => {
     await failing.views.revealAgentViewOnce();
     expect(failing.executed).toEqual(["nexus.agent.focus"]);
     expect(state.has("nexus.agentViewRevealed")).toBe(false);
+  });
+});
+
+describe("asSlackTarget", () => {
+  it("accepts only Slack-shaped channel ids and thread timestamps", () => {
+    expect(asSlackTarget({ channelId: "C0123ABC", threadTs: "1762466100.000100" })).toEqual({ channelId: "C0123ABC", threadTs: "1762466100.000100" });
+    expect(asSlackTarget({ channelId: "c0123", threadTs: "1762466100.000100" })).toBeUndefined();
+    expect(asSlackTarget({ channelId: "C0123", threadTs: "1762466100" })).toBeUndefined();
+    expect(asSlackTarget(null)).toBeUndefined();
+    expect(asSlackTarget(undefined)).toBeUndefined();
   });
 });
 

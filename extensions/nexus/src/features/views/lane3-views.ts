@@ -64,6 +64,20 @@ export function withBodyData(html: string, name: string, value: string): string 
   });
 }
 
+/** A Slack thread target as `ui.openTarget` routes it to `nexus.openSlack` (src/services/coderef/open-target.ts). */
+export interface SlackTarget { channelId: string; threadTs: string }
+const CHANNEL_ID = /^[A-Z][A-Z0-9_]{0,31}$/;
+const SLACK_TS = /^\d{1,12}\.\d{1,9}$/;
+
+/** Only a plain {channelId, threadTs} in Slack's own formats is a target; anything else just focuses the view. */
+export function asSlackTarget(arg: unknown): SlackTarget | undefined {
+  if (typeof arg !== "object" || arg === null) return undefined;
+  const { channelId, threadTs } = arg as Record<string, unknown>;
+  if (typeof channelId !== "string" || !CHANNEL_ID.test(channelId)) return undefined;
+  if (typeof threadTs !== "string" || !SLACK_TS.test(threadTs)) return undefined;
+  return { channelId, threadTs };
+}
+
 /** The value of `data-<name>` on the page's <body>, if any. */
 export function readBodyData(html: string, name: string): string | undefined {
   return new RegExp(`<body\\b[^>]*\\sdata-${name}="([^"]*)"`).exec(html)?.[1];
@@ -77,6 +91,10 @@ export class Lane3Views {
   private agentView: ViewLike | undefined;
   /** The session the agent view should show once it resolves (or re-show after a reload). */
   private agentSessionId: string | undefined;
+  private chatView: ViewLike | undefined;
+  /** The thread the Slack view should open once it resolves. */
+  private chatTarget: SlackTarget | undefined;
+  private chatOpenSeq = 0;
   private readonly sessions = new Map<string, PanelLike>();
   private readonly tasks = new Map<string, PanelLike>();
   private readonly plans = new Map<string, PanelLike>();
@@ -86,18 +104,16 @@ export class Lane3Views {
   register(): this {
     const d = this.deps;
     this.disposables.push(
-      d.makeHost(CHAT_VIEW, "chat").register(),
+      d.makeHost(CHAT_VIEW, "chat", (view) => this.onChatViewResolved(view)).register(),
       d.makeHost(GIT_VIEW, "git").register(),
       d.makeHost(APPROVALS_VIEW, "approvals").register(),
       d.makeHost(AGENT_VIEW, "session", (view) => this.onAgentViewResolved(view)).register(),
       d.registerCommand("nexus.openHome", () => this.openHome()),
       d.registerCommand("nexus.searchEvents", () => this.openHome()),
       d.registerCommand("nexus.openTimeline", () => this.openTimeline()),
-      d.registerCommand("nexus.openSlack", () => d.executeCommand(`${CHAT_VIEW}.focus`)),
+      d.registerCommand("nexus.openSlack", (target?: unknown) => this.openSlack(target)),
       d.registerCommand("nexus.openApprovals", () => d.executeCommand(`${APPROVALS_VIEW}.focus`)),
-      // Declared in the editor menu; the real flow (share-selection.ts) needs Lane 2's code-ref and Slack services wired in.
-      // DELETE this stub when wiring registerShareSelection: registering the same command twice throws during activation.
-      d.registerCommand("nexus.shareSelectionToSlack", () => d.showError("Share to Slack isn't connected yet: the Slack service still has to be wired in.")),
+      // nexus.shareSelectionToSlack is registered by src/register/lane-3.ts (registerShareSelection over the shared router).
       d.registerCommand("nexus.openSession", (sessionId?: unknown) => {
         if (!isPanelId(sessionId)) {
           d.showError("Open session needs a valid session id (open it from a thread, the globe or a notification).");
@@ -134,6 +150,24 @@ export class Lane3Views {
 
   openTimeline(): void {
     this.timeline = this.single(this.timeline, TIMELINE_PANEL, "timeline", "Nexus Timeline", (p) => (this.timeline = p));
+  }
+
+  /**
+   * Focus the Slack view and, when given a thread target, open that channel and thread in it. The webview reads
+   * `<body data-channel-id data-thread-ts>` at boot (webviews/chat), so the page is re-set and reloads; `data-open-seq`
+   * changes every time so the same thread can be opened again.
+   */
+  async openSlack(arg?: unknown): Promise<void> {
+    const target = asSlackTarget(arg);
+    if (target) {
+      this.chatTarget = target;
+      if (this.chatView) this.pointChatView(this.chatView, target);
+    }
+    try {
+      await this.deps.executeCommand(`${CHAT_VIEW}.focus`);
+    } catch {
+      // no Slack view registered: nothing to focus
+    }
   }
 
   /**
@@ -183,6 +217,24 @@ export class Lane3Views {
     });
     this.disposables.push(listener);
     if (this.agentSessionId) this.pointAgentView(view, this.agentSessionId);
+  }
+
+  private onChatViewResolved(view: ViewLike): void {
+    this.chatView = view;
+    const listener = view.onDidDispose(() => {
+      if (this.chatView === view) this.chatView = undefined;
+      const i = this.disposables.indexOf(listener);
+      if (i >= 0) this.disposables.splice(i, 1);
+    });
+    this.disposables.push(listener);
+    if (this.chatTarget) this.pointChatView(view, this.chatTarget);
+  }
+
+  private pointChatView(view: ViewLike, target: SlackTarget): void {
+    this.chatOpenSeq += 1;
+    let html = withBodyData(view.webview.html, "channel-id", target.channelId);
+    html = withBodyData(html, "thread-ts", target.threadTs);
+    view.webview.html = withBodyData(html, "open-seq", String(this.chatOpenSeq));
   }
 
   private pointAgentView(view: ViewLike, sessionId: string): void {

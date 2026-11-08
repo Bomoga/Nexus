@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { AgentEvent, AgentSession, ApprovalRequest, ModelCallReceipt, SpendSummary } from "../../src/contracts";
-import { BridgeError, Button, EmptyState, PendingNote, StatusLine, StoreStatusLine, Tabs, friendlyError, getBridge, useNow } from "../shared";
+import { BridgeError, Button, EmptyState, PendingNote, Select, StatusLine, StoreStatusLine, Tabs, friendlyError, getBridge, useNow } from "../shared";
 import type { BridgeClient, Tone } from "../shared";
 
 type Status = AgentSession["status"];
@@ -20,6 +20,13 @@ function putApproval(cur: ReadonlyMap<string, ApprovalRequest>, a: ApprovalReque
   return new Map(cur).set(a.id, a);
 }
 const usd = (n: number) => n.toFixed(4);
+
+const isLive = (s: AgentSession) => s.status === "running" || s.status === "awaiting_approval";
+
+/** Newest first, with running and awaiting_approval sessions ahead of finished ones. */
+export function orderSessions(list: readonly AgentSession[]): AgentSession[] {
+  return [...list].sort((a, b) => Number(isLive(b)) - Number(isLive(a)) || Date.parse(b.startedAt) - Date.parse(a.startedAt));
+}
 
 /** Missing seqs between 0 and the highest seen, as "4" or "6-8" ranges. */
 export function missingRanges(seen: ReadonlySet<number>): string[] {
@@ -107,6 +114,15 @@ function Approval({ approval, fallback, busy, now, onResolve }: {
   );
 }
 
+function switcherOptions(list: readonly AgentSession[] | undefined, current: AgentSession | undefined, titles: ReadonlyMap<string, string>) {
+  const all = [...(list ?? [])];
+  if (current && !all.some((x) => x.id === current.id)) all.unshift(current);
+  return all.map((x) => ({
+    value: x.id,
+    label: `${x.status.toUpperCase()} · ${titles.get(x.taskId) ?? x.taskId} · ${x.model.modelId}`,
+  }));
+}
+
 function short(v: unknown): string {
   let s: string;
   try {
@@ -119,13 +135,18 @@ function short(v: unknown): string {
 
 export interface AppProps {
   bridge?: BridgeClient;
-  /** Undefined when the host gave no session id: the panel shows one line and makes no requests. */
+  /** The session the host pointed the view at; undefined means "pick the newest one from sessions.list". */
   sessionId: string | undefined;
 }
 
-export function App({ bridge, sessionId }: AppProps) {
+export function App({ bridge, sessionId: initialId }: AppProps) {
+  // The user's (or the host's) choice; once set, a new sessions.list result never replaces it.
+  const [sessionId, setSessionId] = useState<string | undefined>(initialId);
+  const [list, setList] = useState<readonly AgentSession[] | undefined>();
+  const [listError, setListError] = useState("");
+  const [titles, setTitles] = useState<ReadonlyMap<string, string>>(new Map());
+  const asked = useRef(new Set<string>());
   const [session, setSession] = useState<AgentSession | undefined>();
-  const [title, setTitle] = useState("");
   const [events, setEvents] = useState<ReadonlyMap<number, AgentEvent>>(new Map());
   const [receipts, setReceipts] = useState<readonly ModelCallReceipt[]>([]);
   const [summary, setSummary] = useState<SpendSummary | undefined>();
@@ -149,9 +170,46 @@ export function App({ bridge, sessionId }: AppProps) {
     setSummary(undefined); // live additions: totals are recomputed from the rows
   }, []);
 
+  const ensureTitle = useCallback((taskId: string) => {
+    if (asked.current.has(taskId)) return;
+    asked.current.add(taskId);
+    (bridge ?? getBridge())
+      .request("tasks.get", { taskId })
+      .then((t) => setTitles((cur) => new Map(cur).set(taskId, t.title)))
+      .catch(() => asked.current.delete(taskId));
+  }, [bridge]);
+
+  const loadList = useCallback(() => {
+    (bridge ?? getBridge())
+      .request("sessions.list", {})
+      .then((l) => {
+        setListError("");
+        setList(orderSessions(l));
+        // First list with no choice yet: the newest running session, else the newest.
+        setSessionId((cur) => cur ?? orderSessions(l)[0]?.id);
+        for (const x of l.slice(0, 12)) ensureTitle(x.taskId);
+      })
+      .catch((e) => setListError(friendlyError(e, "sessions")));
+  }, [bridge, ensureTitle]);
+
+  useEffect(() => {
+    loadList();
+  }, [loadList, attempt]);
+
+  useEffect(() => {
+    if (initialId) setSessionId(initialId);
+  }, [initialId]);
+
   useEffect(() => {
     if (!sessionId) return;
     let live = true;
+    setSession(undefined);
+    setEvents(new Map());
+    setReceipts([]);
+    setSummary(undefined);
+    setApprovals(new Map());
+    setCancelled(undefined);
+    setError("");
     setLoadError("");
     setApprovalsError("");
     setReceiptsError("");
@@ -160,9 +218,7 @@ export function App({ bridge, sessionId }: AppProps) {
       .then((s) => {
         if (!live) return;
         setSession(s);
-        b.request("tasks.get", { taskId: s.taskId })
-          .then((t) => live && setTitle(t.title))
-          .catch(() => undefined);
+        ensureTitle(s.taskId);
       })
       .catch((e) => live && setLoadError(friendlyError(e, "session")));
     b.request("receipts.list", { sessionId })
@@ -195,14 +251,23 @@ export function App({ bridge, sessionId }: AppProps) {
       live = false;
       unsubs.forEach((u) => u());
     };
-  }, [bridge, sessionId, addReceipt, attempt]);
+  }, [bridge, sessionId, addReceipt, ensureTitle, attempt]);
 
   const ordered = useMemo(() => [...events.values()].sort((a, b) => a.seq - b.seq), [events]);
   const gaps = useMemo(() => missingRanges(new Set(events.keys())), [events]);
   const totals = useMemo(() => computeTotals(receipts), [receipts]);
 
   const retry = <Button onClick={() => setAttempt((n) => n + 1)}>RETRY</Button>;
-  if (!sessionId) return <EmptyState message="no session id" />;
+  if (!sessionId) {
+    if (listError) {
+      return (
+        <div className="session-app">
+          <StatusLine tone="error">{listError} {retry}</StatusLine>
+        </div>
+      );
+    }
+    return list ? <EmptyState message="no agent session yet · start one from a Slack thread" /> : <StatusLine>… loading</StatusLine>;
+  }
   if (loadError && !session) {
     return (
       <div className="session-app">
@@ -261,7 +326,13 @@ export function App({ bridge, sessionId }: AppProps) {
     <div className="session-app">
       <StoreStatusLine bridge={bridge} />
       <div className="session-head">
-        <span className="session-title">{title || sessionId}</span>
+        <Select
+          aria-label="session"
+          value={sessionId}
+          onMouseDown={loadList}
+          onChange={(e) => setSessionId(e.target.value)}
+          options={switcherOptions(list, session, titles)}
+        />
         <span className="session-sep">·</span>
         <span className="session-data" title="requested model">{session?.model.modelId ?? "…"}</span>
         <span className="session-sep">·</span>

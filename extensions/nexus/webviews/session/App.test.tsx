@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, test, vi } from "vitest";
-import type { AgentEvent, Envelope } from "../../src/contracts";
+import type { AgentEvent, AgentSession, Envelope } from "../../src/contracts";
 import { fx } from "../../src/contracts/fixtures";
 import { scriptedAgentEvents, scriptedReceipts } from "../../src/contracts/fixtures/stream";
 import { createBridgeClient } from "../shared";
@@ -26,6 +26,7 @@ function setup(answers: Answers = {}) {
   const sumBase = scriptedReceipts.reduce((a, r) => a + (r.baselineCostUsd ?? 0), 0);
   const defaults: Answers = {
     "sessions.get": () => fx.session,
+    "sessions.list": () => [fx.session],
     "tasks.get": () => fx.task,
     "receipts.list": () => ({ receipts: scriptedReceipts, summary: { sessionId: "ses_01", calls: 4, costUsd: sumCost, savedUsd: sumBase - sumCost } }),
     "approvals.list": () => [fx.approval, fx.approvalDecided],
@@ -72,7 +73,7 @@ describe("session view", () => {
   test("header shows task title, requested model, branch, status and CANCEL", async () => {
     const { bridge, reqs } = setup();
     render(<App bridge={bridge} sessionId="ses_01" />);
-    expect(await screen.findByText("Fix cart discount for qty > 1")).toBeTruthy();
+    expect(await screen.findByText(/Fix cart discount for qty > 1/)).toBeTruthy();
     expect(reqs("sessions.get")[0].body).toEqual({ sessionId: "ses_01" });
     expect(reqs("tasks.get")[0].body).toEqual({ taskId: "task_01" });
     expect(screen.getByText("claude-sonnet-4-5")).toBeTruthy();
@@ -129,7 +130,7 @@ describe("session view", () => {
   test("status events drive the header status and CANCEL enablement", async () => {
     const { bridge, emit, subbed } = setup();
     render(<App bridge={bridge} sessionId="ses_01" />);
-    await screen.findByText("Fix cart discount for qty > 1");
+    await screen.findByText(/Fix cart discount for qty > 1/);
     await waitFor(() => expect(subbed("agent.subscribe").length).toBe(1));
     emit("agent.subscribe", ev(0, { type: "status", status: "awaiting_approval" }));
     expect(screen.getByTestId("session-status").className).toContain("nx-tone-pending");
@@ -143,7 +144,7 @@ describe("session view", () => {
   test("CANCEL requests agent.cancel", async () => {
     const { bridge, reqs } = setup();
     render(<App bridge={bridge} sessionId="ses_01" />);
-    await screen.findByText("Fix cart discount for qty > 1");
+    await screen.findByText(/Fix cart discount for qty > 1/);
     fireEvent.click(screen.getByRole("button", { name: /cancel/i }));
     await waitFor(() => expect(reqs("agent.cancel").length).toBe(1));
     expect(reqs("agent.cancel")[0].body).toEqual({ sessionId: "ses_01" });
@@ -267,12 +268,75 @@ describe("session view", () => {
     emit("approvals.subscribe", { ...fx.approval, decision: "rejected", decidedBy: { via: "auth0_push", userId: "auth0|1" }, decidedAt: fx.approval.requestedAt });
     expect(await within(rows()[0]).findByText(/decided by auth0_push auth0\|1/)).toBeTruthy();
   });
+});
 
-  test("no session id: one line, no requests", () => {
-    const { bridge, reqs, subbed } = setup();
+describe("session resolution", () => {
+  const T = (m: number) => new Date(Date.parse(fx.session.startedAt) + m * 60_000).toISOString();
+  const mk = (id: string, status: AgentSession["status"], m: number): AgentSession => ({ ...fx.session, id, status, startedAt: T(m), branch: `nexus/agent-${id}` });
+
+  test("no id: sessions.list picks the newest running session over a newer finished one", async () => {
+    const { bridge, reqs, subbed } = setup({
+      "sessions.list": () => [mk("ses_old", "running", 0), mk("ses_done", "done", 30), mk("ses_run", "awaiting_approval", 10)],
+      "sessions.get": (b) => mk(String(b.sessionId), "running", 10),
+    });
     render(<App bridge={bridge} sessionId={undefined} />);
-    expect(screen.getByText(/no session/i)).toBeTruthy();
+    await waitFor(() => expect(subbed("agent.subscribe").length).toBe(1));
+    expect(reqs("sessions.get")[0].body).toEqual({ sessionId: "ses_run" });
+    expect(subbed("agent.subscribe")[0].body).toEqual({ sessionId: "ses_run", fromSeq: 0 });
+    expect((screen.getByRole("combobox", { name: "session" }) as HTMLSelectElement).value).toBe("ses_run");
+  });
+
+  test("the switcher lists sessions newest first and re-subscribes from seq 0 for the chosen one", async () => {
+    const list = [mk("ses_a", "done", 0), mk("ses_b", "running", 5)];
+    const { bridge, reqs, subbed } = setup({ "sessions.list": () => list, "sessions.get": (b) => list.find((x) => x.id === b.sessionId) });
+    render(<App bridge={bridge} sessionId={undefined} />);
+    await waitFor(() => expect(subbed("agent.subscribe").length).toBe(1));
+    const select = screen.getByRole("combobox", { name: "session" }) as HTMLSelectElement;
+    await waitFor(() => expect(select.options.length).toBe(2));
+    expect([...select.options].map((o) => o.value)).toEqual(["ses_b", "ses_a"]);
+    expect(select.options[0].textContent).toMatch(/^RUNNING · Fix cart discount for qty > 1 · claude-sonnet-4-5$/);
+    fireEvent.change(select, { target: { value: "ses_a" } });
+    await waitFor(() => expect(subbed("agent.subscribe").length).toBe(2));
+    expect(subbed("agent.subscribe")[1].body).toEqual({ sessionId: "ses_a", fromSeq: 0 });
+    expect(reqs("sessions.get").map((r) => r.body)).toEqual([{ sessionId: "ses_b" }, { sessionId: "ses_a" }]);
+    // A later sessions.list never resets the choice.
+    fireEvent.mouseDown(select);
+    await waitFor(() => expect(reqs("sessions.list").length).toBe(2));
+    expect(select.value).toBe("ses_a");
+    expect(subbed("agent.subscribe").length).toBe(2);
+  });
+
+  test("an id from the host wins over the list", async () => {
+    const { bridge, subbed } = setup({ "sessions.list": () => [mk("ses_x", "running", 50), fx.session] });
+    render(<App bridge={bridge} sessionId="ses_01" />);
+    await waitFor(() => expect(subbed("agent.subscribe").length).toBe(1));
+    await waitFor(() => expect((screen.getByRole("combobox", { name: "session" }) as HTMLSelectElement).options.length).toBe(2));
+    expect(subbed("agent.subscribe")[0].body).toEqual({ sessionId: "ses_01", fromSeq: 0 });
+    expect(subbed("agent.subscribe").length).toBe(1);
+  });
+
+  test("an empty list shows one hint line and makes no session requests", async () => {
+    const { bridge, reqs, subbed } = setup({ "sessions.list": () => [] });
+    render(<App bridge={bridge} sessionId={undefined} />);
+    expect(await screen.findByText("no agent session yet · start one from a Slack thread")).toBeTruthy();
+    expect(screen.queryByRole("button")).toBeNull();
     expect(reqs("sessions.get").length + subbed("agent.subscribe").length).toBe(0);
+  });
+
+  test("a failing sessions.list shows an error with RETRY", async () => {
+    let down = true;
+    const { bridge, reqs } = setup({
+      "sessions.list": () => {
+        if (down) throw { code: "offline", message: "down" };
+        return [fx.session];
+      },
+    });
+    render(<App bridge={bridge} sessionId={undefined} />);
+    expect(await screen.findByText("sessions: offline")).toBeTruthy();
+    down = false;
+    fireEvent.click(screen.getByRole("button", { name: "RETRY" }));
+    expect(await screen.findByText(/Fix cart discount/)).toBeTruthy();
+    expect(reqs("sessions.list").length).toBe(2);
   });
 });
 
@@ -290,7 +354,7 @@ describe("states", () => {
     expect(screen.queryByText(/no handler/)).toBeNull();
     missing = false;
     fireEvent.click(screen.getByRole("button", { name: "RETRY" }));
-    expect(await screen.findByText("Fix cart discount for qty > 1")).toBeTruthy();
+    expect(await screen.findByText(/Fix cart discount for qty > 1/)).toBeTruthy();
     expect(reqs("sessions.get")).toHaveLength(2);
   });
 
@@ -298,7 +362,7 @@ describe("states", () => {
     const down = { code: "offline", message: "down" };
     const a = setup({ "approvals.list": () => { throw down; } });
     render(<App bridge={a.bridge} sessionId="ses_01" />);
-    expect(await screen.findByText("Fix cart discount for qty > 1")).toBeTruthy();
+    expect(await screen.findByText(/Fix cart discount for qty > 1/)).toBeTruthy();
     expect(await screen.findByText("approvals: offline")).toBeTruthy();
     cleanup();
     const b = setup({ "sessions.get": () => { throw down; }, "approvals.list": () => { throw down; } });
@@ -309,7 +373,7 @@ describe("states", () => {
   test("empty tabs say one line each", async () => {
     const { bridge } = setup({ "receipts.list": () => ({ receipts: [], summary: { sessionId: "ses_01", calls: 0, costUsd: 0, savedUsd: 0 } }) });
     render(<App bridge={bridge} sessionId="ses_01" />);
-    await screen.findByText("Fix cart discount for qty > 1");
+    await screen.findByText(/Fix cart discount for qty > 1/);
     fireEvent.click(screen.getByRole("tab", { name: /diff/i }));
     expect(screen.getByText("no diffs yet")).toBeTruthy();
     fireEvent.click(screen.getByRole("tab", { name: /tests/i }));

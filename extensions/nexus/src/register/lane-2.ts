@@ -150,7 +150,8 @@ export function registerLane2(context: vscode.ExtensionContext): Lane2Wiring {
     ...(gitService ? { git: gitService } : {}),
     ...(codeRefEditor ? { codeRefEditor } : {}),
     executeCommand: (id, ...args) => Promise.resolve(vscode.commands.executeCommand(id, ...args)),
-    slackCacheDir: join(context.globalStorageUri.fsPath, "slack"),
+    // "slack-2": history cached before L2-19 kept any bot's message as Nexus's (with its buttons), so it is refetched once.
+    slackCacheDir: join(context.globalStorageUri.fsPath, "slack-2"),
     ...(folder ? {
       watcher: {
         machineId,

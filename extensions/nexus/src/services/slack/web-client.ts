@@ -39,6 +39,8 @@ export interface WebClientOptions {
   botUserId?: string;
   /** Test seam; defaults to the real @slack/web-api WebClient built with webClientOptions(kind). */
   makeApi?: (token: string, kind: ApiKind) => SlackApi;
+  /** Called when Slack refuses the user token itself (invalid_auth, token_revoked, ...), with where that token came from. */
+  onTokenRejected?: (source: UserTokenSource) => void;
   /** How long bot-membership answers and failed user lookups are reused. */
   botMembershipTtlMs?: number;
   now?: () => number;
@@ -47,6 +49,8 @@ export interface WebClientOptions {
 export type ApiKind = "read" | "post";
 
 const MAX_PAGES = 50;
+/** Slack's answers that mean the token itself is no good (as opposed to a missing scope or channel). */
+const TOKEN_REFUSED = new Set(["invalid_auth", "not_authed", "token_revoked", "token_expired", "account_inactive"]);
 const CONCURRENCY = 4;
 
 /**
@@ -262,12 +266,36 @@ export class SlackWebClient implements UserSlack {
     if (!this.reader || !this.poster || this.apiToken !== t.token) {
       const make = this.opts.makeApi ?? ((token: string, kind: ApiKind) => new WebClient(token, webClientOptions(kind)) as unknown as SlackApi);
       this.apiToken = t.token;
-      this.reader = make(t.token, "read");
-      this.poster = make(t.token, "post");
+      this.reader = this.watchAuth(make(t.token, "read"), t.source);
+      this.poster = this.watchAuth(make(t.token, "post"), t.source);
       this.self = undefined;
     }
     this.source = t.source;
     return { reader: this.reader, poster: this.poster };
+  }
+
+  /** Reports a refused token (once per refusal) so its provider can drop it; the error itself still reaches the caller. */
+  private watchAuth(api: SlackApi, source: UserTokenSource): SlackApi {
+    const report = this.opts.onTokenRejected;
+    if (!report) return api;
+    return new Proxy(api, {
+      get: (target, ns) => {
+        const group = Reflect.get(target, ns) as unknown;
+        if (!group || typeof group !== "object") return group;
+        return new Proxy(group as object, {
+          get: (g, name) => {
+            const fn = Reflect.get(g, name) as unknown;
+            if (typeof fn !== "function") return fn;
+            return async (...args: unknown[]) => {
+              try { return await (fn as (...a: unknown[]) => unknown).apply(g, args); } catch (err) {
+                if (TOKEN_REFUSED.has(String((err as { data?: { error?: unknown } })?.data?.error))) { try { report(source); } catch { /* never breaks the call */ } }
+                throw err;
+              }
+            };
+          },
+        });
+      },
+    });
   }
 
   private async requireApi(): Promise<{ reader: SlackApi; poster: SlackApi }> {

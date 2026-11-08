@@ -524,7 +524,7 @@ describe("hardened verdict parsing, attempt 3", () => {
 
   it("a repeated judges key or an escaped key name also taints the reply", async () => {
     expect((await reviewOf(`{"verdict":"looks_good","summary":"s","judges":[{"a":1}],"judges":[{"modelId":"x","verdict":"looks_good","notes":"n"}]}`)).verdict).toBe("concerns");
-    expect((await reviewOf(`{"verdict":"looks_good","s\ummary":"s","\\u0076\\u0065\\u0072\\u0064\\u0069\\u0063\\u0074":"looks_good","j\udges":[{"a":1}]}`)).verdict).toBe("concerns");
+    expect((await reviewOf(`{"verdict":"looks_good","summary":"s","\\u0076\\u0065\\u0072\\u0064\\u0069\\u0063\\u0074":"looks_good","judges":[{"a":1}]}`)).verdict).toBe("concerns");
   });
 
   it("duplicate keys inside nested judge objects are not mistaken for top-level duplicates", async () => {

@@ -23,7 +23,7 @@ html, body, #root { height: 100%; }
 .chat-head-extra { display: inline-flex; align-items: center; gap: var(--nx-gap-1); }
 .chat-history { flex: 1; overflow-y: auto; }
 
-/* Message rows: time (mono, muted, 44 px) · who (avatar + name, 600) · text. Replies sit under the text. */
+/* Message rows: time (mono, muted, 44 px) Â· who (avatar + name, 600) Â· text. Replies sit under the text. */
 .chat-row {
   display: grid; grid-template-columns: 44px auto minmax(0, 1fr); column-gap: var(--nx-gap-2); align-items: start;
   min-height: var(--nx-row-h); padding: 2px var(--nx-pad-x); font-size: var(--nx-font-ui-sm); line-height: var(--nx-lh-sm);
@@ -76,11 +76,20 @@ html, body, #root { height: 100%; }
   .chat-failed-bar { padding-left: var(--nx-pad-x); flex-wrap: wrap; }
 }
 
-.chat-composer { display: flex; align-items: flex-end; gap: var(--nx-gap-1); padding: var(--nx-gap-1) var(--nx-pad-x); border-top: var(--nx-border-w) solid var(--nx-border); }
+/* Composer: a 22 px textarea growing to 88 px, SEND beside it, a 20 px identity line under it. */
+.chat-composer { display: flex; flex-direction: column; border-top: var(--nx-border-w) solid var(--nx-border); background: var(--nx-surface); }
+.chat-composer-row { display: flex; align-items: flex-end; gap: var(--nx-gap-1); padding: var(--nx-gap-1) var(--nx-pad-x) 0; }
 .chat-composer-input { flex: 1; min-width: 0; height: var(--nx-control-h); min-height: var(--nx-control-h); max-height: 88px; resize: none; padding-top: 3px; padding-bottom: 3px; line-height: 14px; box-sizing: border-box; overflow-y: auto; }
+.chat-identity { display: flex; align-items: center; gap: var(--nx-gap-1); height: var(--nx-row-h); padding: 0 var(--nx-pad-x); color: var(--nx-muted); font-size: var(--nx-font-ui-sm); }
+.chat-identity--app { color: var(--nx-pending); }
 
-.chat-thread { width: 300px; flex: none; min-width: 0; display: flex; flex-direction: column; border-left: var(--nx-border-w) solid var(--nx-border); }
+/* Thread pane: 300 px beside the history; over the whole view when the side bar is narrower than 600 px. */
+.chat-panes { position: relative; }
+.chat-thread { width: 300px; flex: none; min-width: 0; display: flex; flex-direction: column; border-left: var(--nx-border-w) solid var(--nx-border); background: var(--nx-bg); }
 .chat-thread-pane { flex: 1; min-height: 0; display: flex; flex-direction: column; }
-.chat-thread-head { display: flex; align-items: center; gap: var(--nx-gap-1); padding: var(--nx-gap-1) var(--nx-pad-x); border-bottom: var(--nx-border-w) solid var(--nx-border); }
-.chat-thread-title { flex: 1; font-size: var(--nx-font-ui-sm); letter-spacing: 0.06em; color: var(--nx-muted); }
 .chat-thread-list { flex: 1; }
+.chat-thread-foot { display: flex; align-items: center; gap: var(--nx-gap-2); min-height: var(--nx-control-h); padding: 0 var(--nx-pad-x); border-top: var(--nx-border-w) solid var(--nx-border); font-size: var(--nx-font-ui-sm); }
+.chat-thread-note { color: var(--nx-muted); }
+@media (max-width: 599px) {
+  .chat-thread { position: absolute; inset: 0; width: auto; border-left: 0; z-index: 1; }
+}

@@ -35,7 +35,7 @@ export function ChannelList({ bridge, selectedId, onSelect, onLoaded }: ChannelL
   }, [bridge, attempt]);
 
   if (failure) return <EmptyState message={failure} action={{ label: "RETRY", onClick: () => setAttempt((n) => n + 1) }} />;
-  if (!channels) return <StatusLine>… loading</StatusLine>;
+  if (!channels) return <StatusLine>â€¦ loading</StatusLine>;
   if (channels.length === 0) return <EmptyState message="no channels" />;
   return (
     <div className="chat-channels">

@@ -33,10 +33,10 @@ export function StatusBar({ bridge }: { bridge?: BridgeClient }) {
       </StatusLine>
     );
   }
-  if (!status) return <StatusLine>… connecting</StatusLine>;
+  if (!status) return <StatusLine>â€¦ connecting</StatusLine>;
   if (!status.connected) return <StatusLine tone="error">slack disconnected</StatusLine>;
   if (!status.postsAs) {
-    return <StatusLine tone="pending">{`slack connected · no user token: posts go as ${status.botName}`}</StatusLine>;
+    return <StatusLine tone="pending">{`slack connected Â· no user token: posts go as ${status.botName}`}</StatusLine>;
   }
-  return <StatusLine>{`slack connected · token: ${SOURCE_LABEL[status.userTokenSource]}`}</StatusLine>;
+  return <StatusLine>{`slack connected Â· token: ${SOURCE_LABEL[status.userTokenSource]}`}</StatusLine>;
 }

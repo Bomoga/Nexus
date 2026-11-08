@@ -231,6 +231,7 @@ export function History({ bridge, channelId, channelName, channel, onOpenLink, o
         <Composer
           key={channelId}
           onSend={send}
+          identity={identity}
           initialText={outbox.draftFor(target)}
           onDraftChange={(text) => outbox.setDraft(target, text)}
         />

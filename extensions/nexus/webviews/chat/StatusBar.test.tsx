@@ -13,12 +13,12 @@ const base: SlackStatus = { connected: true, postsAs: { userId: "U1", name: "Adr
 describe("StatusBar", () => {
   test("says the connection state and which token source it uses", async () => {
     render(<StatusBar bridge={client(base)} />);
-    expect(await screen.findByText("slack connected · token: token vault")).toBeTruthy();
+    expect(await screen.findByText("slack connected Â· token: token vault")).toBeTruthy();
   });
 
   test("manual token source", async () => {
     render(<StatusBar bridge={client({ ...base, userTokenSource: "manual" })} />);
-    expect(await screen.findByText("slack connected · token: manual")).toBeTruthy();
+    expect(await screen.findByText("slack connected Â· token: manual")).toBeTruthy();
   });
 
   test("warns when postsAs is null", async () => {

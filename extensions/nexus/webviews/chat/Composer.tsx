@@ -1,6 +1,7 @@
 import { useLayoutEffect, useRef, useState } from "react";
 import type { KeyboardEvent } from "react";
 import { Button } from "../shared";
+import type { PostsAsState } from "./live";
 
 export interface ComposerProps {
   /** Called with the trimmed text; the owner of the message list does the posting. */
@@ -10,12 +11,14 @@ export interface ComposerProps {
   initialText?: string;
   /** Every change of the draft, including the clear on send. */
   onDraftChange?: (text: string) => void;
+  /** Who a send posts as (slack.status). Without it the identity line is not drawn. */
+  identity?: PostsAsState;
 }
 
 const MIN_H = 22;
 const MAX_H = 88;
 
-export function Composer({ onSend, placeholder = "message", initialText = "", onDraftChange }: ComposerProps) {
+export function Composer({ onSend, placeholder = "message", initialText = "", onDraftChange, identity }: ComposerProps) {
   const [text, setText] = useState(initialText);
   // The live value, cleared synchronously on send so a double Enter or double click sends once.
   const latest = useRef(initialText);
@@ -46,23 +49,36 @@ export function Composer({ onSend, placeholder = "message", initialText = "", on
 
   return (
     <div className="chat-composer">
-      <textarea
-        ref={box}
-        className="nx-input chat-composer-input"
-        rows={1}
-        value={text}
-        placeholder={placeholder}
-        aria-label={placeholder}
-        onChange={(e) => {
-          latest.current = e.target.value;
-          setText(e.target.value);
-          onDraftChange?.(e.target.value);
-        }}
-        onKeyDown={onKeyDown}
-      />
-      <Button variant="primary" kbd="↵" onClick={submit} disabled={text.trim().length === 0}>
-        SEND
-      </Button>
+      <div className="chat-composer-row">
+        <textarea
+          ref={box}
+          className="nx-input chat-composer-input"
+          rows={1}
+          value={text}
+          placeholder={placeholder}
+          aria-label={placeholder}
+          onChange={(e) => {
+            latest.current = e.target.value;
+            setText(e.target.value);
+            onDraftChange?.(e.target.value);
+          }}
+          onKeyDown={onKeyDown}
+        />
+        <Button variant="primary" kbd="ENTER" onClick={submit} disabled={text.trim().length === 0}>
+          SEND
+        </Button>
+      </div>
+      {identity?.known ? (
+        <div className={identity.self ? "chat-identity" : "chat-identity chat-identity--app"}>
+          {identity.self ? (
+            <>
+              posting as <span className="nx-data">@{identity.self.name}</span>
+            </>
+          ) : (
+            "no user token: posts go as the app"
+          )}
+        </div>
+      ) : null}
     </div>
   );
 }

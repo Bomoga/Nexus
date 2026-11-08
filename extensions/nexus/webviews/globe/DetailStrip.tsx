@@ -51,11 +51,11 @@ export function DetailStrip({ event, t0Ms = DEFAULT_T0_MS, open = defaultOpen }:
   }
   return (
     <div className="globe-strip" role="group" aria-label="Selected event" tabIndex={0}>
-      <span className="globe-strip-kind nx-data">{event.kind}</span>
+      <span className="globe-strip-kind">{event.kind}</span>
       <span className="globe-strip-title" title={event.title}>
         {event.title}
       </span>
-      <span className="globe-strip-cell">{event.orbit}</span>
+      <span className="globe-strip-cell nx-data">{event.orbit}</span>
       <span className="globe-strip-cell nx-data">{formatEventTime(Date.parse(event.at), t0Ms)}</span>
       <span className="globe-strip-cell nx-data">{shortId(event.target)}</span>
       <span className="globe-strip-cell">{event.actor.name}</span>

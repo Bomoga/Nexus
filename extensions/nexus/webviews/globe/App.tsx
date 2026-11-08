@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { NexusEvent, TimeWindow } from "../../src/contracts";
-import { Button, EmptyState, Select, StatusLine, StoreStatusLine, friendlyError, getBridge, isFakeMode } from "../shared";
+import { Badge, Button, EmptyState, SegmentedControl, StatusLine, StoreStatusLine, friendlyError, getBridge, isFakeMode } from "../shared";
 import type { BridgeClient } from "../shared";
 import { QUERY_LIMIT, TIME_WINDOWS, familiesOf, keepNewest, visibleEvents, windowMs } from "./model";
 import { formatEventTime } from "./model/picking";
@@ -15,7 +15,7 @@ import { Search } from "./Search";
 const NOW_TICK_MS = 5_000;
 const FAKE_SPAN_MS = 36 * 3_600_000;
 
-const OPTIONS = TIME_WINDOWS.map((w) => ({ value: w, label: w }));
+export const WINDOW_OPTIONS = TIME_WINDOWS.map((w) => ({ value: w, label: w.toUpperCase() }));
 
 export interface AppProps {
   /** Defaults to the real bridge. */
@@ -37,6 +37,8 @@ export function App({ bridge: injected }: AppProps = {}) {
   // Selected event: set by picking today; L3-05 search/tracking sets it through the same setter.
   const [selected, setSelected] = useState<NexusEvent | undefined>();
   // Tracked event (search): the camera follows and rings it until a drag, STOP TRACKING, or it leaves the window.
+  // The marker under the pointer: previewed in the detail strip until the pointer leaves it.
+  const [hovered, setHovered] = useState<NexusEvent | undefined>();
   const [tracked, setTracked] = useState<NexusEvent | undefined>();
   const [notice, setNotice] = useState<string | undefined>();
   // "Viewing the past": set by a click on the activity strip, it replaces the live clock for rendering and queries.
@@ -91,8 +93,7 @@ export function App({ bridge: injected }: AppProps = {}) {
     // Re-query only when the window changes (or "now" first becomes known) or on RETRY; drift moves markers but does not refetch.
   }, [window_, ready, pinnedNow, bridge, attempt]);
 
-  const onWindow = useCallback((value: string) => {
-    const w = value as TimeWindow;
+  const onWindow = useCallback((w: TimeWindow) => {
     setWindow(w);
     bridge.request("ui.setTimeWindow", { window: w }).catch(() => undefined);
   }, [bridge]);
@@ -172,28 +173,69 @@ export function App({ bridge: injected }: AppProps = {}) {
 
   return (
     <div className="globe-app">
-      <StoreStatusLine bridge={bridge} />
-      <div className="globe-bar">
-        <Select aria-label="Time window" value={window_} options={OPTIONS} onChange={(e) => onWindow(e.target.value)} />
-        <Search onPick={onSearchPick} search={search} />
-        {pinnedNow !== undefined ? <Button onClick={() => setPinnedNow(undefined)}>BACK TO LIVE</Button> : null}
-        {pinnedNow !== undefined ? <span className="nx-data">{`viewing ${formatEventTime(pinnedNow)}`}</span> : null}
-        {tracked ? <Button kbd="ESC" onClick={release}>STOP TRACKING</Button> : null}
-        <span className="nx-data">{visible.length} events</span>
+      <div className="nx-panel-header globe-bar" role="toolbar" aria-label="Globe controls">
+        <SegmentedControl aria-label="Time window" options={WINDOW_OPTIONS} value={window_} onChange={onWindow} />
+        <div className="globe-bar-center">
+          <Search onPick={onSearchPick} search={search} />
+          {tracked ? (
+            <Button size="sm" kbd="ESC" onClick={release}>
+              STOP TRACKING
+            </Button>
+          ) : null}
+        </div>
+        <span className="globe-bar-right">
+          {pinnedNow !== undefined ? (
+            <>
+              <Badge kind="accent">{`VIEWING ${formatEventTime(pinnedNow)}`}</Badge>
+              <Button size="sm" onClick={() => setPinnedNow(undefined)}>
+                BACK TO LIVE
+              </Button>
+            </>
+          ) : (
+            <Badge kind="live">LIVE</Badge>
+          )}
+          <span className="nx-count">{`${visible.length} EVENTS`}</span>
+        </span>
       </div>
       {truncated ? <StatusLine tone="pending">{`truncated: showing newest ${events.length}`}</StatusLine> : null}
       {error ? (
         <StatusLine tone="error">
-          {error} <Button onClick={() => setAttempt((n) => n + 1)}>RETRY</Button>
+          {error} <Button size="sm" onClick={() => setAttempt((n) => n + 1)}>RETRY</Button>
         </StatusLine>
       ) : null}
       {loaded && !error && visible.length === 0 ? <EmptyState message="no events in this window" /> : null}
       {notice ? <StatusLine tone="pending">{notice}</StatusLine> : null}
       <div className="globe-stage">
-        {shown === null ? null : <Scene events={visible} now={shown} window={window_} onPick={setSelected} tracked={tracked} onRelease={release} frozen={pinnedNow !== undefined} />}
+        <div className="globe-canvas">
+          {shown === null ? null : (
+            <Scene events={visible} now={shown} window={window_} onPick={setSelected} onHover={setHovered} selected={selected} tracked={tracked} onRelease={release} frozen={pinnedNow !== undefined} />
+          )}
+        </div>
+        <Legend />
       </div>
       {now === null || shown === null ? null : <ActivityStrip bridge={bridge} now={shown} window={window_} families={families} onPin={onPin} />}
-      <DetailStrip event={selected} open={open} />
+      <DetailStrip event={hovered ?? selected} open={open} />
+      <StoreStatusLine bridge={bridge} />
     </div>
+  );
+}
+
+/** The four glyphs the scene draws, in the stage's top-left corner. Colors come from the accent tokens; the scene uses the same ramp. */
+function Legend() {
+  return (
+    <ul className="globe-legend" aria-label="Legend">
+      <li>
+        <svg viewBox="0 0 10 10" aria-hidden="true"><circle cx="5" cy="5" r="3" className="lg-commit" /></svg>COMMIT
+      </li>
+      <li>
+        <svg viewBox="0 0 10 10" aria-hidden="true"><path d="M1 8 Q5 -2 9 8" className="lg-merge" /></svg>MERGE
+      </li>
+      <li>
+        <svg viewBox="0 0 10 10" aria-hidden="true"><rect x="2" y="2" width="6" height="6" className="lg-agent" /></svg>AGENT
+      </li>
+      <li>
+        <svg viewBox="0 0 10 10" aria-hidden="true"><polygon points="5,1 9,5 5,9 1,5" className="lg-slack" /></svg>SLACK
+      </li>
+    </ul>
   );
 }

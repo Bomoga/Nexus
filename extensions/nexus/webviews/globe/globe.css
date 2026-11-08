@@ -1,27 +1,51 @@
-/* Globe layout only. Chrome comes from the kit; the 3D scene is purple regardless of theme. */
+/* Globe layout only (design system v2, section 5.1). Chrome comes from the kit; every color is a --nx-* token.
+   The 3D scene draws its own ramp from scene/colors.ts, which mirrors the same tokens. */
 html, body, #root { height: 100%; }
 body { overflow: hidden; }
-.globe-app { display: flex; flex-direction: column; height: 100vh; }
-.globe-stage { position: relative; flex: 1 1 0; min-height: 0; height: 0; }
-.globe-stage > div { position: absolute; inset: 0; }
-.globe-bar { display: flex; align-items: center; gap: var(--nx-gap-2); padding: var(--nx-gap-1) var(--nx-gap-2); border-bottom: var(--nx-border-w) solid var(--nx-border); }
-.globe-bar .nx-data { margin-left: auto; color: var(--nx-muted); }
-.globe-strip { display: flex; align-items: center; gap: var(--nx-gap-2); height: 22px; min-height: 22px; padding: 0 var(--nx-pad-x); border-top: var(--nx-border-w) solid var(--nx-border); overflow: hidden; white-space: nowrap; font-size: var(--nx-font-ui-sm); }
+.globe-app { display: flex; flex-direction: column; height: 100vh; background: var(--nx-bg); }
+
+/* Top bar: one 22 px header row. Overflow stays visible so focus rings and the search dropdown are never clipped. */
+.globe-bar { overflow: visible; text-transform: none; letter-spacing: 0; font-weight: 400; color: var(--nx-fg); }
+.globe-bar .nx-segmented, .globe-bar .nx-input-wrap, .globe-bar .nx-button { height: var(--nx-toolbar-h); }
+.globe-bar-center { flex: 1 1 0; min-width: 0; display: flex; align-items: center; justify-content: center; gap: var(--nx-gap-2); }
+.globe-bar-right { flex: none; display: flex; align-items: center; gap: var(--nx-gap-2); margin-left: auto; }
+.globe-bar-right .nx-count { text-transform: uppercase; }
+
+/* Search */
+.globe-search { position: relative; flex: 1 1 auto; max-width: 480px; min-width: 120px; }
+.globe-search .globe-search-box { display: flex; width: 100%; }
+.globe-search-list { position: absolute; z-index: 5; top: calc(100% + 1px); left: 0; right: 0; margin: 0; padding: 0; list-style: none; max-height: 220px; overflow-y: auto; background: var(--nx-surface-2); border: var(--nx-border-w) solid var(--nx-border-strong); }
+.globe-search-row { display: flex; align-items: center; gap: var(--nx-gap-2); height: var(--nx-row-h); padding: 0 var(--nx-pad-x); overflow: hidden; white-space: nowrap; font-size: var(--nx-font-ui-sm); cursor: default; }
+.globe-search-row.is-active { background: var(--nx-accent-tint); outline: var(--nx-border-w) solid var(--nx-accent); outline-offset: -1px; }
+.globe-search-title { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.globe-search-kind { flex: none; color: var(--nx-accent-hi); font-weight: 600; letter-spacing: var(--nx-tracking-button); text-transform: uppercase; }
+.globe-search-cell { flex: none; color: var(--nx-muted); }
+.globe-search-error { position: absolute; z-index: 5; top: calc(100% + 1px); left: 0; right: 0; background: var(--nx-surface-2); border: var(--nx-border-w) solid var(--nx-border); }
+
+/* Stage: the canvas fills it; the legend overlays its top-left corner */
+.globe-stage { position: relative; flex: 1 1 0; min-height: 0; height: 0; background: var(--nx-bg); }
+.globe-canvas { position: absolute; inset: 0; }
+.globe-legend { position: absolute; top: var(--nx-gap-2); left: var(--nx-gap-2); margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 2px; pointer-events: none; font-family: var(--nx-font-data); font-size: var(--nx-font-ui-sm); line-height: var(--nx-lh-sm); letter-spacing: var(--nx-tracking-button); color: var(--nx-muted); }
+.globe-legend li { display: flex; align-items: center; gap: 6px; }
+.globe-legend svg { width: 10px; height: 10px; flex: none; }
+.lg-commit { fill: var(--nx-accent-hi); }
+.lg-merge { fill: none; stroke: var(--nx-accent); stroke-width: 1.5; }
+.lg-agent { fill: var(--nx-accent-glow); }
+.lg-slack { fill: var(--nx-accent); }
+
+/* Activity strip: 32 px, a left gutter labelled 15M, one column per 15 minutes */
+.globe-activity { height: 32px; min-height: 32px; display: flex; align-items: stretch; border-top: var(--nx-border-w) solid var(--nx-border); background: var(--nx-surface); overflow: hidden; }
+.globe-activity-legend { flex: none; display: flex; align-items: center; padding: 0 var(--nx-gap-1); border-right: var(--nx-border-w) solid var(--nx-border); color: var(--nx-muted); font-size: var(--nx-font-ui-sm); }
+.globe-activity-body { flex: 1 1 0; min-width: 0; display: flex; align-items: stretch; }
+.globe-activity-body > .nx-status-line { align-self: center; width: 100%; border-top: 0; }
+.globe-activity-svg { display: block; width: 100%; height: 100%; cursor: pointer; }
+
+/* Detail strip: 22 px, kind · title · orbit · T+ · sha · actor, OPEN on the right */
+.globe-strip { display: flex; align-items: center; gap: var(--nx-gap-2); height: var(--nx-control-h); min-height: var(--nx-control-h); padding: 0 var(--nx-pad-x); border-top: var(--nx-border-w) solid var(--nx-border); background: var(--nx-surface); overflow: hidden; white-space: nowrap; font-size: var(--nx-font-ui-sm); }
 .globe-strip:focus-visible { outline: var(--nx-border-w) solid var(--nx-focus); outline-offset: -1px; }
-.globe-strip .nx-button { height: 20px; margin-left: auto; flex: none; }
+.globe-strip .nx-button { margin-left: auto; flex: none; }
 .globe-strip-title { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.globe-strip-kind { color: var(--nx-accent-hi); flex: none; }
+.globe-strip-kind { flex: none; color: var(--nx-accent-hi); font-weight: 600; letter-spacing: var(--nx-tracking-button); text-transform: uppercase; }
 .globe-strip-cell { flex: none; color: var(--nx-muted); }
 .globe-strip-empty { color: var(--nx-muted); }
 .globe-strip-error { flex: none; color: var(--nx-error); }
-.globe-search { position: relative; flex: 1 1 0; max-width: 480px; min-width: 120px; }
-.globe-search .nx-input { width: 100%; }
-.globe-search-list { position: absolute; z-index: 5; top: 100%; left: 0; right: 0; margin: 0; padding: 0; list-style: none; max-height: 220px; overflow-y: auto; background: var(--nx-surface); border: var(--nx-border-w) solid var(--nx-border); }
-.globe-search-row { display: flex; align-items: center; gap: var(--nx-gap-2); height: 20px; padding: 0 var(--nx-pad-x); overflow: hidden; white-space: nowrap; font-size: var(--nx-font-ui-sm); cursor: default; }
-.globe-search-row.is-active { background: var(--nx-hover-bg); outline: var(--nx-border-w) solid var(--nx-accent); outline-offset: -1px; }
-.globe-search-title { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.globe-search-cell { flex: none; color: var(--nx-muted); }
-.globe-search-cell.nx-data { font-family: var(--nx-font-data); font-variant-numeric: tabular-nums; }
-.globe-activity { height: 32px; min-height: 32px; display: flex; align-items: stretch; border-top: var(--nx-border-w) solid var(--nx-border); overflow: hidden; }
-.globe-activity > .nx-status-line { align-self: center; width: 100%; }
-.globe-activity-svg { display: block; width: 100%; height: 100%; cursor: pointer; }

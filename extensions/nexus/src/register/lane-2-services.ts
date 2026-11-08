@@ -58,7 +58,7 @@ export interface Lane2Inputs {
   /** The editor side of opening a code reference; without it (or without git) coderef.open is not served. */
   codeRefEditor?: CodeRefEditor;
   /** Each person's own Slack user token from Auth0 Token Vault (L2-15); the pasted one is the fallback. */
-  tokenVault?: { getUserToken(): Promise<{ token: string; source: "token_vault" } | null> };
+  tokenVault?: { getUserToken(): Promise<{ token: string; source: "token_vault" } | null>; invalidate?(): void };
   /** The shared store's client for the activity strip's continuous aggregate; counted from the local copy without it. */
   activityQuery?: ActivityQueryClient;
   /** Reads a session from this machine's own copy (never a remote round trip): used under the per-session write lock. */
@@ -148,6 +148,13 @@ export function buildLane2(i: Lane2Inputs): Lane2Built {
     getBotTokens: async () => {
       const [botToken, appToken] = await Promise.all([fromSecretOrEnv(SLACK_SECRET_KEYS.bot, "SLACK_BOT_TOKEN"), fromSecretOrEnv(SLACK_SECRET_KEYS.app, "SLACK_APP_TOKEN")]);
       return botToken && appToken ? { botToken, appToken } : null;
+    },
+    // Slack refused the Token Vault token: drop it and use the pasted one for a minute, instead of failing until it expires.
+    onUserTokenRejected: source => {
+      if (source !== "token_vault") return;
+      i.tokenVault?.invalidate?.();
+      vaultQuietUntil = now() + VAULT_RETRY_MS;
+      if (!vaultMissed) { vaultMissed = true; i.log("Slack refused the Token Vault token; using the pasted one if there is one"); }
     },
     resolve: async (id, decision, by) => {
       if (!resolver) throw new Error("approvals are not wired to Slack yet");

@@ -293,4 +293,22 @@ describe("buildLane2", () => {
       expect(api.chat.postMessage).toHaveBeenCalledTimes(1);
     }
   }, 20_000);
+
+  it("drops a Token Vault token Slack refuses and uses the pasted one, instead of failing until it expires", async () => {
+    const used: string[] = [];
+    const makeApi = (token: string) => new Proxy({}, { get: () => new Proxy({}, { get: (_g, name) => async () => {
+      used.push(`${token}:${String(name)}`);
+      if (token === "xoxp-vault") throw Object.assign(new Error("An API error occurred: invalid_auth"), { data: { error: "invalid_auth" } });
+      if (name === "test") return { user_id: "U_ME", user: "brandon" };
+      throw new Error("offline");
+    } }) });
+    const vault = { getUserToken: vi.fn(async () => ({ token: "xoxp-vault", source: "token_vault" as const })), invalidate: vi.fn() };
+    const { built } = setup({ tokenVault: vault, now: () => 1_000_000, slackSeams: { webOptions: { makeApi } } as never }, { [SLACK_SECRET_KEYS.user]: "xoxp-pasted" });
+    expect((await built.served.status()).postsAs).toBeNull();   // the vault token is refused
+    expect(vault.invalidate).toHaveBeenCalledTimes(1);
+    const after = await built.served.status();
+    expect([after.postsAs?.name, after.userTokenSource]).toEqual(["brandon", "manual"]);
+    expect(vault.getUserToken).toHaveBeenCalledTimes(1);   // not asked again during the quiet minute
+    expect(used.filter(u => u.startsWith("xoxp-pasted")).length).toBeGreaterThan(0);
+  });
 });

@@ -63,6 +63,8 @@ export interface CreateSlackServiceOptions {
   /** The stored approval; a button click is accepted only on the card its slackMessage names. */
   getApproval: (approvalId: string) => ApprovalRequest | undefined | Promise<ApprovalRequest | undefined>;
   getReview?: (approvalId: string) => SwarmReview | undefined;
+  /** Called when Slack refuses the user token (see WebClientOptions.onTokenRejected). */
+  onUserTokenRejected?: WebClientOptions["onTokenRejected"];
   /** Test seams, passed through. */
   webOptions?: Pick<WebClientOptions, "makeApi" | "now" | "botMembershipTtlMs">;
   makeBotApi?: ConstructorParameters<typeof SlackBot>[0]["makeApi"];
@@ -86,8 +88,9 @@ export function createSlackService(opts: CreateSlackServiceOptions): ComposedSla
     if (built) return built;
     let botUserId: string | undefined;
     try { botUserId = (await bot.identity()).userId; } catch { /* no bot token yet: botIsMember reads false */ }
-    if (!botUserId) return (withoutBot ??= new SlackWebClient({ getToken: opts.getUserToken, ...opts.webOptions }));
-    return (built = new SlackWebClient({ getToken: opts.getUserToken, botUserId, ...opts.webOptions }));
+    const onTokenRejected = opts.onUserTokenRejected;
+    if (!botUserId) return (withoutBot ??= new SlackWebClient({ getToken: opts.getUserToken, onTokenRejected, ...opts.webOptions }));
+    return (built = new SlackWebClient({ getToken: opts.getUserToken, botUserId, onTokenRejected, ...opts.webOptions }));
   };
   const web: UserSlack = {
     postAsUser: async o => (await build()).postAsUser(o),

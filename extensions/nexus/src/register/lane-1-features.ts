@@ -80,7 +80,7 @@ function vscodeNotify(): NotifyPort {
 }
 
 /** Constructs Lane 1's features on the given services, serves them on the router, and registers their palette commands. */
-export function registerFeatures(context: vscode.ExtensionContext, accounts: AccountsService, picker: ModelPicker, auth: Auth0Session, l2: Lane2Services): Lane1 {
+export function registerFeatures(context: vscode.ExtensionContext, accounts: AccountsService, picker: ModelPicker, auth: Auth0Session, l2: Lane2Services, openTaskEditor?: (taskId: string) => void): Lane1 {
   const log = (m: string) => console.warn(`Nexus: ${m}`);
   const clock: Clock = { now: () => new Date().toISOString(), newId: prefix => `${prefix}_${randomUUID().replace(/-/g, "").slice(0, 12)}` };
   const identity = () => {
@@ -127,7 +127,7 @@ export function registerFeatures(context: vscode.ExtensionContext, accounts: Acc
     error: (m: string) => void vscode.window.showErrorMessage(m),
     pickApproval: async (items: Array<{ id: string; label: string; detail: string }>) => (await vscode.window.showQuickPick(items, { placeHolder: "Which approval?" }))?.id,
   });
-  const commands = lane1Commands(lane, ui, () => identity().userId);
+  const commands = lane1Commands(lane, ui, () => identity().userId, openTaskEditor);
   context.subscriptions.push(
     wireLane1ToRouter(lane, l2.router),
     { dispose: () => lane.host.dispose?.() },

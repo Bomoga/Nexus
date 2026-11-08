@@ -15,7 +15,7 @@ export interface CommandUi {
 
 const failure = (e: unknown, fallback: string) => (e instanceof Error && e.message ? plain(e.message) : fallback);
 
-export function lane1Commands(lane: Lane1, ui: CommandUi, identity: () => string) {
+export function lane1Commands(lane: Lane1, ui: CommandUi, identity: () => string, openTaskEditor?: (taskId: string) => void) {
   async function decide(approvalId: string | undefined, decision: "approved" | "rejected"): Promise<void> {
     try {
       let id = approvalId;
@@ -42,6 +42,9 @@ export function lane1Commands(lane: Lane1, ui: CommandUi, identity: () => string
       if (!channelId || !threadTs) { ui.info("Choose \"Make task\" on a thread in the Slack view."); return; }
       try {
         const task = await lane.tasks.createFromThread(channelId, threadTs);
+        if (openTaskEditor) {
+          try { openTaskEditor(task.id); return; } catch { /* fall through to the notice */ }
+        }
         ui.info(`Created a draft task: ${plain(task.title, 200)}`);
       } catch (e) { ui.error(failure(e, "Could not make a task from that thread.")); }
     },

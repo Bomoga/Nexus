@@ -66,6 +66,9 @@ function setup(answers: Answers = {}) {
 }
 
 const rows = () => screen.queryAllByTestId("log-row");
+const statusBadge = () => screen.getByTestId("session-status").querySelector(".nx-badge") as HTMLElement;
+const receiptRows = () => [...screen.getByRole("table", { name: "model call receipts" }).querySelectorAll("tbody tr")];
+const receiptTotals = () => (screen.getByRole("table", { name: "model call receipts" }).querySelector("tfoot") as HTMLElement).textContent ?? "";
 const seqs = () => rows().map((r) => Number(r.getAttribute("data-seq")));
 const ev = (seq: number, rest: object) => ({ sessionId: "ses_01", seq, at: fx.session.startedAt, ...rest }) as AgentEvent;
 
@@ -133,12 +136,12 @@ describe("session view", () => {
     await screen.findByText(/Fix cart discount for qty > 1/);
     await waitFor(() => expect(subbed("agent.subscribe").length).toBe(1));
     emit("agent.subscribe", ev(0, { type: "status", status: "awaiting_approval" }));
-    expect(screen.getByTestId("session-status").className).toContain("nx-tone-pending");
+    expect(statusBadge().className).toContain("nx-badge--pending");
     emit("agent.subscribe", ev(1, { type: "status", status: "done" }));
-    expect(screen.getByTestId("session-status").className).toContain("nx-tone-ok");
+    expect(statusBadge().className).toContain("nx-badge--ok");
     expect((screen.getByRole("button", { name: /cancel/i }) as HTMLButtonElement).disabled).toBe(true);
     emit("agent.subscribe", ev(2, { type: "status", status: "failed" }));
-    expect(screen.getByTestId("session-status").className).toContain("nx-tone-error");
+    expect(statusBadge().className).toContain("nx-badge--error");
   });
 
   test("CANCEL requests agent.cancel", async () => {
@@ -148,7 +151,7 @@ describe("session view", () => {
     fireEvent.click(screen.getByRole("button", { name: /cancel/i }));
     await waitFor(() => expect(reqs("agent.cancel").length).toBe(1));
     expect(reqs("agent.cancel")[0].body).toEqual({ sessionId: "ses_01" });
-    await waitFor(() => expect(screen.getByTestId("session-status").textContent).toContain("cancelled"));
+    await waitFor(() => expect(screen.getByTestId("session-status").textContent).toMatch(/cancelled/i));
   });
 
   test("DIFF keeps the latest diff per path, colored as text", async () => {
@@ -183,19 +186,18 @@ describe("session view", () => {
     render(<App bridge={bridge} sessionId="ses_01" />);
     fireEvent.click(screen.getByRole("tab", { name: /receipts/i }));
     expect(await screen.findByText("rcpt_fixture_01")).toBeTruthy();
-    expect(screen.getAllByTestId("receipt-row").length).toBe(4);
-    const totals = screen.getByTestId("receipts-totals");
-    expect(totals.textContent).toContain("0.0177");
-    expect(totals.textContent).toContain("0.0431");
-    expect(totals.textContent).toContain("0.0254");
+    expect(receiptRows().length).toBe(4);
+    expect(receiptTotals()).toContain("0.0177");
+    expect(receiptTotals()).toContain("0.0431");
+    expect(receiptTotals()).toContain("0.0254");
     expect(screen.getAllByRole("button", { name: /open/i }).every((b) => (b as HTMLButtonElement).disabled)).toBe(true);
     await waitFor(() => expect(subbed("receipts.subscribe").length).toBe(1));
     expect(subbed("receipts.subscribe")[0].body).toEqual({ sessionId: "ses_01" });
     emit("receipts.subscribe", scriptedReceipts[0]); // duplicate callId
-    expect(screen.getAllByTestId("receipt-row").length).toBe(4);
+    expect(receiptRows().length).toBe(4);
     emit("receipts.subscribe", routed);
-    expect(screen.getAllByTestId("receipt-row").length).toBe(5);
-    expect(screen.getByTestId("receipts-totals").textContent).toContain("0.0182");
+    expect(receiptRows().length).toBe(5);
+    expect(receiptTotals()).toContain("0.0182");
     expect(screen.getByText(/cheap-model/).className).toContain("nx-tone-pending");
   });
 
@@ -210,7 +212,7 @@ describe("session view", () => {
     fireEvent.click(within(row).getByRole("button", { name: /approve/i }));
     await waitFor(() => expect(reqs("approvals.resolve").length).toBe(1));
     expect(reqs("approvals.resolve")[0].body).toEqual({ approvalId: "apr_01", decision: "approved" });
-    expect(await within(rows()[0]).findByText(/decided by app me/)).toBeTruthy();
+    expect(await within(rows()[0]).findByText(/approved by app me/)).toBeTruthy();
     expect(within(rows()[0]).queryByRole("button", { name: /approve/i })).toBeNull();
   });
 
@@ -224,7 +226,7 @@ describe("session view", () => {
     const row = rows()[0];
     fireEvent.click(await within(row).findByRole("button", { name: /reject/i }));
     await waitFor(() => expect(reqs("approvals.resolve")[0].body).toEqual({ approvalId: "apr_01", decision: "rejected" }));
-    expect(await within(rows()[0]).findByText(/decided by slack U_BRANDON/)).toBeTruthy();
+    expect(await within(rows()[0]).findByText(/approved by slack U_BRANDON/)).toBeTruthy();
   });
 
   test("a lost race (host answers conflict) shows the winner from approvals.list, not an error", async () => {
@@ -241,7 +243,7 @@ describe("session view", () => {
     await waitFor(() => expect(subbed("agent.subscribe").length).toBe(1));
     emit("agent.subscribe", scriptedAgentEvents[8]);
     fireEvent.click(await within(rows()[0]).findByRole("button", { name: /reject/i }));
-    expect(await within(rows()[0]).findByText(/decided by slack U_BRANDON/)).toBeTruthy();
+    expect(await within(rows()[0]).findByText(/approved by slack U_BRANDON/)).toBeTruthy();
     expect(within(rows()[0]).queryByRole("button", { name: /approve/i })).toBeNull();
     expect(screen.queryByText(/Already decided/)).toBeNull();
     expect(reqs("approvals.list").length).toBe(2);
@@ -253,10 +255,10 @@ describe("session view", () => {
     await waitFor(() => expect(subbed("approvals.subscribe").length).toBe(1));
     emit("agent.subscribe", scriptedAgentEvents[8]);
     emit("approvals.subscribe", { ...fx.approval, decision: "approved", decidedBy: { via: "slack", userId: "U1" }, decidedAt: fx.approval.requestedAt });
-    await within(rows()[0]).findByText(/decided by slack U1/);
+    await within(rows()[0]).findByText(/approved by slack U1/);
     emit("approvals.subscribe", fx.approval);
     expect(within(rows()[0]).queryByRole("button", { name: /approve/i })).toBeNull();
-    expect(within(rows()[0]).getByText(/decided by slack U1/)).toBeTruthy();
+    expect(within(rows()[0]).getByText(/approved by slack U1/)).toBeTruthy();
   });
 
   test("approvals.subscribe updates an approval live", async () => {
@@ -266,7 +268,64 @@ describe("session view", () => {
     emit("agent.subscribe", scriptedAgentEvents[8]);
     await within(rows()[0]).findByRole("button", { name: /approve/i });
     emit("approvals.subscribe", { ...fx.approval, decision: "rejected", decidedBy: { via: "auth0_push", userId: "auth0|1" }, decidedAt: fx.approval.requestedAt });
-    expect(await within(rows()[0]).findByText(/decided by auth0_push auth0\|1/)).toBeTruthy();
+    expect(await within(rows()[0]).findByText(/rejected by auth0_push auth0\|1/)).toBeTruthy();
+  });
+});
+
+describe("agent view layout", () => {
+  test("approval buttons show only while undecided; a decided one states who and when", async () => {
+    const { bridge, emit, subbed } = setup();
+    render(<App bridge={bridge} sessionId="ses_01" />);
+    await waitFor(() => expect(subbed("agent.subscribe").length).toBe(1));
+    emit("agent.subscribe", ev(0, { type: "approval_request", approvalId: "apr_02" }));
+    emit("agent.subscribe", ev(1, { type: "approval_request", approvalId: "apr_01" }));
+    expect(await within(rows()[0]).findByText(/^approved by slack U_BRANDON at T\+/)).toBeTruthy();
+    expect(within(rows()[0]).queryByRole("button", { name: /approve|reject/i })).toBeNull();
+    expect(within(rows()[1]).getByRole("button", { name: /approve/i })).toBeTruthy();
+    expect(within(rows()[1]).getByRole("button", { name: /reject/i })).toBeTruthy();
+  });
+
+  test("the swarm verdict badge and judges table sit on the approval card, labeled model-written", async () => {
+    const { bridge, emit, subbed, reqs } = setup({ "swarms.review.get": () => fx.review });
+    render(<App bridge={bridge} sessionId="ses_01" />);
+    await waitFor(() => expect(subbed("agent.subscribe").length).toBe(1));
+    emit("agent.subscribe", ev(0, { type: "approval_request", approvalId: "apr_02" }));
+    const row = rows()[0];
+    expect(await within(row).findByText("LOOKS GOOD")).toBeTruthy();
+    expect(reqs("swarms.review.get")[0].body).toEqual({ approvalId: "apr_02" });
+    expect(within(row).getByText("judge-a")).toBeTruthy();
+    expect(within(row).getByText("No negative-discount guard")).toBeTruthy();
+    expect(within(row).getAllByText(/model-written/i).length).toBeGreaterThan(0);
+    emit("swarms.review.subscribe", { ...fx.review, status: "unavailable", verdict: undefined });
+    expect(await within(row).findByText("REVIEW UNAVAILABLE")).toBeTruthy();
+  });
+
+  test("tabs carry counts and a diff collapses", async () => {
+    const { bridge, emit, subbed } = setup();
+    render(<App bridge={bridge} sessionId="ses_01" />);
+    await waitFor(() => expect(subbed("agent.subscribe").length).toBe(1));
+    emit("agent.subscribe", ev(0, { type: "file_edit", path: "a.ts", diff: "@@ -1 +1 @@\n-old\n+new" }));
+    emit("agent.subscribe", ev(1, { type: "message", text: "hi" }));
+    expect(screen.getByRole("tab", { name: /^LOG\s*2$/ })).toBeTruthy();
+    expect(screen.getByRole("tab", { name: /^DIFF\s*1$/ })).toBeTruthy();
+    fireEvent.click(screen.getByRole("tab", { name: /diff/i }));
+    expect(screen.getByText("+1")).toBeTruthy();
+    expect(screen.getByText("−1")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "COLLAPSE" }));
+    expect(screen.queryByText("+new")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "EXPAND" }));
+    expect(screen.getByText("+new")).toBeTruthy();
+  });
+
+  test("tool results get a check or cross glyph and the strip carries the spend", async () => {
+    const { bridge, emit, subbed } = setup();
+    render(<App bridge={bridge} sessionId="ses_01" />);
+    await waitFor(() => expect(subbed("agent.subscribe").length).toBe(1));
+    emit("agent.subscribe", ev(0, { type: "tool_result", tool: "fs.read", ok: true, summary: "read 40 lines" }));
+    emit("agent.subscribe", ev(1, { type: "tool_result", tool: "cmd.run", ok: false, summary: "exit 1" }));
+    expect(within(rows()[0]).getByRole("img", { name: "ok" }).textContent).toBe("✓");
+    expect(within(rows()[1]).getByRole("img", { name: "failed" }).textContent).toBe("✗");
+    await waitFor(() => expect(screen.getByTitle(/^nexus\/agent-ses_01 · claude-sonnet-4-5 · T\+\d\d:\d\d · .+ · \$0\.0177 \(saved 0\.0254\)$/)).toBeTruthy());
   });
 });
 

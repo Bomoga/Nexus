@@ -60,7 +60,7 @@ export function DetailStrip({ event, t0Ms = DEFAULT_T0_MS, open = defaultOpen }:
       <span className="globe-strip-cell nx-data">{shortId(event.target)}</span>
       <span className="globe-strip-cell">{event.actor.name}</span>
       {error ? <span className="globe-strip-error"><StatusLine tone="error">{error}</StatusLine></span> : null}
-      <Button variant="primary" kbd="↵" onClick={openTarget}>
+      <Button variant="primary" size="sm" kbd="↵" onClick={openTarget}>
         OPEN
       </Button>
     </div>

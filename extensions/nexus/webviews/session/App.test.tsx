@@ -457,9 +457,49 @@ describe("session resolution", () => {
 
   const composerAnswers: Answers = {
     "models.list": () => fx.models.filter((m) => m.supportsTools),
+    "models.selected": () => null,
     "accounts.list": () => fx.providerAccounts,
     "optimizer.get": () => fx.optimizer,
+    "git.branches": () => [],
   };
+
+  test("the composer starts on the status bar's remembered model, and a pick here is remembered the same way", async () => {
+    const selects: Record<string, unknown>[] = [];
+    const { bridge } = setup({
+      ...composerAnswers,
+      "sessions.list": () => [],
+      "models.selected": () => ({ provider: "google", modelId: "gemini-3-flash-preview" }),
+      "models.select": (b) => {
+        selects.push(b);
+        return { provider: b.provider, modelId: b.modelId };
+      },
+    });
+    render(<App bridge={bridge} sessionId={undefined} />);
+    const model = (await screen.findByRole("combobox", { name: "model" })) as HTMLSelectElement;
+    await waitFor(() => expect(model.value).toBe("google/gemini-3-flash-preview")); // not the first listed (anthropic)
+    fireEvent.change(model, { target: { value: "anthropic/claude-sonnet-4-5" } });
+    await waitFor(() => expect(selects).toEqual([{ role: "agent", provider: "anthropic", modelId: "claude-sonnet-4-5" }]));
+    expect(model.value).toBe("anthropic/claude-sonnet-4-5");
+  });
+
+  test("without a git repository the composer says so and START stays off even with a brief", async () => {
+    const { bridge, reqs } = setup({
+      ...composerAnswers,
+      "sessions.list": () => [],
+      "git.branches": () => {
+        throw { code: "not_found", message: "no handler for git.branches" };
+      },
+    });
+    render(<App bridge={bridge} sessionId={undefined} />);
+    const brief = (await screen.findByRole("textbox", { name: "what should the agent do?" })) as HTMLTextAreaElement;
+    expect(await screen.findByText(/no git repository open/)).toBeTruthy();
+    await waitFor(() => expect((screen.getByRole("combobox", { name: "model" }) as HTMLSelectElement).value).not.toBe(""));
+    fireEvent.change(brief, { target: { value: "do a thing" } });
+    const start = screen.getByRole("button", { name: /START/ }) as HTMLButtonElement;
+    expect(start.disabled).toBe(true);
+    fireEvent.keyDown(brief, { key: "Enter" });
+    expect(reqs("tasks.create").length).toBe(0);
+  });
 
   test("an empty list shows the grey mark and a composer (no Slack thread needed), and makes no session requests", async () => {
     const { bridge, reqs, subbed } = setup({ ...composerAnswers, "sessions.list": () => [] });

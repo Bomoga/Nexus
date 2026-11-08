@@ -9,6 +9,7 @@ import { fx } from "../contracts/fixtures";
 import { FakeProvider } from "../models/fake-provider";
 import { AccountsService, type SecretStore, type StateStore } from "./accounts/accounts-service";
 import { OptimizerService } from "./accounts/optimizer";
+import { ModelPicker } from "./accounts/model-picker";
 import { composeLane1, type Lane1Deps } from "./compose";
 import { FakeGit, FakeSlack, MemoryGate, MemoryStore, fakeClock } from "./testing/memory-ports";
 import type { SwarmRun, SwarmRunInput } from "./swarms/swarms-client";
@@ -51,7 +52,9 @@ async function build(over: Partial<Lane1Deps> = {}) {
     notify: { show: (approval, text, choose) => shown.push({ approval, text, choose }), update: () => {} },
     swarms, getSwarmsKey: async () => "swarms-key",
     identity: () => ({ userId: "adrian", name: "Adrian" }), workspaceId: () => "ws_demo",
-    agentModel: () => model, log: m => logs.push(m), ...over,
+    agentModel: () => model, log: m => logs.push(m),
+    picker: new ModelPicker({ accounts, state, ui: { showPick: async () => undefined, setStatus: () => undefined } }),
+    ...over,
   };
   const lane = composeLane1(deps);
   return { lane, store, shown, swarmCalls, gates, logs, accounts };

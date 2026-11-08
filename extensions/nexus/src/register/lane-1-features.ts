@@ -124,7 +124,7 @@ export function registerFeatures(context: vscode.ExtensionContext, accounts: Acc
     swarms: new SwarmsClient(), getSwarmsKey: () => accounts.getKey("swarms"),
     identity,
     workspaceId: () => resolveWorkspaceId(l2.git as WorkspaceIdSource, vscode.workspace.workspaceFolders?.[0]?.name),
-    agentModel: () => picker.selected("agent"),
+    agentModel: () => picker.selected("agent"), picker,
     auth, extraApprovalHooks: [...l2.approvalHooks, cibaHook], log,
   });
 

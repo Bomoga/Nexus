@@ -33,6 +33,17 @@ describe("avatar resolver", () => {
     expect(Object.keys(init.headers)).toEqual(["accept"]);
   });
 
+  it("falls back to Slack's default image named in a Gravatar d= when Gravatar refuses (its redirect), and never to another host", async () => {
+    const slackDefault = "https://a.slack-edge.com/df10d/img/avatars/ava_0001-72.png";
+    const gravatar = (d: string) => `https://secure.gravatar.com/avatar/abc.jpg?s=72&d=${encodeURIComponent(d)}`;
+    const { r, fetch } = make();
+    fetch.mockImplementation(async url => { if (url.startsWith("https://secure.gravatar.com/")) { throw new TypeError("fetch failed"); } return image(); });
+    expect(await r.toDataUri(gravatar(slackDefault))).toMatch(/^data:image\/png;base64,/);
+    expect(await r.toDataUri(gravatar("https://evil.example/x.png"))).toBeUndefined();
+    expect(await r.toDataUri(gravatar(gravatar(slackDefault)))).toBeUndefined();   // never a second Gravatar hop
+    expect(fetch.mock.calls.map(c => new URL(c[0]).hostname)).toEqual(["secure.gravatar.com", "a.slack-edge.com", "secure.gravatar.com", "secure.gravatar.com"]);
+  });
+
   it.each([
     "http://avatars.slack-edge.com/x.png", "https://evil.example/x.png", "https://avatars.slack-edge.com.evil.example/x.png",
     "https://user:pw@avatars.slack-edge.com/x.png", "https://avatars.slack-edge.com:8443/x.png", "https://127.0.0.1/x.png", "https://[::1]/x.png",

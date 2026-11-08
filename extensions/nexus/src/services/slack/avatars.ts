@@ -120,6 +120,24 @@ export function createAvatarResolver(options: AvatarResolverOptions = {}): Avata
     }
   }
 
+  /**
+   * Slack's avatar for someone without a photo is a Gravatar URL whose `d=` names Slack's default image; Gravatar answers that
+   * with a redirect, which is refused. So when a Gravatar URL fails, its `d=` image is fetched directly, if it is itself an
+   * allowed (non-Gravatar) avatar URL.
+   */
+  function gravatarDefault(url: string): string | undefined {
+    const u = new URL(url);
+    if (u.hostname !== "secure.gravatar.com") return undefined;
+    const d = u.searchParams.get("d");
+    return d && isAllowedAvatarUrl(d) && new URL(d).hostname !== "secure.gravatar.com" ? d : undefined;
+  }
+  async function loadWithDefault(url: string): Promise<string | undefined> {
+    const direct = await load(url);
+    if (direct) return direct;
+    const fallback = gravatarDefault(url);
+    return fallback ? load(fallback) : undefined;
+  }
+
   async function toDataUri(remoteUrl: string | undefined): Promise<string | undefined> {
     if (!remoteUrl || !isAllowedAvatarUrl(remoteUrl)) return undefined;
     const hit = ok.get(remoteUrl);
@@ -131,7 +149,7 @@ export function createAvatarResolver(options: AvatarResolverOptions = {}): Avata
     }
     let p = inflight.get(remoteUrl);
     if (!p) {
-      p = load(remoteUrl).then(result => {
+      p = loadWithDefault(remoteUrl).then(result => {
         if (result) cap(ok, remoteUrl, result);
         else cap(failed, remoteUrl, now() + FAILURE_MEMORY_MS);
         return result;

@@ -1,14 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { ReactNode } from "react";
 import type { ApprovalRequest, SwarmReview } from "../../src/contracts";
-import { BridgeError, Button, Chip, EmptyState, KeyValueList, KeyValueRow, PendingNote, StatusLine, StoreStatusLine, friendlyError, getBridge, useNow } from "../shared";
-import type { BridgeClient, Tone } from "../shared";
+import { Badge, BridgeError, Button, EmptyState, MonoBlock, PendingNote, Region, StatusLine, StoreStatusLine, Table, friendlyError, getBridge, useNow } from "../shared";
+import type { BadgeKind, BridgeClient, TableColumn, Tone } from "../shared";
 import { formatEventTime } from "../globe/model/picking";
 
 type Decision = NonNullable<ApprovalRequest["decision"]>;
 type Verdict = NonNullable<SwarmReview["verdict"]>;
 
 const DECISION_TONE: Record<Decision, Tone> = { approved: "ok", rejected: "error" };
-const VERDICT_TONE: Record<Verdict, Tone> = { looks_good: "ok", concerns: "pending", do_not_merge: "error" };
 const VIA_LABEL: Record<NonNullable<ApprovalRequest["decidedBy"]>["via"], string> = { slack: "slack", app: "app", auth0_push: "auth0 push" };
 
 const timeOf = (iso: string | undefined) => (iso ? Date.parse(iso) : Number.NaN);
@@ -39,42 +39,55 @@ function ModelWritten() {
   return <span className="ap-label">model-written</span>;
 }
 
+const VERDICT_BADGE: Record<Verdict, { kind: BadgeKind; label: string }> = {
+  looks_good: { kind: "ok", label: "LOOKS GOOD" },
+  concerns: { kind: "pending", label: "CONCERNS" },
+  do_not_merge: { kind: "error", label: "DO NOT MERGE" },
+};
+
+type Judge = NonNullable<SwarmReview["judges"]>[number];
+
+const JUDGE_COLUMNS: readonly TableColumn<Judge>[] = [
+  { key: "modelId", header: "model", mono: true, truncate: true },
+  { key: "verdict", header: "verdict", render: (j) => <Badge kind={VERDICT_BADGE[j.verdict].kind} dot={false}>{VERDICT_BADGE[j.verdict].label}</Badge> },
+  { key: "notes", header: "note", truncate: true },
+];
+
+/** The advisory council verdict: it only changes how the card looks, never the decision. */
 function SwarmCard({ review, busy, onRerun }: { review: SwarmReview; busy: boolean; onRerun: () => void }) {
-  const [open, setOpen] = useState(false);
+  const judges = review.judges ?? [];
   return (
     <div className="ap-swarm" data-testid="swarm-card">
-      {review.status === "running" ? <StatusLine tone="muted">council reviewing…</StatusLine> : null}
+      {review.status === "running" ? <StatusLine tone="muted">review running</StatusLine> : null}
       {review.status === "unavailable" ? (
         <div className="ap-line">
-          <StatusLine tone="muted">review unavailable, you decide without it</StatusLine>
-          <Button onClick={onRerun} disabled={busy}>RE-RUN</Button>
+          <Badge kind="muted" title="the review did not finish; you decide without it">REVIEW UNAVAILABLE</Badge>
+          <Button size="sm" onClick={onRerun} disabled={busy}>RE-RUN</Button>
         </div>
       ) : null}
       {review.status === "done" ? (
         <>
           <div className="ap-line">
-            {review.verdict ? <Chip tone={VERDICT_TONE[review.verdict]}>{review.verdict}</Chip> : null}
+            {review.verdict ? (
+              <span data-testid="swarm-verdict">
+                <Badge kind={VERDICT_BADGE[review.verdict].kind}>{VERDICT_BADGE[review.verdict].label}</Badge>
+              </span>
+            ) : null}
             {review.summary ? <span className="ap-text">{review.summary}</span> : null}
           </div>
-          {review.judges && review.judges.length > 0 ? (
-            <div className="ap-line">
-              <Button onClick={() => setOpen(!open)} aria-expanded={open}>{open ? "JUDGES ▾" : "JUDGES ▸"}</Button>
-            </div>
-          ) : null}
-          {open ? (
-            <div className="ap-judges">
-              {review.judges?.map((j, i) => (
-                <div className="ap-judge" key={`${j.modelId}-${i}`}>
-                  <span className="nx-data">{j.modelId}</span>
-                  <Chip tone={VERDICT_TONE[j.verdict]}>{j.verdict}</Chip>
-                  <span className="ap-text">{j.notes}</span>
-                </div>
-              ))}
-            </div>
-          ) : null}
+          {judges.length > 0 ? <Table columns={JUDGE_COLUMNS} rows={judges.map((j, i) => ({ ...j, key: `${i}-${j.modelId}` }))} rowKey={(j) => j.key} aria-label="judges" /> : null}
         </>
       ) : null}
       <div className="ap-note">left machine · model-written</div>
+    </div>
+  );
+}
+
+function Field({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div className="ap-field">
+      <span className="ap-key">{label}</span>
+      <div className="ap-val">{children}</div>
     </div>
   );
 }
@@ -84,24 +97,20 @@ function ActionBody({ approval }: { approval: ApprovalRequest }) {
   const a = approval.action;
   switch (a.kind) {
     case "run_command":
-      return <KeyValueList><KeyValueRow label="RUN"><code className="nx-data ap-block">{a.command}</code></KeyValueRow></KeyValueList>;
+      return <Field label="run"><code className="nx-data ap-block">{a.command}</code></Field>;
     case "write_outside_scope":
-      return <KeyValueList><KeyValueRow label="WRITE OUTSIDE SCOPE"><code className="nx-data ap-block">{a.path}</code></KeyValueRow></KeyValueList>;
+      return <Field label="path"><code className="nx-data ap-block">{a.path}</code></Field>;
     case "other":
-      return <KeyValueList><KeyValueRow label="OTHER"><span className="ap-text">{a.description}</span><ModelWritten /></KeyValueRow></KeyValueList>;
+      return <Field label="detail"><code className="nx-data ap-block">{a.description}</code><ModelWritten /></Field>;
     case "commit":
       return (
         <>
-          <KeyValueList>
-            <KeyValueRow label="COMMIT"><span className="ap-text">{a.message}</span><ModelWritten /></KeyValueRow>
-          </KeyValueList>
+          <Field label="message"><code className="nx-data ap-block">{a.message}</code><ModelWritten /></Field>
           {approval.diffPreview ? (
-            <>
-              <div className="ap-line">
-                <Button onClick={() => setDiffOpen(!diffOpen)} aria-expanded={diffOpen}>{diffOpen ? "DIFF ▾" : "DIFF ▸"}</Button>
-              </div>
-              {diffOpen ? <pre className="nx-data ap-diff">{approval.diffPreview}</pre> : null}
-            </>
+            <div className="ap-diffwrap">
+              <Button size="sm" variant="ghost" onClick={() => setDiffOpen(!diffOpen)} aria-expanded={diffOpen}>{diffOpen ? "DIFF ▾" : "DIFF ▸"}</Button>
+              {diffOpen ? <MonoBlock label="DIFF">{approval.diffPreview}</MonoBlock> : null}
+            </div>
           ) : null}
         </>
       );
@@ -119,34 +128,49 @@ interface RowProps {
   onRerun: (id: string) => void;
 }
 
-function ApprovalRow({ approval, review, busy, rerunBusy, names, now, onResolve, onRerun }: RowProps) {
+/** "approved by slack Brandon at T+02:07"; a decision with no recorded decider reads "approved at T+02:07". */
+export function decidedLine(approval: ApprovalRequest, who: string): string {
+  const by = approval.decidedBy;
+  const at = tplus(approval.decidedAt);
+  return by ? `${approval.decision} by ${VIA_LABEL[by.via]} ${who} at ${at}` : `${approval.decision} at ${at}`;
+}
+
+function ApprovalCard({ approval, review, busy, rerunBusy, names, now, onResolve, onRerun }: RowProps) {
   const by = approval.decidedBy;
   const who = by ? (by.via === "slack" ? names.get(by.userId) ?? by.userId : by.userId) : "";
+  const line = approval.decision ? decidedLine(approval, who) : "";
+  const header = {
+    title: approval.action.kind.replace(/_/g, " "),
+    children: (
+      <>
+        <span className="nx-data" title={approval.sessionId}>{approval.sessionId.slice(0, 8)}</span>
+        <span className="nx-data" title={approval.requestedAt}>{tplus(approval.requestedAt)}</span>
+      </>
+    ),
+    actions: approval.decision ? undefined : <Badge kind="pending">PENDING</Badge>,
+  };
   return (
-    <div className="ap-row" data-testid="approval-row" data-id={approval.id}>
-      <div className="ap-line">
-        <Chip tone={approval.decision ? DECISION_TONE[approval.decision] : "pending"}>{approval.decision ?? "pending"}</Chip>
-        <span className="ap-kind">{approval.action.kind}</span>
-        <span className="nx-data">{tplus(approval.requestedAt)}</span>
-      </div>
+    <Region flush header={header} className="ap-card" data-testid="approval-row" data-id={approval.id}>
       <ActionBody approval={approval} />
-      <div className="ap-reason">
+      <Field label="reason">
         <span className="ap-text">{approval.reason}</span>
         <ModelWritten />
-      </div>
+      </Field>
       {approval.action.kind === "commit" && review ? <SwarmCard review={review} busy={rerunBusy} onRerun={() => onRerun(approval.id)} /> : null}
       {approval.decision ? (
-        <div className="ap-decided nx-data">{by ? `decided by ${who} via ${VIA_LABEL[by.via]} ${tplus(approval.decidedAt)}` : `decided ${tplus(approval.decidedAt)}`}</div>
+        <StatusLine tone={DECISION_TONE[approval.decision]}>
+          <span className="nx-data" title={line}>{line}</span>
+        </StatusLine>
       ) : (
         <>
           <PendingNote requestedAt={approval.requestedAt} now={now} />
-          <div className="ap-line">
+          <div className="ap-actions">
             <Button variant="primary" disabled={busy} onClick={() => onResolve(approval.id, "approved")}>APPROVE</Button>
-            <Button disabled={busy} onClick={() => onResolve(approval.id, "rejected")}>REJECT</Button>
+            <Button variant="danger" disabled={busy} onClick={() => onResolve(approval.id, "rejected")}>REJECT</Button>
           </div>
         </>
       )}
-    </div>
+    </Region>
   );
 }
 
@@ -259,47 +283,58 @@ export function App({ bridge = getBridge() }: { bridge?: BridgeClient }) {
   );
 
   const sorted = useMemo(() => sortApprovals([...approvals.values()]), [approvals]);
+  const pendingRows = sorted.filter((a) => !a.decision);
+  const decidedRows = sorted.filter((a) => a.decision);
+  const card = (a: ApprovalRequest) => (
+    <ApprovalCard
+      key={a.id}
+      approval={a}
+      review={reviews.get(a.id)}
+      busy={busy.has(a.id)}
+      rerunBusy={busy.has(`rerun:${a.id}`)}
+      names={names}
+      now={now}
+      onResolve={onResolve}
+      onRerun={onRerun}
+    />
+  );
 
   return (
     <div className="ap-app">
       <StoreStatusLine bridge={bridge} />
       {loadError ? (
-        <StatusLine tone="error">
-          {loadError} <Button onClick={() => setAttempt((n) => n + 1)}>RETRY</Button>
-        </StatusLine>
+        <div className="ap-err">
+          <StatusLine tone="error">
+            <span>{loadError}</span>
+            <Button size="sm" onClick={() => setAttempt((n) => n + 1)}>RETRY</Button>
+          </StatusLine>
+        </div>
       ) : null}
       {reviewError ? (
-        <StatusLine tone="error">
-          {reviewError}{" "}
-          <Button
-            onClick={() => {
-              askedReviews.current.clear();
-              setReviewError(undefined);
-              setReviewAttempt((n) => n + 1);
-            }}
-          >
-            RETRY
-          </Button>
-        </StatusLine>
+        <div className="ap-err">
+          <StatusLine tone="error">
+            <span>{reviewError}</span>
+            <Button
+              size="sm"
+              onClick={() => {
+                askedReviews.current.clear();
+                setReviewError(undefined);
+                setReviewAttempt((n) => n + 1);
+              }}
+            >
+              RETRY
+            </Button>
+          </StatusLine>
+        </div>
       ) : null}
       {error ? <StatusLine tone="error">{error}</StatusLine> : null}
-      {sorted.length === 0 ? (
-        loaded ? <EmptyState message="No approvals" /> : null
-      ) : (
-        sorted.map((a) => (
-          <ApprovalRow
-            key={a.id}
-            approval={a}
-            review={reviews.get(a.id)}
-            busy={busy.has(a.id)}
-            rerunBusy={busy.has(`rerun:${a.id}`)}
-            names={names}
-            now={now}
-            onResolve={onResolve}
-            onRerun={onRerun}
-          />
-        ))
-      )}
+      {!loaded ? <StatusLine tone="muted">… loading</StatusLine> : null}
+      {loaded && sorted.length === 0 && !loadError ? <EmptyState message="no approvals · an agent will ask here before a risky action" /> : null}
+      {pendingRows.map(card)}
+      {decidedRows.length > 0 ? (
+        <div className="ap-sep" role="separator" aria-label="decided">DECIDED</div>
+      ) : null}
+      {decidedRows.map(card)}
     </div>
   );
 }

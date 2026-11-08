@@ -83,8 +83,33 @@ describe("Lane3Views", () => {
     const { registered, commands } = setup();
     expect({ registered, commands: [...commands.keys()].sort() }).toEqual({
       registered: ["nexus.chat:chat", "nexus.git:git", "nexus.approvals:approvals", "nexus.agent:session"],
-      commands: ["nexus.openApprovals", "nexus.openHome", "nexus.openSession", "nexus.openSlack", "nexus.openTimeline", "nexus.searchEvents"],
+      commands: ["nexus.newTask", "nexus.openApprovals", "nexus.openHome", "nexus.openSession", "nexus.openSlack", "nexus.openTimeline", "nexus.searchEvents"],
     });
+  });
+
+  it("nexus.newTask points the agent view at a blank composer (no session id, a new compose seq each time) and focuses it", async () => {
+    const { run, resolveView, executed } = setup();
+    const view = resolveView("nexus.agent");
+    await run("nexus.openSession", "ses_01");
+    expect(view.webview.html).toContain('data-session-id="ses_01"');
+    await run("nexus.newTask");
+    expect(view.webview.html).toContain('data-session-id=""');
+    expect(view.webview.html).toContain('data-compose-seq="1"');
+    await run("nexus.newTask");
+    expect(view.webview.html).toContain('data-compose-seq="2"');
+    expect(view.webview.html).not.toContain('data-compose-seq="1"');
+    expect(executed.filter((c) => c === "nexus.agent.focus").length).toBe(3);
+    // Opening a session again shows that session (the composer is left behind).
+    await run("nexus.openSession", "ses_02");
+    expect(view.webview.html).toContain('data-session-id="ses_02"');
+  });
+
+  it("a view that resolves after nexus.newTask boots on the composer, not on a session", async () => {
+    const { run, resolveView } = setup();
+    await run("nexus.newTask");
+    const view = resolveView("nexus.agent");
+    expect(view.webview.html).toContain('data-compose-seq="1"');
+    expect(view.webview.html).not.toContain('data-session-id="ses_');
   });
 
   it("opens the globe as the nexus.home panel once, and reveals it after that", () => {

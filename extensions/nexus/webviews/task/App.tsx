@@ -4,23 +4,12 @@ import { Badge, Button, Chip, EmptyState, Input, Region, Select, StatusLine, fri
 import type { BadgeKind, ChipKind } from "../shared";
 import type { BridgeClient } from "../shared";
 import { PlanReview } from "../plan/PlanReview";
+import { modelLabel } from "../shared/modelLabel";
 import { composeBrief, splitBrief } from "./brief";
 
 export const SUBTASK_THRESHOLD = 1200;
 
-const DATA_USE_LABEL = {
-  not_used_for_training: "not used for training",
-  may_be_used_for_training: "may be used for training",
-  unknown: "data use unknown",
-} as const;
-
-export function modelLabel(m: ModelInfo, account: ProviderAccount | undefined, viaPrune: boolean): string {
-  // Through Prune (all_roles) the payload also goes to the Prune service, whatever the provider says (CLAUDE.md section 14).
-  const use = viaPrune ? DATA_USE_LABEL.unknown : DATA_USE_LABEL[account?.dataUse ?? "unknown"];
-  // No account means we cannot say the data stays local, so assume it leaves.
-  const leaves = viaPrune || !account || account.dataLeavesMachine;
-  return `${m.displayName} | ${m.provider} | ${use}${leaves ? " | LEAVES MACHINE" : ""}`;
-}
+export { modelLabel };
 
 /** Data-use chips for the chosen model; same facts as modelLabel, so the picker line and the chips never disagree. */
 export function dataUseChips(account: ProviderAccount | undefined, viaPrune: boolean): { kind: ChipKind; label: string }[] {

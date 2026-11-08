@@ -4,6 +4,7 @@ import type { AgentEvent, AgentSession, ApprovalRequest, ModelCallReceipt, Spend
 import { BridgeError, Badge, Button, EmptyState, MonoBlock, PendingNote, Region, Select, StatusLine, StoreStatusLine, Table, Tabs, friendlyError, getBridge, statusBadge, useNow } from "../shared";
 import type { BadgeKind, BridgeClient, TableColumn } from "../shared";
 import { formatEventTime } from "../globe/model/picking";
+import { Composer } from "./Composer";
 
 type Status = AgentSession["status"];
 const OPEN_RECEIPT_HINT = "opening receipts needs a bridge command (pending Lane 1)";
@@ -183,11 +184,17 @@ export interface AppProps {
   bridge?: BridgeClient;
   /** The session the host pointed the view at; undefined means "pick the newest one from sessions.list". */
   sessionId: string | undefined;
+  /** Set (and changed each time) when the host asks for a blank composer ("New task"); then no session is auto-picked. */
+  composeSeq?: number;
 }
 
-export function App({ bridge, sessionId: initialId }: AppProps) {
+export function App({ bridge, sessionId: initialId, composeSeq }: AppProps) {
   // The user's (or the host's) choice; once set, a new sessions.list result never replaces it.
   const [sessionId, setSessionId] = useState<string | undefined>(initialId);
+  // Composing: the view shows the new-task composer instead of picking the newest session from the list.
+  const [composing, setComposing] = useState(initialId === undefined && composeSeq !== undefined);
+  const composingRef = useRef(composing);
+  composingRef.current = composing;
   const [list, setList] = useState<readonly AgentSession[] | undefined>();
   const [listError, setListError] = useState("");
   const [titles, setTitles] = useState<ReadonlyMap<string, string>>(new Map());
@@ -238,8 +245,8 @@ export function App({ bridge, sessionId: initialId }: AppProps) {
       .then((l) => {
         setListError("");
         setList(orderSessions(l));
-        // First list with no choice yet: the newest running session, else the newest.
-        setSessionId((cur) => cur ?? orderSessions(l)[0]?.id);
+        // First list with no choice yet: the newest running session, else the newest; never while the user is composing.
+        setSessionId((cur) => cur ?? (composingRef.current ? undefined : orderSessions(l)[0]?.id));
         for (const x of l.slice(0, 12)) ensureTitle(x.taskId);
       })
       .catch((e) => setListError(friendlyError(e, "sessions")));
@@ -252,6 +259,21 @@ export function App({ bridge, sessionId: initialId }: AppProps) {
   useEffect(() => {
     if (initialId) setSessionId(initialId);
   }, [initialId]);
+
+  useEffect(() => {
+    if (composeSeq === undefined) return;
+    setComposing(true);
+    setSessionId(undefined);
+  }, [composeSeq]);
+
+  const compose = () => {
+    setComposing(true);
+    setSessionId(undefined);
+  };
+  const show = (id: string) => {
+    setComposing(false);
+    setSessionId(id);
+  };
 
   useEffect(() => {
     if (!sessionId) return;
@@ -374,16 +396,38 @@ export function App({ bridge, sessionId: initialId }: AppProps) {
   };
   const retry = <Button size="sm" onClick={() => setAttempt((n) => n + 1)}>RETRY</Button>;
   if (!sessionId) {
-    if (listError) {
+    // The list never loaded (store down, not signed in): one error line with RETRY, nothing else to act on yet.
+    if (listError && !list) {
       return (
         <div className="session-app">
           <StatusLine tone="error">{listError} {retry}</StatusLine>
         </div>
       );
     }
+    // No session on screen: the composer (grey mark, brief, model, START). Existing sessions stay one switch away.
     return (
       <div className="session-app">
-        {list ? <EmptyState message="no agent session yet · make a task from a Slack thread" /> : <StatusLine>… loading</StatusLine>}
+        {listError ? <StatusLine tone="error">{listError} {retry}</StatusLine> : null}
+        {list && list.length ? (
+          <Region flush className="sv-head" aria-label="agent session">
+            <div className="sv-head-row">
+              <Select
+                aria-label="session"
+                value=""
+                onMouseDown={loadList}
+                onChange={(e) => { if (e.target.value) show(e.target.value); }}
+                options={[{ value: "", label: "NEW TASK" }, ...switcherOptions(list, undefined, titles)]}
+              />
+            </div>
+          </Region>
+        ) : null}
+        <Composer
+          bridge={bridge}
+          onStarted={(s) => {
+            show(s.id);
+            loadList();
+          }}
+        />
       </div>
     );
   }
@@ -469,12 +513,13 @@ export function App({ bridge, sessionId: initialId }: AppProps) {
             onMouseDown={loadList}
             onFocus={refreshList}
             onKeyDown={refreshList}
-            onChange={(e) => setSessionId(e.target.value)}
+            onChange={(e) => show(e.target.value)}
             options={switcherOptions(list, session, titles, status)}
           />
           <span data-testid="session-status" className="sv-badge">
             {badge ? <Badge kind={badge.kind}>{badge.label}</Badge> : null}
           </span>
+          <Button size="sm" onClick={compose} title="New agent task">NEW</Button>
           <Button variant="danger" size="sm" disabled={!canCancel} onClick={cancel}>CANCEL</Button>
         </div>
         <div className="sv-strip" title={strip.join(" · ")}>

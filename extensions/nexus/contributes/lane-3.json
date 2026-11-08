@@ -10,6 +10,7 @@
       { "command": "nexus.openSession", "title": "Nexus: Open session" },
       { "command": "nexus.openCommit", "title": "Nexus: Open commit" },
       { "command": "nexus.mergeAgentBranch", "title": "Nexus: Merge agent branch" },
+      { "command": "nexus.newTask", "title": "Nexus: New agent task", "icon": "$(add)" },
       { "command": "nexus.openReceipt", "title": "Nexus: Open Prune receipt" }
     ],
     "menus": {
@@ -18,6 +19,9 @@
       ],
       "commandPalette": [
         { "command": "nexus.openSession", "when": "false" }
+      ],
+      "view/title": [
+        { "command": "nexus.newTask", "when": "view == nexus.agent", "group": "navigation" }
       ]
     },
     "viewsContainers": {

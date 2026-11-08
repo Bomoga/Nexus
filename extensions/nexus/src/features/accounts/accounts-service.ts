@@ -142,6 +142,11 @@ export function accountsBridgeHandlers(service: AccountsService) {
   return {
     "accounts.list": async (): Promise<Res<"accounts.list">> => service.list(),
     "accounts.test": async (req: Req<"accounts.test">): Promise<Res<"accounts.test">> => service.test(req.accountId),
-    "models.list": async (req: Req<"models.list">): Promise<Res<"models.list">> => service.models(req.role),
+    // A cold extension host has keys but no listings yet: verify them first (list() is free once every account is known),
+    // or the agent view's model picker would come up empty until something else happened to ask for the accounts.
+    "models.list": async (req: Req<"models.list">): Promise<Res<"models.list">> => {
+      await service.list();
+      return service.models(req.role);
+    },
   };
 }

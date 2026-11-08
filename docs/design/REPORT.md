@@ -81,7 +81,18 @@ _(filled at the end)_
 
 ## 3. Decisions made for Adrian
 
-_(see also progress/lane-1.md "Decisions (design night)")_
+Full list under "Decisions (design night)" in `progress/lane-1.md`. The ones that change how things look or behave:
+
+- **Accent ramp**: Nexus Dark's `#9d6bff` family everywhere (`--nx-accent`, `-hi #b794ff`, `-lo #7f77dd`, `-deep #5b3fb3`, `-glow #d9caff`, `-tint #9d6bff22`); the kit's old `#8b5cf6` and the globe's `0x7f77dd` primary are gone.
+- **Dark text on purple** (`--nx-accent-fg #0b0b0e`, 5.6:1) on every primary button, active segment and MERGE control; white on either purple fails 4.5:1. The style test carries a 22-pair contrast table and fails on any regression.
+- **Layout**: Slack · Git · Approvals in the left `nexus` container; the globe in the center; the Agent view in a new `nexus-agent` secondary-side-bar container that the core default now opens, plus a one-time `nexus.agent.focus` at activation because the workbench hides an empty secondary side bar before the extension registers its container.
+- **Session selection without a contract change**: `nexus.openSession` re-sets the Agent view's `<body data-session-id>` (page reload, replay from seq 0) through one optional `onResolveView` callback added to `src/bridge/host.ts`; the editor panel is a fallback only. With no id the view lists sessions itself and offers a switcher.
+- **Git view** built tonight (D-10 folded into D-04) because the new `nexus.git` view needed an entry to be usable.
+- **Rows**: tables stay 20 px, list rows are 22 px; both inside CLAUDE.md §6's range.
+- **Deviations from §5**: the globe's top bar is a `div.nx-panel-header` with `role="toolbar"` (the kit's `PanelHeader` is a heading); the "4 px gutter" for the activity strip legend is a ~28 px label column; now-line dots are world-space spheres, not a fixed 3 px; instanced markers dim by color instead of 0.5 opacity; the timeline has no activity strip (it never had one) and always shows LIVE; the agent view's switcher refetches `sessions.list` on open/focus because the protocol has no sessions subscription; Slack `http://` links are linkified but dropped by the https-only opener; the task editor's START has no keyboard hint (no shortcut exists).
+- **Worktrees** for workers lived in `C:\dev
+exus-wt\D-xx`; the fork was launched from `C:\dev
+exus` (the only built checkout) with `--extensionDevelopmentPath` pointing at this checkout's `extensions/nexus`.
 
 ## 4. Checks
 
@@ -93,4 +104,9 @@ _(file, line, smallest next step)_
 
 ## 6. Demo notes
 
-_(what the presenter should know)_
+- The secondary side bar opens by default with the **Agent** view; if you close it, it stays closed for that workspace (`nexus.agentViewRevealed` in workspace state) until you open it from the layout toggle or `Nexus: Open session`. Below about 320 px wide the header strip truncates from the left and keeps the status badge and CANCEL visible.
+- With no agent session yet the Agent view says "no agent session yet · start one from a Slack thread"; the first `nexus.openSession` (from a notification, the globe or a thread) points it at that session. The switcher lists sessions newest first, running ones on top.
+- The globe's time window is the segmented 24H · 36H · 7D · 30D control; the 36H segment is filled purple when active. Search still takes Enter (top hit) and Escape; STOP TRACKING is ESC.
+- Left container: **Slack** (channels 20 px rows, LIVE badge when the bot is in the channel), **Git** (BRANCHES, AGENT BRANCHES with the inline MERGE → CONFIRM MERGE, RECENT COMMITS last 24 h), **Approvals** (pending on top, DECIDED below).
+- Every primary action is dark text on purple; red outlines are REJECT/danger only; amber is pending only.
+- Dev-host only: an "Extension host did not start in 10 seconds" warning on this 8 GB laptop and a "created a webview without a content security policy" log line when the first Nexus view resolves; neither affects the views.

@@ -5,6 +5,7 @@ import { ACTIVITY_SQL, createActivity, registerActivity } from "./activity";
 import type { ActivityQueryClient } from "./activity";
 import { FakeEventStore } from "./fake-store";
 
+const WS = async () => ["ws_here", "ws_legacy"];
 const ev = (id: string, at: string, orbit = "main"): NexusEvent => ({
   id, kind: "commit", at, orbit, title: id, workspaceId: "w", machineId: "m", actor: { name: "a", kind: "human" }, target: { type: "commit", sha: "a".repeat(40) },
 });
@@ -31,13 +32,44 @@ describe("activity", () => {
       { bucket: new Date("2026-11-07T10:00:00Z"), orbit: "main", count: "12" },
       { bucket: "2026-11-07T10:15:00+00:00", orbit: "lane-1", count: 3 },
     ] }; } };
-    const activity = createActivity({ query, localEvents: async () => { throw new Error("not used"); } });
+    const activity = createActivity({ query, workspaceIds: WS, localEvents: async () => { throw new Error("not used"); } });
     expect(await activity("2026-11-07T10:07:00Z", "2026-11-07T11:00:00+00:00")).toEqual([
       { bucketStart: "2026-11-07T10:00:00.000Z", orbit: "main", count: 12 },
       { bucketStart: "2026-11-07T10:15:00.000Z", orbit: "lane-1", count: 3 },
     ]);
-    expect(calls).toEqual([{ text: ACTIVITY_SQL, params: ["2026-11-07T10:07:00.000Z", "2026-11-07T11:00:00.000Z"] }]);
-    expect(ACTIVITY_SQL).toMatchInlineSnapshot(`"SELECT bucket, orbit, count FROM events_15m WHERE bucket >= time_bucket('15 minutes', $1::timestamptz) AND bucket < $2::timestamptz ORDER BY bucket, orbit"`);
+    expect(calls).toEqual([{ text: ACTIVITY_SQL, params: ["2026-11-07T10:07:00.000Z", "2026-11-07T11:00:00.000Z", ["ws_here", "ws_legacy"]] }]);
+    expect(ACTIVITY_SQL).toMatchInlineSnapshot(`"SELECT bucket, orbit, sum(count) AS count FROM events_ws_15m WHERE workspace_id = ANY($3::text[]) AND bucket >= time_bucket('15 minutes', $1::timestamptz) AND bucket < $2::timestamptz GROUP BY bucket, orbit ORDER BY bucket, orbit"`);
+  });
+
+  it("reads the per-workspace aggregate, and uses the local copy without calling the client while the workspace is unknown", async () => {
+    expect(ACTIVITY_SQL).toContain("FROM events_ws_15m WHERE workspace_id = ANY($3::text[]) AND bucket >= ");
+    const expected = await createActivity({ localEvents: localFrom(EVENTS) })("2026-11-07T10:00:00Z", "2026-11-07T10:45:00Z");
+    for (const workspaceIds of [undefined, async () => [], async (): Promise<string[]> => { throw new Error("not a repo"); }]) {
+      let calls = 0;
+      const query: ActivityQueryClient = { query: async () => { calls++; return { rows: [] }; } };
+      const activity = createActivity({ query, ...(workspaceIds ? { workspaceIds } : {}), localEvents: localFrom(EVENTS) });
+      expect(await activity("2026-11-07T10:00:00Z", "2026-11-07T10:45:00Z")).toEqual(expected);
+      expect(calls).toBe(0);
+    }
+  });
+
+  it("sums rows the database returns per workspace id for one bucket and orbit, like the local path", async () => {
+    const both = [ev("1", "2026-11-07T10:01:00.000Z"), ev("2", "2026-11-07T10:02:00.000Z"), ev("3", "2026-11-07T10:03:00.000Z")];
+    const local = await createActivity({ localEvents: localFrom(both) })("2026-11-07T10:00:00Z", "2026-11-07T10:15:00Z");
+    // The query itself groups (sum over GROUP BY bucket, orbit), so pg hands back one row whose sum(bigint) is a numeric string.
+    const query: ActivityQueryClient = { query: async () => ({ rows: [{ bucket: new Date("2026-11-07T10:00:00Z"), orbit: "main", count: "3" }] }) };
+    expect(await createActivity({ query, workspaceIds: WS, localEvents: async () => { throw new Error("not used"); } })("2026-11-07T10:00:00Z", "2026-11-07T10:15:00Z")).toEqual(local);
+    expect(local).toEqual([{ bucketStart: "2026-11-07T10:00:00.000Z", orbit: "main", count: 3 }]);
+    expect(ACTIVITY_SQL).toContain("sum(count) AS count");
+    expect(ACTIVITY_SQL).toContain("GROUP BY bucket, orbit");
+  });
+
+  it("counts the workspace lookup against the remote budget", async () => {
+    let queried = 0;
+    const query: ActivityQueryClient = { query: async () => { queried++; return { rows: [] }; } };
+    const activity = createActivity({ query, workspaceIds: () => new Promise(() => {}), remoteBudgetMs: 20, localEvents: localFrom(EVENTS) });
+    expect((await activity("2026-11-07T10:00:00Z", "2026-11-07T10:45:00Z")).length).toBe(4);
+    expect(queried).toBe(0);
   });
 
   it("falls back to local when the remote fails, returns junk, or hangs past the budget", async () => {
@@ -49,7 +81,7 @@ describe("activity", () => {
       { query: () => new Promise(() => {}) },
     ];
     for (const query of bad) {
-      const activity = createActivity({ query, remoteBudgetMs: 20, localEvents: localFrom(EVENTS) });
+      const activity = createActivity({ query, workspaceIds: WS, remoteBudgetMs: 20, localEvents: localFrom(EVENTS) });
       expect(await activity("2026-11-07T10:00:00Z", "2026-11-07T10:45:00Z")).toEqual(expected);
     }
   });
@@ -66,7 +98,7 @@ describe("activity", () => {
 
   it("refuses bad windows without querying", async () => {
     let queries = 0, locals = 0;
-    const activity = createActivity({ query: { query: async () => { queries++; return { rows: [] }; } }, localEvents: async () => { locals++; return []; } });
+    const activity = createActivity({ query: { query: async () => { queries++; return { rows: [] }; } }, workspaceIds: WS, localEvents: async () => { locals++; return []; } });
     for (const [from, to] of [["x", "2026-11-07T10:00:00Z"], ["2026-11-07T10:00:00Z", "'; DROP TABLE events; --"], ["2026-11-07T10:00:00Z", "2026-11-07T10:00:00Z"],
       ["2026-11-07T11:00:00Z", "2026-11-07T10:00:00Z"], ["2026-10-01T00:00:00Z", "2026-11-07T00:00:00Z"]]) {
       await expect(activity(from, to)).rejects.toMatchObject({ code: "invalid_request" });
@@ -90,7 +122,7 @@ describe("activity", () => {
       { bucket: "2026-11-07T10:00:00Z", orbit: "feature/x", count: "1" },
       { bucket: "2026-11-07T10:00:00Z", orbit: "feature-y", count: "1" },
     ];
-    const activity = createActivity({ query: { query: async () => ({ rows }) }, localEvents: async () => [] });
+    const activity = createActivity({ query: { query: async () => ({ rows }) }, workspaceIds: WS, localEvents: async () => [] });
     const orbits = (await activity("2026-11-07T10:00:00Z", "2026-11-07T11:00:00Z")).map(b => b.orbit);
     expect(orbits).toEqual(["Main", "feature-y", "feature/x", "lane-1"]);
   });

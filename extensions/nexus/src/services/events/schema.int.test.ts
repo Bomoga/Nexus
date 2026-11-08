@@ -8,7 +8,10 @@ import { Client } from "pg";
 import { describe, expect, it } from "vitest";
 
 const url = process.env.TIGER_URL;
-const schema = readFileSync(path.join(__dirname, "../../../sql/001_schema.sql"), "utf8");
+const sqlFile = (name: string) => readFileSync(path.join(__dirname, "../../../sql", name), "utf8");
+const schema = sqlFile("001_schema.sql");
+// 002 to 004 build on 001 (aggregates, notify triggers, the per-workspace aggregate); each is idempotent and transaction-safe (WITH NO DATA).
+const later = ["002_aggregates.sql", "003_notify.sql", "004_activity_ws.sql"].map(sqlFile);
 
 const rows: Array<[table: string, sql: string, params: unknown[]]> = [
   ["events", "INSERT INTO events (id, at, kind, orbit, title, actor_name, actor_kind, target, workspace_id, machine_id) VALUES ($1, now(), 'commit', 'main', 't', 'a', 'human', '{\"type\":\"commit\"}', 'w', 'm')", ["evt_schema_test"]],
@@ -30,6 +33,7 @@ describe.skipIf(!url)("L2-09 Tiger Cloud schema", () => {
       await client.query(schema);   // idempotent
       await client.query("BEGIN");
       try {
+        for (let pass = 0; pass < 2; pass++) for (const file of later) await client.query(file);   // applied twice, rolled back with the rest
         for (const [table, sql, params] of rows) {
           await client.query(sql, params);
           const key = table === "agent_events" ? "session_id" : table === "model_call_receipts" ? "call_id" : "id";

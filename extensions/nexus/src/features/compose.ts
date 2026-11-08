@@ -3,6 +3,7 @@ import type { SessionFinished } from "../agent-process/session-events";
 import type { AgentEvent, ApprovalRequest, ModelCallReceipt, ModelInfo, SwarmReview, Task } from "../contracts";
 import type { AccountsService } from "./accounts/accounts-service";
 import { accountsBridgeHandlers } from "./accounts/accounts-service";
+import { pickerBridgeHandlers, type ModelPicker } from "./accounts/model-picker";
 import { ApprovalsController, approvalsBridgeHandlers, type ApprovalHook, type NotifyPort } from "./approvals/approvals-controller";
 import { authBridgeHandlers, type Auth0Session } from "./auth/auth0-signin";
 import type { Clock, GatePort, GitPort, SlackPort, StorePort } from "./ports";
@@ -49,6 +50,8 @@ export interface Lane1Deps {
   workspaceId(): string | Promise<string>;
   /** The model the user picked for the agent, for plans that run several sessions. */
   agentModel(): { provider: string; modelId: string } | undefined;
+  /** The status-bar picker, so the agent view's composer reads and writes the same remembered model (models.selected / models.select). */
+  picker?: ModelPicker;
   auth?: Auth0Session;
   progress?: ProgressPort;
   /** Further surfaces told about every approval, such as Lane 2's Slack approval message. */
@@ -119,6 +122,7 @@ export function composeLane1(d: Lane1Deps) {
     ...swarmReviewBridgeHandlers(review),
     ...planBridgeHandlers(decompose),
     ...optimizerBridgeHandlers(d.optimizer),
+    ...(d.picker ? pickerBridgeHandlers(d.picker) : {}),
     ...(d.auth ? authBridgeHandlers(d.auth) : {}),
   };
 

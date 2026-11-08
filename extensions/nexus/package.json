@@ -57,8 +57,10 @@
     "onCustomEditor:nexus.home",
     "onStartupFinished",
     "onUri",
+    "onView:nexus.agent",
     "onView:nexus.approvals",
-    "onView:nexus.chat"
+    "onView:nexus.chat",
+    "onView:nexus.git"
   ],
   "contributes": {
     "viewsContainers": {
@@ -66,6 +68,13 @@
         {
           "id": "nexus",
           "title": "Nexus",
+          "icon": "resources/nexus.svg"
+        }
+      ],
+      "secondarySidebar": [
+        {
+          "id": "nexus-agent",
+          "title": "Agent",
           "icon": "resources/nexus.svg"
         }
       ]
@@ -180,6 +189,11 @@
         "title": "Nexus: Merge agent branch"
       },
       {
+        "command": "nexus.newTask",
+        "title": "Nexus: New agent task",
+        "icon": "$(add)"
+      },
+      {
         "command": "nexus.openReceipt",
         "title": "Nexus: Open Prune receipt"
       }
@@ -245,8 +259,20 @@
         },
         {
           "type": "webview",
+          "id": "nexus.git",
+          "name": "Git"
+        },
+        {
+          "type": "webview",
           "id": "nexus.approvals",
           "name": "Approvals"
+        }
+      ],
+      "nexus-agent": [
+        {
+          "type": "webview",
+          "id": "nexus.agent",
+          "name": "Agent"
         }
       ]
     },
@@ -262,6 +288,13 @@
         {
           "command": "nexus.openSession",
           "when": "false"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "nexus.newTask",
+          "when": "view == nexus.agent",
+          "group": "navigation"
         }
       ]
     }

@@ -121,7 +121,7 @@ export function Search({ onPick, search = defaultSearch, t0Ms = DEFAULT_T0_MS }:
         aria-controls="globe-search-list"
         aria-autocomplete="list"
         data-picked={picked && !shown ? "true" : undefined}
-        placeholder="SEARCH EVENTS  /"
+        placeholder="search events"
         value={q}
         onChange={(e) => {
           setPicked(false);
@@ -144,8 +144,8 @@ export function Search({ onPick, search = defaultSearch, t0Ms = DEFAULT_T0_MS }:
               }}
             >
               <span className="globe-search-title">{event.title}</span>
-              <span className="globe-search-cell">{event.kind}</span>
-              <span className="globe-search-cell">{event.orbit}</span>
+              <span className="globe-search-kind">{event.kind}</span>
+              <span className="globe-search-cell nx-data">{event.orbit}</span>
               <span className="globe-search-cell nx-data">{formatEventTime(Date.parse(event.at), t0Ms)}</span>
               <span className="globe-search-cell nx-data">{shortId(event.target)}</span>
             </li>
@@ -153,9 +153,11 @@ export function Search({ onPick, search = defaultSearch, t0Ms = DEFAULT_T0_MS }:
         </ul>
       ) : null}
       {error ? (
-        <StatusLine tone="error">
-          {error} <Button onClick={() => setAttempt((n) => n + 1)}>RETRY</Button>
-        </StatusLine>
+        <div className="globe-search-error">
+          <StatusLine tone="error">
+            {error} <Button size="sm" onClick={() => setAttempt((n) => n + 1)}>RETRY</Button>
+          </StatusLine>
+        </div>
       ) : null}
     </div>
   );

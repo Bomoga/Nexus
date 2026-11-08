@@ -24,6 +24,10 @@ export interface SceneProps {
   window: TimeWindow;
   /** Click selection (markers, arcs, activity shapes); undefined for a click on empty space. */
   onPick?: (event: NexusEvent | undefined) => void;
+  /** Hover preview: the marker under the pointer changed (undefined when it left a marker). */
+  onHover?: (event: NexusEvent | undefined) => void;
+  /** The selected event gets a 1 px ring (the tracked one gets the ring and the camera). */
+  selected?: NexusEvent;
   /** The event the camera follows and rings (search/track); undefined for none. */
   tracked?: NexusEvent;
   /** The user dragged the globe while tracking. */
@@ -35,17 +39,17 @@ export interface SceneProps {
 }
 
 /** The Canvas fills its parent, which must have an explicit (not content-driven) height; r3f handles resize. */
-export function Scene({ events, now, window, onPick, tracked, onRelease, frozen = false, children }: SceneProps) {
+export function Scene({ events, now, window, onPick, onHover, selected, tracked, onRelease, frozen = false, children }: SceneProps) {
   // Rebuild orbits only when the set of families changes, not on every events/now update.
   const key = familiesKey(familiesOf(events));
   const layout = useMemo(() => orbitLayout(key.split("\u0000")), [key]);
   return (
-    <Canvas camera={{ fov: 40, position: [0, 0.8, 8.2], near: 0.1, far: CAMERA_FAR }} dpr={[1, 2]} gl={{ antialias: true, alpha: true }}>
+    <Canvas camera={{ fov: 40, position: [0, 0.8, 8.2], near: 0.1, far: CAMERA_FAR }} dpr={[1, 1.5]} gl={{ antialias: true, alpha: true, powerPreference: "low-power" }}>
       <DriftFrozen.Provider value={frozen}>
       <OrbitControls enablePan={false} minDistance={4} maxDistance={14} rotateSpeed={0.6} makeDefault />
       <Fit radius={outerRadius(layout)} tracking={tracked !== undefined} />
-      {onPick ? <Picking events={events} layout={layout} onPick={onPick} /> : null}
-      <Tracking event={tracked} layout={layout} now={now} window={window} onRelease={onRelease ?? noop} />
+      {onPick ? <Picking events={events} layout={layout} onPick={onPick} onHover={onHover} /> : null}
+      <Tracking event={tracked} selected={selected} layout={layout} now={now} window={window} onRelease={onRelease ?? noop} />
       <group rotation={WORLD_ROTATION as [number, number, number]}>
         <Globe />
         <Orbits layout={layout} />

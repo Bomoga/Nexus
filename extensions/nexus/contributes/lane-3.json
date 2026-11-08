@@ -10,6 +10,7 @@
       { "command": "nexus.openSession", "title": "Nexus: Open session" },
       { "command": "nexus.openCommit", "title": "Nexus: Open commit" },
       { "command": "nexus.mergeAgentBranch", "title": "Nexus: Merge agent branch" },
+      { "command": "nexus.newTask", "title": "Nexus: New agent task", "icon": "$(add)" },
       { "command": "nexus.openReceipt", "title": "Nexus: Open Prune receipt" }
     ],
     "menus": {
@@ -18,12 +19,24 @@
       ],
       "commandPalette": [
         { "command": "nexus.openSession", "when": "false" }
+      ],
+      "view/title": [
+        { "command": "nexus.newTask", "when": "view == nexus.agent", "group": "navigation" }
+      ]
+    },
+    "viewsContainers": {
+      "secondarySidebar": [
+        { "id": "nexus-agent", "title": "Agent", "icon": "resources/nexus.svg" }
       ]
     },
     "views": {
       "nexus": [
         { "type": "webview", "id": "nexus.chat", "name": "Slack" },
+        { "type": "webview", "id": "nexus.git", "name": "Git" },
         { "type": "webview", "id": "nexus.approvals", "name": "Approvals" }
+      ],
+      "nexus-agent": [
+        { "type": "webview", "id": "nexus.agent", "name": "Agent" }
       ]
     }
   },

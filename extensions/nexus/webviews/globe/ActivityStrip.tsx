@@ -68,7 +68,7 @@ export function ActivityStrip({ bridge, now, window: w, families, onPin }: Activ
     const quiet = error.includes("isn't connected yet");
     body = (
       <StatusLine tone={quiet ? "muted" : "error"}>
-        {error} {quiet ? null : <Button onClick={() => setAttempt((n) => n + 1)}>RETRY</Button>}
+        {error} {quiet ? null : <Button size="sm" onClick={() => setAttempt((n) => n + 1)}>RETRY</Button>}
       </StatusLine>
     );
   } else if (buckets === undefined) {
@@ -103,5 +103,12 @@ export function ActivityStrip({ bridge, now, window: w, families, onPin }: Activ
       </svg>
     );
   }
-  return <div className="globe-activity">{body}</div>;
+  return (
+    <div className="globe-activity">
+      <span className="globe-activity-legend nx-data" title="One column per 15 minutes">
+        15M
+      </span>
+      <div className="globe-activity-body">{body}</div>
+    </div>
+  );
 }

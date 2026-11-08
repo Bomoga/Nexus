@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { DEFAULT_OPTIMIZER, type OptimizerSetting } from "../../contracts";
 import { FakeProvider } from "../../models/fake-provider";
 import { AccountsService, type SecretStore, type StateStore } from "./accounts-service";
-import { DATA_USE_LABELS, ModelPicker, type PickerItem, type PickerUi } from "./model-picker";
+import { DATA_USE_LABELS, ModelPicker, pickerBridgeHandlers, type PickerItem, type PickerUi } from "./model-picker";
 
 function memState(): StateStore {
   const map = new Map<string, unknown>();
@@ -69,6 +69,21 @@ describe("ModelPicker items", () => {
     const items = await on.picker.buildItems();
     expect(labels(items).slice(-2)).toEqual(["separator:Optimization", "optimizer:Optimize with Prune: OFF"]);
     expect((items.at(-1) as { detail: string }).detail).toMatch(/data use unknown · leaves machine/);
+  });
+});
+
+describe("pickerBridgeHandlers (the agent view's composer shares the status bar's choice)", () => {
+  it("reports null before a pick, remembers a pick from the composer and shows it in the status bar, and refuses a model no connected account lists", async () => {
+    const s = await setup({ connect: ["anthropic"] });
+    const h = pickerBridgeHandlers(s.picker);
+    expect(await h["models.selected"]({ role: "agent" })).toBeNull();
+    const anthropic = s.accounts.models("agent").find(m => m.provider === "anthropic")!;
+    expect(await h["models.select"]({ role: "agent", provider: anthropic.provider, modelId: anthropic.modelId })).toEqual({ provider: anthropic.provider, modelId: anthropic.modelId });
+    expect(await h["models.selected"]({ role: "agent" })).toEqual({ provider: anthropic.provider, modelId: anthropic.modelId });
+    expect(s.status.at(-1)?.text).toContain(anthropic.modelId);           // the status bar item followed the composer's pick
+    expect(s.picker.selected("agent")).toEqual({ provider: anthropic.provider, modelId: anthropic.modelId });
+    await expect(h["models.select"]({ role: "agent", provider: "google", modelId: "gemini-nope" })).rejects.toThrow(/not a model of a connected account/);
+    expect(await h["models.selected"]({ role: "agent" })).toEqual({ provider: anthropic.provider, modelId: anthropic.modelId }); // unchanged
   });
 });
 

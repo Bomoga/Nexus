@@ -136,4 +136,13 @@ describe("bridge handlers", () => {
     Requests["tasks.update"].res.parse(upd);
     expect(upd.title).toBe("New title");
   });
+
+  it("serves tasks.create: a draft with a manual source, no code refs, listed like any other task", async () => {
+    const s = setup();
+    const h = tasksBridgeHandlers(s.c);
+    const task = await h["tasks.create"]({ title: "Fix the cart total", brief: "Fix the cart total\nThe discount comes off once per line." });
+    Requests["tasks.create"].res.parse(task);
+    expect(task).toMatchObject({ title: "Fix the cart total", status: "draft", source: { kind: "manual" }, codeRefs: [] });
+    expect((await h["tasks.list"]({ status: "draft" })).map((t) => t.id)).toContain(task.id);
+  });
 });

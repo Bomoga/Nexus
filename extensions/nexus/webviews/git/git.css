@@ -1,0 +1,19 @@
+/* Git view (design-night §5.5): three touching regions, tokens and geometry from the kit's theme.css. */
+html, body, #root { height: 100%; }
+.git-app { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.git-app .nx-region { flex: 0 1 auto; }
+.git-app .nx-region--fill { flex: 1 1 0; }
+.git-branch-name { display: inline-flex; align-items: center; gap: var(--nx-gap-1); min-width: 0; }
+.git-commit-row { display: grid; grid-template-columns: 52px 60px minmax(0, 1fr) auto; column-gap: var(--nx-gap-2); align-items: center; height: var(--nx-list-row-h); padding: 0 var(--nx-pad-x); border-bottom: var(--nx-border-w) solid var(--nx-border); font-size: var(--nx-font-ui-sm); line-height: var(--nx-lh-sm); white-space: nowrap; cursor: pointer; }
+.git-commit-row:hover { background: var(--nx-hover-bg); }
+.git-commit-row:focus-visible { outline: var(--nx-border-w) solid var(--nx-focus); outline-offset: -1px; }
+.git-commit-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.git-commit-kind { color: var(--nx-accent-hi); text-transform: uppercase; }
+.git-commit-actor { color: var(--nx-muted); }
+/* Narrow side bar: the branch name takes the slack, HEAD and MERGE keep their width. */
+.git-app .nx-table td:not(.nx-truncate), .git-app .nx-table th:not(.nx-truncate) { width: 1%; white-space: nowrap; }
+.git-app .nx-table td.nx-truncate .git-branch-name { max-width: 100%; }
+.git-app .nx-table td.nx-truncate .nx-data { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.git-app .nx-table td.nx-truncate .nx-badge, .git-app .nx-table td.nx-truncate .nx-chip { flex: none; }
+.git-app .nx-table td.nx-right { overflow: visible; }
+.git-app .nx-table td.nx-right, .git-app .nx-table th.nx-right { min-width: 64px; }

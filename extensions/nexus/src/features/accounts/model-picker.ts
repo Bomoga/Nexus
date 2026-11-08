@@ -1,4 +1,4 @@
-import type { DataUse, ModelInfo, ModelRole, OptimizerSetting, ProviderAccount } from "../../contracts";
+import type { DataUse, ModelInfo, ModelRole, OptimizerSetting, ProviderAccount, Req, Res } from "../../contracts";
 import { roleEligible } from "../../models/provider";
 import type { StateStore } from "./accounts-service";
 
@@ -52,6 +52,14 @@ export class ModelPicker {
   async choose(role: ModelRole, model: ChosenModel): Promise<void> {
     await this.deps.state.update(stateKey(role), { provider: model.provider, modelId: model.modelId });
     await this.refreshStatus();
+  }
+
+  /** A choice made elsewhere (the agent view's composer): only a model a connected, eligible account returned is accepted. */
+  async select(role: ModelRole, model: ChosenModel): Promise<ChosenModel> {
+    const ok = this.deps.accounts.models(role).some(m => m.provider === model.provider && m.modelId === model.modelId);
+    if (!ok) throw new Error(`${model.provider} ${model.modelId} is not a model of a connected account for the ${role} role.`);
+    await this.choose(role, model);
+    return { provider: model.provider, modelId: model.modelId };
   }
 
   async refreshStatus(): Promise<void> {
@@ -110,4 +118,12 @@ export class ModelPicker {
     }
     return "none";
   }
+}
+
+/** The webview-protocol handlers for the remembered model: the agent view's composer reads and writes the same choice as the status bar. */
+export function pickerBridgeHandlers(picker: ModelPicker) {
+  return {
+    "models.selected": async (req: Req<"models.selected">): Promise<Res<"models.selected">> => picker.selected(req.role) ?? null,
+    "models.select": async (req: Req<"models.select">): Promise<Res<"models.select">> => picker.select(req.role, { provider: req.provider, modelId: req.modelId }),
+  };
 }

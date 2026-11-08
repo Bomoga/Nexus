@@ -139,7 +139,7 @@ describe("timeline view", () => {
     await waitFor(() => expect(reqs("events.search").length).toBe(1));
     await screen.findByRole("listbox");
     fireEvent.keyDown(box, { key: "Enter" });
-    await waitFor(() => expect((screen.getByLabelText("Time window") as HTMLSelectElement).value).toBe("7d"));
+    await waitFor(() => expect(within(screen.getByRole("group", { name: "Time window" })).getByRole("button", { name: "7D" }).getAttribute("aria-pressed")).toBe("true"));
     await waitFor(() => expect(reqs("ui.setTimeWindow")[0]?.body).toEqual({ window: "7d" }));
     await waitFor(() => expect(markFor("c-old")).toBeTruthy());
     const strip = screen.getByRole("group", { name: "Selected event" });
@@ -202,10 +202,12 @@ describe("timeline view", () => {
     expect(await screen.findByText("no events in this window")).toBeTruthy();
   });
 
+  // Renders 5,000 fixture events in jsdom: a few seconds on a quiet laptop, over 20 s with other suites running, so it
+  // gets its own budget. The assertion is unchanged.
   test("shows a truncated line when the query hit the limit", async () => {
     const many = Array.from({ length: 5000 }, (_, i) => commit(`c${i}`, "main", 1 + (i % 30) / 10));
     const { bridge } = setup(many);
     render(<App bridge={bridge} nowMs={NOW} />);
-    expect(await screen.findByText(/truncated/i)).toBeTruthy();
-  });
+    expect(await screen.findByText(/truncated/i, {}, { timeout: 30_000 })).toBeTruthy();
+  }, 40_000);
 });

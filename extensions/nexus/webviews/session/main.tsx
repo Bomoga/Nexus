@@ -3,11 +3,11 @@ import "../shared/theme.css";
 import "./session.css";
 import { ErrorBoundary } from "../shared";
 import { App } from "./App";
-import { resolveSessionId } from "./sessionId";
+import { resolveComposeSeq, resolveSessionId } from "./sessionId";
 
 const root = createRoot(document.getElementById("root") as HTMLElement);
 void resolveSessionId().then((sessionId) => root.render(
     <ErrorBoundary>
-      <App sessionId={sessionId} />
+      <App sessionId={sessionId} composeSeq={resolveComposeSeq()} />
     </ErrorBoundary>,
   ));

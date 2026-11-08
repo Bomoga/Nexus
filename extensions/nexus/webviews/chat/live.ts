@@ -39,20 +39,27 @@ export function useSlackLive(
   }, [client, channelId]);
 }
 
-/** The identity we post as, from slack.status; undefined while unknown (or when Slack would post as the app). */
-export function usePostsAs(client: BridgeClient): Self | undefined {
-  const [self, setSelf] = useState<Self | undefined>();
+/** The Slack identity we post as. `known` turns true once slack.status answered; `self` is unset when Slack would post as the app. */
+export interface PostsAsState { known: boolean; self: Self | undefined }
+
+export function usePostsAsState(client: BridgeClient): PostsAsState {
+  const [state, setState] = useState<PostsAsState>({ known: false, self: undefined });
   useEffect(() => {
     let live = true;
     client
       .request("slack.status", {})
-      .then((st) => live && setSelf(st.postsAs ? { userId: st.postsAs.userId, name: st.postsAs.name } : undefined))
+      .then((st) => live && setState({ known: true, self: st.postsAs ? { userId: st.postsAs.userId, name: st.postsAs.name } : undefined }))
       .catch(() => undefined);
     return () => {
       live = false;
     };
   }, [client]);
-  return self;
+  return state;
+}
+
+/** The identity we post as, from slack.status; undefined while unknown (or when Slack would post as the app). */
+export function usePostsAs(client: BridgeClient): Self | undefined {
+  return usePostsAsState(client).self;
 }
 
 /** Resolves display names and (safe) avatars for authors not asked about yet; `resetKey` clears the cache. */

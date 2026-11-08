@@ -7,6 +7,7 @@ One file per lane lead session. Each playbook is the lead's running order for th
 | `lane-1.md` | `start-lane-1.md` | Adrian | `lane-1` | 2 (8 GB) |
 | `lane-2.md` | `start-lane-2.md` | Brandon | `lane-2` | 3 (2 on 8 GB) |
 | `lane-3.md` | `start-lane-3.md` | Elkin | `lane-3` | 3 (2 on 8 GB) |
+| `design-night.md` | paste `design-night-prompt.md` | Adrian's lead (unattended, to 06:00 on 2026-11-08) | `lane-1` | 2 |
 
 The `start-lane-N.md` pages cover 9:45 PM → T+2:00 only: pre-flight checklist, the hour-0 rows you do by hand, the exact first three messages to paste into your Claude Code lead session, and what to watch in the first hour of wave 1. From T+2 the playbook takes over.
 

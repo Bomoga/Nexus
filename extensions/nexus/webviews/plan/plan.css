@@ -1,8 +1,15 @@
 /* Plan review: tokens and geometry come from the kit's theme.css. */
-.plan-review { display: flex; flex-direction: column; gap: var(--nx-gap-2, 8px); }
-.plan-head { display: flex; align-items: center; gap: var(--nx-gap-2, 8px); flex-wrap: wrap; min-height: var(--nx-control-h); }
-.plan-data { font-family: var(--nx-font-data); font-size: var(--nx-font-ui-sm); font-variant-numeric: tabular-nums; }
-.plan-actions { display: flex; align-items: center; gap: var(--nx-gap-1); }
-.plan-brief { display: flex; align-items: flex-start; gap: var(--nx-gap-1); min-width: 0; }
-.plan-brief-line { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.plan-brief-full { margin: 0; white-space: pre-wrap; word-break: break-word; font-family: var(--nx-font-data); font-size: var(--nx-font-ui-sm); user-select: text; }
+.plan-app { padding: 0; }
+.plan-review .nx-region-body--pad { display: flex; flex-direction: column; gap: var(--nx-gap-1); padding: var(--nx-gap-2) var(--nx-pad-x); }
+.plan-meta { display: inline-flex; align-items: center; gap: var(--nx-gap-2); min-width: 0; }
+.plan-source { color: var(--nx-muted); max-width: 40ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.plan-subtask { display: flex; flex-direction: column; gap: var(--nx-gap-1); min-width: 0; padding: 2px 0; }
+.plan-subtask-head { display: flex; align-items: center; gap: var(--nx-gap-1); min-width: 0; }
+.plan-brief-line { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--nx-muted); padding-left: 28px; }
+.plan-actions { display: flex; align-items: center; gap: var(--nx-gap-1); flex-wrap: wrap; }
+.plan-ids { display: flex; flex-wrap: wrap; gap: var(--nx-gap-1); }
+.plan-review .nx-table td { vertical-align: top; }
+.plan-review .nx-table th:first-child { width: 36px; }
+.plan-review .nx-table th:last-child { width: 96px; }
+.plan-review .nx-table td:first-child,
+.plan-review .nx-table td:last-child { padding-top: 5px; }

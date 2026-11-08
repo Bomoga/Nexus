@@ -1,14 +1,15 @@
 import { useLayoutEffect, useMemo, useRef } from "react";
-import { MeshBasicMaterial, Object3D, SphereGeometry } from "three";
+import { Color, MeshBasicMaterial, Object3D, SphereGeometry } from "three";
 import type { Group, InstancedMesh } from "three";
-import { useFrame } from "@react-three/fiber";
+import { useFrame, useThree } from "@react-three/fiber";
 import type { NexusEvent, TimeWindow } from "../../../src/contracts";
 import { eventPoint, shouldInstance, windowMs } from "../model";
 import { eventPointInto } from "../model/arcs";
 import { commitPlacements } from "../model/picking";
 import type { Vec3 } from "../model/arcs";
 import type { OrbitSpec } from "../model";
-import { PURPLE_HI } from "./colors";
+import { ACCENT_HI } from "./colors";
+import { FAR_OPACITY, applyFade, isFarSide } from "./fade";
 import { applyDrift, liveScale, useDriftNow } from "./live";
 import type { DriftData } from "./live";
 
@@ -30,7 +31,11 @@ const COMMIT_RADIUS = 0.05;
 // One geometry and one material per quality level, shared by every commit marker for the page lifetime.
 const sphereHi = new SphereGeometry(COMMIT_RADIUS, 14, 14);
 const sphereLo = new SphereGeometry(COMMIT_RADIUS, 8, 8);
-const markerMaterial = new MeshBasicMaterial({ color: PURPLE_HI });
+const markerMaterial = new MeshBasicMaterial({ color: ACCENT_HI });
+// Far side of the orbit: half opacity. Instanced markers dim through the per-instance color instead.
+const markerFar = new MeshBasicMaterial({ color: ACCENT_HI, transparent: true, opacity: FAR_OPACITY });
+const NEAR_TINT = new Color(1, 1, 1);
+const FAR_TINT = new Color(FAR_OPACITY, FAR_OPACITY, FAR_OPACITY);
 
 /** Commits as small spheres at their time angle. Individual meshes up to 2,000 (pickable), one InstancedMesh beyond. */
 export function Markers({ events, layout, now, window }: MarkersProps) {
@@ -66,8 +71,11 @@ interface DriftProps {
 
 function Individual({ placed, window, driftNow }: DriftProps) {
   const group = useRef<Group>(null);
+  const camera = useThree((s) => s.camera);
   useFrame(() => {
-    if (group.current) applyDrift(group.current, driftNow(), window, 0, performance.now());
+    if (!group.current) return;
+    applyDrift(group.current, driftNow(), window, 0, performance.now());
+    applyFade(group.current, camera, markerMaterial, markerFar);
   });
   return (
     <group ref={group}>
@@ -83,9 +91,12 @@ const tmp: Vec3 = [0, 0, 0];
 function Instanced({ placed, window, driftNow }: DriftProps) {
   const mesh = useRef<InstancedMesh>(null);
   const dummy = useMemo(() => new Object3D(), []);
+  const camera = useThree((s) => s.camera);
   const write = (m: InstancedMesh, now: number) => {
     const wms = windowMs(window);
     const perf = performance.now();
+    const parent = m.parent ?? m;
+    parent.updateWorldMatrix(true, false);
     for (let i = 0; i < placed.length; i++) {
       const d = placed[i].data;
       eventPointInto(tmp, d, d.atMs, now, wms);
@@ -93,9 +104,11 @@ function Instanced({ placed, window, driftNow }: DriftProps) {
       dummy.scale.setScalar(liveScale(d.eventId, perf));
       dummy.updateMatrix();
       m.setMatrixAt(i, dummy.matrix);
+      m.setColorAt(i, isFarSide(parent, dummy, camera) ? FAR_TINT : NEAR_TINT);
     }
     m.count = placed.length;
     m.instanceMatrix.needsUpdate = true;
+    if (m.instanceColor) m.instanceColor.needsUpdate = true;
   };
   useLayoutEffect(() => {
     if (mesh.current) write(mesh.current, driftNow());

@@ -153,4 +153,13 @@ describe("accountsBridgeHandlers", () => {
     Requests["models.list"].res.parse(await h["models.list"]({ role: "agent" }));
     expect((await h["models.list"]({})).length).toBeGreaterThan(0);
   });
+
+  it("models.list on a cold host verifies stored keys first, so the agent view's picker is not empty before accounts.list ran", async () => {
+    const s = setup({ secrets: { [secretKeyFor("anthropic")]: KEY } });
+    const h = accountsBridgeHandlers(s.service);
+    const models = await h["models.list"]({ role: "agent" });
+    expect(models.length).toBeGreaterThan(0);
+    expect(models.every(m => m.provider === "anthropic" && m.supportsTools)).toBe(true);
+    expect((await h["accounts.list"]()).find(a => a.provider === "anthropic")?.status).toBe("connected");
+  });
 });

@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import type { ChatMessage } from "../../src/contracts";
+import { Chip } from "../shared";
 import type { BridgeClient } from "../shared";
 import { BotMessage } from "./BotMessage";
 import { CodeRefChip } from "./CodeRefChip";
@@ -22,7 +23,7 @@ export function safeAvatarSrc(url: string | undefined): string | undefined {
   return undefined;
 }
 
-const URL_RE = /https?:\/\/[^\s<>]+/g;
+const URL_RE = /https:\/\/[^\s<>]+/g; // https only: the opener (ui.openExternal) refuses anything else, so http text stays plain
 const TRAILING_PUNCT = /[.,;:!?)\]}"']+$/;
 
 interface Part { text: string; link?: boolean }
@@ -74,18 +75,23 @@ export function MessageRow({ message, displayName, avatarUrl, onOpenLink, onOpen
       ))}
     </span>
   ) : null;
-  const replies = message.replyCount ? `↳ ${message.replyCount}` : undefined;
+  const count = message.replyCount ?? 0;
+  const replies = count ? `${count} ${count === 1 ? "REPLY" : "REPLIES"}` : undefined;
   return (
     <div className={`chat-row${message.pending ? " chat-row--pending" : ""}`} data-ts={message.ts}>
-      {src ? (
-        <img className="chat-avatar" src={src} alt="" width={16} height={16} />
-      ) : (
-        <span className="chat-avatar chat-avatar--initial" aria-hidden="true">
-          {initial}
-        </span>
-      )}
-      <span className="chat-name">{name}</span>
       <span className="chat-time nx-data">{formatTime(message.ts)}</span>
+      <span className="chat-who">
+        {src ? (
+          <img className="chat-avatar" src={src} alt="" width={16} height={16} />
+        ) : (
+          <span className="chat-avatar chat-avatar--initial" aria-hidden="true">
+            {initial}
+          </span>
+        )}
+        <span className="chat-name" title={name}>
+          {name}
+        </span>
+      </span>
       {message.sentVia === "bot" ? (
         <BotMessage message={message} bridge={bridge}>
           {body}
@@ -98,13 +104,17 @@ export function MessageRow({ message, displayName, avatarUrl, onOpenLink, onOpen
         </span>
       )}
       {replies ? (
-        onOpenThread ? (
-          <button type="button" className="chat-replies nx-data" onClick={() => onOpenThread(message)}>
-            {replies}
-          </button>
-        ) : (
-          <span className="chat-replies nx-data">{replies}</span>
-        )
+        <span className="chat-replies-cell">
+          {onOpenThread ? (
+            <Chip kind="accent" className="chat-replies" onClick={() => onOpenThread(message)} title="open thread">
+              {replies}
+            </Chip>
+          ) : (
+            <Chip kind="accent" className="chat-replies">
+              {replies}
+            </Chip>
+          )}
+        </span>
       ) : null}
     </div>
   );

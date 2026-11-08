@@ -106,6 +106,7 @@ export class TasksController {
 export function tasksBridgeHandlers(c: TasksController) {
   return {
     "tasks.createFromThread": async (r: Req<"tasks.createFromThread">): Promise<Res<"tasks.createFromThread">> => c.createFromThread(r.channelId, r.threadTs),
+    "tasks.create": async (r: Req<"tasks.create">): Promise<Res<"tasks.create">> => c.createManual(r.title, r.brief),
     "tasks.get": async (r: Req<"tasks.get">): Promise<Res<"tasks.get">> => c.get(r.taskId),
     "tasks.list": async (r: Req<"tasks.list">): Promise<Res<"tasks.list">> => c.list(r.status),
     "tasks.update": async (r: Req<"tasks.update">): Promise<Res<"tasks.update">> => c.update(r.taskId, { title: r.title, brief: r.brief }),

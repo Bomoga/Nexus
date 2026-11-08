@@ -105,4 +105,14 @@ describe("App thread wiring", () => {
     fireEvent.click(screen.getByText("CLOSE"));
     await waitFor(() => expect(container.querySelector(".chat-thread")).toBeNull());
   });
+
+  test("Escape closes the pane and the header counts the replies", async () => {
+    const host = createTestHost();
+    const onClose = vi.fn();
+    const { container } = render(<ThreadPane bridge={host.client} channelId="C_DEMO" threadTs={THREAD} onClose={onClose} />);
+    await screen.findByText("can an agent take this?");
+    expect(container.querySelector(".nx-panel-header")?.textContent).toMatch(/^THREAD\s*1/);
+    fireEvent.keyDown(screen.getByLabelText("reply"), { key: "Escape" });
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
 });

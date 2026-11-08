@@ -68,6 +68,17 @@ _(filled at the end)_
 - Pending first (oldest first), then a 20 px DECIDED separator, then decided cards with the swarm verdict Badge (LOOKS GOOD / CONCERNS / DO NOT MERGE / REVIEW UNAVAILABLE), the judges table and the "approved by slack … at T+" line.
 - The swarm verdict only changes the look; decisions are human clicks only; a decided approval never reopens. Narrow shot: `screens/after/approvals-narrow.png`.
 
+### Task editor and plan review (`webviews/task`, `webviews/plan`)
+
+| before | after |
+|---|---|
+| ![task before](screens/before/task.png) | ![task after](screens/after/task.png) |
+| ![plan before](screens/before/plan.png) | ![plan after](screens/after/plan.png) |
+
+- Task editor: Regions TASK (status Badge, source kind, title, code refs) · SOURCE (the quoted thread as a `.nx-quote` block under an UNTRUSTED / QUOTED / READ-ONLY label) · BRIEF (mono textarea with a line and character count) · MODEL (kit Select; data-use chips LEAVES MACHINE / NOT USED FOR TRAINING / MAY BE USED FOR TRAINING / UNKNOWN, with Prune forcing LEAVES MACHINE + UNKNOWN) · START (primary) and BREAK INTO SUBTASKS.
+- Plan review: PLAN header with the source title and a PROPOSED / ACCEPTED / REJECTED Badge, subtasks as a Table (`#` right-aligned mono · TITLE · DEPENDS ON "1, 2"), briefs labeled model-written, ACCEPT primary / REJECT danger only while proposed, created task ids after acceptance.
+- Restyle only: the same bridge requests, brief builder and id resolution; 600 px shot in `screens/after/task-narrow.png`.
+
 ## 3. Decisions made for Adrian
 
 _(see also progress/lane-1.md "Decisions (design night)")_

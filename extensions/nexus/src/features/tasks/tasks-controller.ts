@@ -112,3 +112,22 @@ export function tasksBridgeHandlers(c: TasksController) {
     "tasks.update": async (r: Req<"tasks.update">): Promise<Res<"tasks.update">> => c.update(r.taskId, { title: r.title, brief: r.brief }),
   };
 }
+
+/**
+ * The Slack view's MAKE TASK sends tasks.createFromThread (the bridge has no command request), so the task editor opens after
+ * that request as it does after the nexus.makeTaskFromThread command. A failure to open never fails the request: the task exists.
+ */
+export function openEditorAfterCreate<H extends { "tasks.createFromThread": (r: Req<"tasks.createFromThread">) => Promise<Res<"tasks.createFromThread">> }>(handlers: H, open?: (taskId: string) => void): H {
+  if (!open) {
+    return handlers;
+  }
+  const create = handlers["tasks.createFromThread"];
+  return {
+    ...handlers,
+    "tasks.createFromThread": async (r: Req<"tasks.createFromThread">) => {
+      const task = await create(r);
+      try { open(task.id); } catch { /* the editor is a convenience; the draft task is already stored */ }
+      return task;
+    },
+  };
+}

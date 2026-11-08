@@ -360,6 +360,27 @@ describe("pending echoes", () => {
 });
 
 describe("echo lifetime", () => {
+  it("an echo shows what Slack will show, so a live event that beats the send result retires it by text (entities, code-ref links)", async () => {
+    const link = "<nexus://nexus.nexus/coderef/ws/" + "a".repeat(40) + "/src/a.ts/1-2|src/a.ts:1-2>";
+    for (const [typed, slackShows] of [["use &lt;b&gt; in html", "use <b> in html"], ["a &amp; b", "a & b"], [`${link}\n\`\`\`\nMap<string> x\n\`\`\``, "src/a.ts:1-2\n```\nMap<string> x\n```"]] as const) {
+      const fake = new FakeSlack();
+      const cache = new SlackCache({ dir: fs.mkdtempSync(path.join(dir, "e-")), fetcher: fake });
+      const svc = cache.wrap(fake);
+      const me = (await fake.status()).postsAs!;
+      let release!: (m: ChatMessage) => void;
+      vi.spyOn(fake, "postAsUser").mockImplementation(() => new Promise(r => { release = r; }));
+      const sending = svc.postAsUser({ channelId: CH, text: typed, clientId: "c1" });
+      await vi.waitFor(() => expect(release).toBeDefined());
+      const echo = (await cache.history(CH)).messages.find(m => m.pending);
+      expect(echo?.text, typed).toBe(slackShows);
+      const live = msg(5, slackShows, { author: { id: me.userId, name: me.name, isBot: false } });
+      cache.ingest(live);
+      expect((await cache.history(CH)).messages.filter(m => m.pending), typed).toEqual([]);
+      release(live);
+      await sending;
+    }
+  });
+
   it("a live event with the echo's text retires it before the send result arrives", async () => {
     const c = new SlackCache({ dir, fetcher: source([]).svc });
     c.ingest(msg(99, "same words", { pending: true, clientId: "c9" }));   // author U_A, the sender

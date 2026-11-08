@@ -32,6 +32,52 @@ describe("SlackSocket events", () => {
     expect(events[0].type).toBe("message");
   });
 
+  it("serves display text for mrkdwn, resolves mentions, keeps code refs from the raw text, and survives a failed lookup", async () => {
+    const { bolt, socket, events } = setup();
+    await socket.start();
+    await bolt.message({ type: "message", channel: "C1", user: "U_ADRIAN", ts: "10.000300", text: `<@U_ADRIAN> Map&lt;string&gt; <${encodeCodeRef(fx.codeRef)}|here> <@U_NOBODY> &lt;@U1&gt;` });
+    expect(events).toHaveLength(1);
+    const msg = (events[0] as { message: ChatMessage }).message;
+    expect(msg.text).toBe("@Adrian Map<string> here @U_NOBODY <@U1>");
+    expect(msg.codeRefs).toEqual([fx.codeRef]);
+  });
+
+  it("converts an edited message the same way, with code refs from the raw text", async () => {
+    const { bolt, socket, events } = setup();
+    await socket.start();
+    await bolt.message({ type: "message", subtype: "message_changed", hidden: true, channel: "C1", ts: "12.000901", event_ts: "12.000901", message: { type: "message", user: "U_ADRIAN", ts: "12.000100", text: `<@U_BRANDON> a &amp; b <${encodeCodeRef(fx.codeRef)}|ref>` } });
+    const msg = (events[0] as { message: ChatMessage }).message;
+    expect(events[0].type).toBe("message_changed");
+    expect(msg.text).toBe("@Brandon a & b ref");
+    expect(msg.codeRefs).toEqual([fx.codeRef]);
+  });
+
+  it("looks up at most 20 mentioned users per message, and none that carry their own label", async () => {
+    const { bolt, socket, events } = setup();
+    await socket.start();
+    const many = Array.from({ length: 50 }, (_v, i) => `<@U_X${i}>`).join(" ");
+    await bolt.message({ type: "message", channel: "C1", user: "U_ADRIAN", ts: "15.1", text: `${many} <@U_LABELED|bob>` });
+    const asked = bolt.info.mock.calls.map(c => c[0].user);
+    expect(asked.filter(u => u.startsWith("U_X"))).toHaveLength(20);
+    expect(asked).not.toContain("U_LABELED");
+    const msg = (events[0] as { message: ChatMessage }).message;
+    expect(msg.text).toContain("@U_X49");
+    expect(msg.text).toContain("@bob");
+  });
+
+  it("does not hold a live message longer than the mention-lookup limit when users.info hangs", async () => {
+    const { bolt, socket, events } = setup();
+    await socket.start();
+    const real = bolt.info.getMockImplementation()!;
+    bolt.info.mockImplementation(a => (a.user === "U_SLOW" ? new Promise(() => undefined) : real(a)));
+    const t0 = Date.now();
+    await bolt.message({ type: "message", channel: "C1", user: "U_ADRIAN", ts: "15.2", text: "ping <@U_SLOW>" });
+    expect(Date.now() - t0).toBeLessThan(3000);
+    expect((events[0] as { message: ChatMessage }).message.text).toBe("ping @U_SLOW");
+    await bolt.message({ type: "message", channel: "C1", user: "U_ADRIAN", ts: "15.3", text: "again <@U_SLOW>" });
+    expect(bolt.info.mock.calls.filter(c => c[0].user === "U_SLOW")).toHaveLength(1);   // the hanging call is not started again
+  }, 10_000);
+
   it("maps a person's own Nexus post (user + bot_id + app_id) to human", async () => {
     const { bolt, socket, events } = setup();
     await socket.start();

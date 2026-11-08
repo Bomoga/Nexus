@@ -1034,7 +1034,7 @@ const registry = Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Con
 			'chat.agent.enabled': false,
 			'workbench.startupEditor': 'none', // the Nexus home is opened by the Nexus extension
 			'workbench.welcomePage.experimentalOnboarding': false,
-			'workbench.secondarySideBar.defaultVisibility': 'hidden',
+			'workbench.secondarySideBar.defaultVisibility': 'visible', // the Nexus agent view lives in the secondary side bar (extensions/nexus contributes nexus-agent)
 			'security.workspace.trust.enabled': false, // Restricted Mode would stop vscode.git (untrustedWorkspaces.supported = false)
 			'workbench.colorTheme': 'Nexus Dark',
 			'telemetry.telemetryLevel': 'off'

@@ -23,8 +23,8 @@ The acceptance test for the product (`CLAUDE.md` §8, sponsor beats from `docs/P
 
 | # | Presenter does | Brandon (phone) | What the audience sees |
 |---|---|---|---|
-| 0 | Click **Sign in**. Auth0 Universal Login opens in the browser; click through; return to Nexus. | — | Back in Nexus, status line reads "posting as Adrian · via Token Vault". No token was pasted. |
-| 1 | Nexus is already on the globe. Type `discount` in the event search, press Enter. The globe tracks the event. Click it. | — | The commit opens in a diff view. Merges arc into `main`. |
+| 0 | Click **Sign in**. Auth0 Universal Login opens in the browser; click through; return to Nexus. | — | Back in Nexus, signed in. The Slack panel's status line reads "posting as Adrian via manual" (Slack tokens were pasted once beforehand with **Nexus: Connect Slack**; Token Vault is roadmap). |
+| 1 | Nexus is already on the globe. Type `cart module` in the event search, press Enter (the bug arrives in the commit "add cart module"; no commit subject contains "discount"). The globe tracks the event. Click it. | — | The commit opens in a diff view. Merges arc into `main`. |
 | 2 | Click the status bar model item. Show models from Anthropic and Google Gemini with their data-use labels. Pick the Anthropic model. Say once: "keys connect providers today; account linking is roadmap." Flip **Optimize with Prune** on. | — | Label changes to "unknown · leaves machine". |
 | 3 | Open `src/cart.ts`, select lines **42–48**, right-click **Share to Slack**. | Sees the snippet and the `nexus://` link in `#nexus-demo`, replies in the thread: **"can an agent take this?"** | The message posts as Adrian in the Slack view; Brandon's reply appears live. |
 | 4 | In the Slack view, click **MAKE TASK** on the thread. Edit one line of the brief (add "run the tests"). Click **START**. | — | A draft task becomes a running session. *(Optional 4b, if Tier 3 is solid: on the long thread click **Break into subtasks**, review the 3-subtask plan, **ACCEPT**; two cubes start orbiting.)* |

@@ -37,7 +37,7 @@ test/componentFixtures/.screenshots/*
 dist
 .playwright-cli
 .playwright-mcp
-.claude/
+.claude/*
 .agents/agents/*.local.md
 .github/agents/*.local.md
 .agents/agents/*.local.agent.md
@@ -60,3 +60,6 @@ CLAUDE.local.md
 
 # but the template is tracked
 !.env.example
+
+# design night: the Vite dev-server launch config is shared (CLAUDE.md is tracked for the same reason)
+!.claude/launch.json

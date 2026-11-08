@@ -1,5 +1,6 @@
 // Lane 3's views, panels and the commands that open them, with VS Code injected so they can be unit-tested.
-// src/register/lane-3.ts supplies the real pieces.
+// src/register/lane-3.ts supplies the real pieces. Lane 1 runs the design pass on these under Elkin's handoff
+// (progress/lane-3.md "HANDOFF TO ADRIAN"); the layout follows docs/playbooks/design-night.md §4.
 import type { WebviewHost } from "../../bridge/host";
 
 /** Webview ids. "nexus.home" is the id Lane 1's core change hides the tab and title for (editor.ts). */
@@ -9,7 +10,10 @@ export const SESSION_PANEL = "nexus.session";
 export const TASK_PANEL = "nexus.task";
 export const PLAN_PANEL = "nexus.plan";
 export const CHAT_VIEW = "nexus.chat";
+export const GIT_VIEW = "nexus.git";
 export const APPROVALS_VIEW = "nexus.approvals";
+/** The agent view in the secondary side bar (container `nexus-agent`); it hosts the `session` entry as a view. */
+export const AGENT_VIEW = "nexus.agent";
 
 export interface PanelLike {
   readonly webview: { html: string };
@@ -17,13 +21,25 @@ export interface PanelLike {
   onDidDispose(cb: () => void): { dispose(): void };
 }
 
-export interface Lane3Deps {
-  /** Host one webview entry (media/<entry>/) under a view or panel id. */
-  makeHost(viewId: string, entry: string): Pick<WebviewHost, "register"> & { openPanel(title: string): PanelLike };
-  registerCommand(id: string, fn: (...args: unknown[]) => unknown): { dispose(): void };
-  executeCommand(id: string): Thenable<unknown>;
-  showError(message: string): void;
+/** The slice of a resolved vscode.WebviewView this file uses. */
+export interface ViewLike {
+  readonly webview: { html: string };
+  show?(preserveFocus?: boolean): void;
+  onDidDispose(cb: () => void): { dispose(): void };
 }
+
+export interface Lane3Deps {
+  /** Host one webview entry (media/<entry>/) under a view or panel id. `onResolveView` fires once per resolved view. */
+  makeHost(viewId: string, entry: string, onResolveView?: (view: ViewLike) => void): Pick<WebviewHost, "register"> & { openPanel(title: string): PanelLike };
+  registerCommand(id: string, fn: (...args: unknown[]) => unknown): { dispose(): void };
+  executeCommand(id: string, ...args: unknown[]): Thenable<unknown>;
+  showError(message: string): void;
+  /** Per-workspace memory (vscode workspaceState) for one-time behaviour such as the first reveal of the agent view. */
+  workspaceState?: { get<T>(key: string): T | undefined; update(key: string, value: unknown): Thenable<void> };
+}
+
+/** workspaceState key: the agent view was revealed once in this workspace (after that the user's layout choice stands). */
+export const AGENT_REVEALED_KEY = "nexus.agentViewRevealed";
 
 /** Session and task ids arrive from URIs and notifications: short, plain characters only (they end up in tab titles and HTML). */
 export function isPanelId(id: unknown): id is string {
@@ -37,10 +53,20 @@ export function escapeAttr(s: string): string {
 
 /**
  * Put `data-<name>="<value>"` on the page's <body> so the webview can read its id (webviews/session/sessionId.ts and
- * webviews/task/taskId.ts read it first). The host builds a plain <body>; this rewrites it once, before the page runs.
+ * webviews/task/taskId.ts read it first). The host builds a plain <body>; this rewrites it, replacing an earlier value of
+ * the same attribute, so a view can be pointed at another id (the page reloads and replays from seq 0).
  */
 export function withBodyData(html: string, name: string, value: string): string {
-  return html.replace("<body>", `<body data-${name}="${escapeAttr(value)}">`);
+  const attr = `data-${name}`;
+  return html.replace(/<body\b([^>]*)>/, (_m, attrs: string) => {
+    const kept = attrs.replace(new RegExp(`\\s*${attr}="[^"]*"`), "");
+    return `<body${kept} ${attr}="${escapeAttr(value)}">`;
+  });
+}
+
+/** The value of `data-<name>` on the page's <body>, if any. */
+export function readBodyData(html: string, name: string): string | undefined {
+  return new RegExp(`<body\\b[^>]*\\sdata-${name}="([^"]*)"`).exec(html)?.[1];
 }
 
 /** Lane 3's views, panels and commands, built on injected VS Code pieces so they can be unit-tested. */
@@ -48,6 +74,9 @@ export class Lane3Views {
   private readonly disposables: { dispose(): void }[] = [];
   private home: PanelLike | undefined;
   private timeline: PanelLike | undefined;
+  private agentView: ViewLike | undefined;
+  /** The session the agent view should show once it resolves (or re-show after a reload). */
+  private agentSessionId: string | undefined;
   private readonly sessions = new Map<string, PanelLike>();
   private readonly tasks = new Map<string, PanelLike>();
   private readonly plans = new Map<string, PanelLike>();
@@ -58,7 +87,9 @@ export class Lane3Views {
     const d = this.deps;
     this.disposables.push(
       d.makeHost(CHAT_VIEW, "chat").register(),
+      d.makeHost(GIT_VIEW, "git").register(),
       d.makeHost(APPROVALS_VIEW, "approvals").register(),
+      d.makeHost(AGENT_VIEW, "session", (view) => this.onAgentViewResolved(view)).register(),
       d.registerCommand("nexus.openHome", () => this.openHome()),
       d.registerCommand("nexus.searchEvents", () => this.openHome()),
       d.registerCommand("nexus.openTimeline", () => this.openTimeline()),
@@ -72,10 +103,28 @@ export class Lane3Views {
           d.showError("Open session needs a valid session id (open it from a thread, the globe or a notification).");
           return;
         }
-        this.openSession(sessionId);
+        return this.openSession(sessionId);
       }),
     );
     return this;
+  }
+
+  /**
+   * Show the secondary side bar with the Agent view the first time a workspace opens. The workbench computes the bar's
+   * startup visibility before this extension activates (onStartupFinished), finds no view container in it (the built-in
+   * Chat is disabled), records it as empty and hides it; the core default `workbench.secondarySideBar.defaultVisibility:
+   * visible` is not enough on its own. Done once per workspace (workspaceState), so a user who hides the bar is not
+   * fought on the next start. Focus stays where it was.
+   */
+  async revealAgentViewOnce(): Promise<void> {
+    const state = this.deps.workspaceState;
+    if (!state || state.get<boolean>(AGENT_REVEALED_KEY)) return;
+    try {
+      await this.deps.executeCommand(`${AGENT_VIEW}.focus`, { preserveFocus: true });
+      await state.update(AGENT_REVEALED_KEY, true);
+    } catch {
+      // no secondary side bar (or the view is not registered): nothing to reveal, try again next start
+    }
   }
 
   /** The globe home: at most one, revealed if already open. */
@@ -87,9 +136,19 @@ export class Lane3Views {
     this.timeline = this.single(this.timeline, TIMELINE_PANEL, "timeline", "Nexus Timeline", (p) => (this.timeline = p));
   }
 
-  /** One session panel per session id. */
-  openSession(sessionId: string): void {
-    this.keyed(this.sessions, sessionId, SESSION_PANEL, "session", `Session ${sessionId}`, "session-id");
+  /**
+   * Show a session in the agent view (secondary side bar): the view's <body data-session-id> is (re)set, which reloads the
+   * page and replays from seq 0, then the view is focused. If the view cannot be focused (no secondary side bar), the
+   * session opens as an editor panel instead, one per session id.
+   */
+  async openSession(sessionId: string): Promise<void> {
+    this.agentSessionId = sessionId;
+    if (this.agentView) this.pointAgentView(this.agentView, sessionId);
+    try {
+      await this.deps.executeCommand(`${AGENT_VIEW}.focus`);
+    } catch {
+      this.keyed(this.sessions, sessionId, SESSION_PANEL, "session", `Session ${sessionId}`, "session-id");
+    }
   }
 
   /** The task editor for a draft task (for Lane 1's "Make task" flow). One panel per task id. */
@@ -112,6 +171,22 @@ export class Lane3Views {
 
   dispose(): void {
     this.disposables.splice(0).forEach((x) => x.dispose());
+  }
+
+  private onAgentViewResolved(view: ViewLike): void {
+    this.agentView = view;
+    const listener = view.onDidDispose(() => {
+      if (this.agentView === view) this.agentView = undefined;
+      const i = this.disposables.indexOf(listener);
+      if (i >= 0) this.disposables.splice(i, 1);
+    });
+    this.disposables.push(listener);
+    if (this.agentSessionId) this.pointAgentView(view, this.agentSessionId);
+  }
+
+  private pointAgentView(view: ViewLike, sessionId: string): void {
+    if (readBodyData(view.webview.html, "session-id") === sessionId) return;
+    view.webview.html = withBodyData(view.webview.html, "session-id", sessionId);
   }
 
   private single(current: PanelLike | undefined, viewId: string, entry: string, title: string, forget: (p: undefined) => void): PanelLike {

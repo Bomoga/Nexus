@@ -6,20 +6,17 @@ html, body, #root { height: 100%; }
 .chat-left { width: 180px; flex: none; border-right: var(--nx-border-w) solid var(--nx-border); overflow-y: auto; background: var(--nx-surface); }
 .chat-right { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 
-.chat-channels { list-style: none; margin: 0; padding: 0; }
-.chat-channel {
-  display: flex; align-items: center; justify-content: space-between; gap: var(--nx-gap-1);
-  width: 100%; height: var(--nx-row-h); padding: 0 var(--nx-pad-x);
-  border: 0; border-left: 2px solid transparent; background: transparent; color: var(--nx-fg);
-  font: inherit; font-size: var(--nx-font-ui-sm); text-align: left; cursor: pointer;
-}
-.chat-channel:hover { background: var(--nx-hover-bg); }
-.chat-channel:focus-visible { outline: var(--nx-border-w) solid var(--nx-focus); outline-offset: -1px; }
-.chat-channel--selected { border-left-color: var(--nx-accent); background: var(--nx-hover-bg); }
-.chat-channel-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.chat-channel-name .nx-data { margin-right: 2px; text-transform: none; }
-.chat-unread { color: var(--nx-fg); font-size: var(--nx-font-ui-sm); }
+.chat-channels { display: flex; flex-direction: column; }
+.chat-channel-list { display: flex; flex-direction: column; }
+.chat-channels .nx-list-row { border-bottom-color: transparent; }
+.chat-channels .nx-list-row-leading { width: 8px; text-transform: none; }
+.chat-unread { color: var(--nx-fg); font-size: var(--nx-font-ui-sm); font-weight: 700; }
 .chat-dot { width: 6px; height: 6px; flex: none; background: var(--nx-pending); }
+
+/* Narrow side bar: the channel column shrinks, nothing else changes. */
+@media (max-width: 479px) {
+  .chat-left { width: 140px; }
+}
 
 .chat-history-pane { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .chat-history-head { height: var(--nx-toolbar-h); display: flex; align-items: center; justify-content: flex-end; padding: 0 var(--nx-pad-x); border-bottom: var(--nx-border-w) solid var(--nx-border); }

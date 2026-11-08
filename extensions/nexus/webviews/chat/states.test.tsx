@@ -28,7 +28,7 @@ describe("chat states", () => {
     render(<StatusBar bridge={{ request, subscribe: vi.fn() } as unknown as BridgeClient} />);
     expect(await screen.findByText("slack isn't connected yet")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "RETRY" }));
-    await waitFor(() => expect(screen.getByText("posting as Adrian via manual")).toBeTruthy());
+    await waitFor(() => expect(screen.getByText("slack connected · token: manual")).toBeTruthy());
   });
 
   test("SEND shows its Enter hint", () => {

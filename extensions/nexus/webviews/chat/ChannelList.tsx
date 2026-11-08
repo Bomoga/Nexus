@@ -1,9 +1,9 @@
 import { useEffect, useState } from "react";
 import type { Channel } from "../../src/contracts";
-import { EmptyState, friendlyError, getBridge } from "../shared";
+import { EmptyState, ListRow, PanelHeader, StatusLine, friendlyError, getBridge } from "../shared";
 import type { BridgeClient } from "../shared";
 
-export const INVITE_TOOLTIP = "invite @Nexus for live updates";
+export const INVITE_TOOLTIP = "bot not in channel: no live updates";
 
 export interface ChannelListProps {
   bridge?: BridgeClient;
@@ -35,27 +35,31 @@ export function ChannelList({ bridge, selectedId, onSelect, onLoaded }: ChannelL
   }, [bridge, attempt]);
 
   if (failure) return <EmptyState message={failure} action={{ label: "RETRY", onClick: () => setAttempt((n) => n + 1) }} />;
-  if (!channels) return <div className="chat-channels" />;
+  if (!channels) return <StatusLine>… loading</StatusLine>;
   if (channels.length === 0) return <EmptyState message="no channels" />;
   return (
-    <ul className="chat-channels" aria-label="channels">
-      {channels.map((c) => (
-        <li key={c.id}>
-          <button
-            type="button"
-            className={`chat-channel${c.id === selectedId ? " chat-channel--selected" : ""}`}
+    <div className="chat-channels">
+      <PanelHeader title="CHANNELS" count={channels.length} />
+      <div className="chat-channel-list" role="group" aria-label="channels">
+        {channels.map((c) => (
+          <ListRow
+            key={c.id}
+            small
             aria-current={c.id === selectedId ? "true" : undefined}
+            selected={c.id === selectedId}
             onClick={() => onSelect(c)}
-          >
-            <span className="chat-channel-name">
-              <span className="nx-data">{c.isPrivate ? "!" : "#"}</span>
-              {c.name}
-            </span>
-            {c.botIsMember ? null : <span className="chat-dot" title={INVITE_TOOLTIP} />}
-            {c.unreadCount ? <span className="chat-unread nx-data">{c.unreadCount}</span> : null}
-          </button>
-        </li>
-      ))}
-    </ul>
+            leading={<span className="nx-data">{c.isPrivate ? "!" : "#"}</span>}
+            title={c.name}
+            titleText={c.name}
+            trailing={
+              <>
+                {c.botIsMember ? null : <span className="chat-dot" role="img" title={INVITE_TOOLTIP} aria-label={INVITE_TOOLTIP} />}
+                {c.unreadCount ? <span className="chat-unread nx-data">{c.unreadCount}</span> : null}
+              </>
+            }
+          />
+        ))}
+      </div>
+    </div>
   );
 }

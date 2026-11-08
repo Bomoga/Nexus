@@ -23,6 +23,8 @@ class FakeRemote implements SyncClient {
   tables = Object.fromEntries(SYNC_TABLES.map(t => [t, [] as Row[]])) as Record<string, Row[]>;
   down = false;
   log: string[] = [];
+  /** Every query with its parameters (log keeps just the text). */
+  calls: { text: string; params: unknown[] }[] = [];
   onPoll?: (table: string) => void;
   hidden = new Set<string>();   // "agent_events:ses:seq" rows not yet visible (uncommitted)
   private keyOf(t: string, r: Row): string { return t === "agent_events" ? `${r.session_id}:${r.seq}` : String(t === "model_call_receipts" ? r.call_id : r.id); }
@@ -36,6 +38,7 @@ class FakeRemote implements SyncClient {
 
   async query(text: string, params: unknown[] = []) {
     this.log.push(text === SYNC_SQL.probe ? "probe" : text);
+    this.calls.push({ text, params });
     if (this.down) throw Object.assign(new Error("connection refused"), { code: "ECONNREFUSED" });
     if (text === SYNC_SQL.probe) return { rows: [], rowCount: 0 };
     for (const t of SYNC_TABLES) {
@@ -358,6 +361,9 @@ describe("sync: long sessions", () => {
     }
     expect((await local.agentEvents("ses_long", 0)).map(e => e.seq)).toEqual(Array.from({ length: 30 }, (_, i) => i));
     expect(reads.mock.calls.filter(([sid]) => sid === "ses_long").length).toBeLessThanOrEqual(2);   // the first load (+ the check above)
+    // and each tick asks the shared store only for what is new, not for everything since the first load
+    const froms = remote.calls.filter(c => c.text === SYNC_SQL.agentFrom && c.params[0] === "ses_long").map(c => Number(c.params[1]));
+    expect(froms.slice(-3)).toEqual([27, 28, 29]);
   });
 });
 

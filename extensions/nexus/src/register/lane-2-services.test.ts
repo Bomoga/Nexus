@@ -312,6 +312,18 @@ describe("buildLane2", () => {
     expect(used.filter(u => u.startsWith("xoxp-pasted")).length).toBeGreaterThan(0);
   });
 
+  it("leaves Token Vault alone when Slack refuses a pasted token", async () => {
+    const makeApi = () => new Proxy({}, { get: () => new Proxy({}, { get: () => async () => { throw Object.assign(new Error("invalid_auth"), { data: { error: "invalid_auth" } }); } }) });
+    const vault = { getUserToken: vi.fn(async () => null), invalidate: vi.fn() };
+    let t = 1_000_000;
+    const { built } = setup({ tokenVault: vault, now: () => t, slackSeams: { webOptions: { makeApi } } as never }, { [SLACK_SECRET_KEYS.user]: "xoxp-pasted" });
+    await built.served.status();
+    expect(vault.invalidate).not.toHaveBeenCalled();
+    t += 61_000;   // the vault's own miss window ends; a refused pasted token must not have extended it
+    await built.served.status();
+    expect(vault.getUserToken).toHaveBeenCalledTimes(2);
+  });
+
   it("puts Lane 1's final summary in the closed progress message when it calls finish before storing the end", async () => {
     const { store, built, api } = setup({ git: new FakeGit() }, { [SLACK_SECRET_KEYS.bot]: "xoxb-1", [SLACK_SECRET_KEYS.app]: "xapp-1" });
     const task = { ...fx.task, source: { kind: "thread" as const, channelId: "C9", threadTs: "40.000100" } };

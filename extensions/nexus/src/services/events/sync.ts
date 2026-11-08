@@ -359,10 +359,10 @@ export function createSync(deps: SyncDeps): Sync {
       const seq = Number(r.seq);
       if (have.has(seq)) return;
       const e = mappers.agent_events(r);
-      if (!e) { bad.add(seq); have.add(seq); if (seq > max) max = known.max = seq; return; }   // counted once; never a gap behind it
+      if (!e) { bad.add(seq); have.add(seq); if (seq > max) { max = seq; known.max = Math.max(known.max, seq); } return; }   // counted once; never a gap behind it
       await quiet("agent_events", `${sessionId}:${seq}`, "put", () => local.appendAgentEvent(e as AgentEvent));
       have.add(seq);
-      if (seq > max) max = known.max = seq;
+      if (seq > max) { max = seq; known.max = Math.max(known.max, seq); }
       stats.applied++;
     };
 

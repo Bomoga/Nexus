@@ -112,7 +112,7 @@ export interface Lane2Built extends Pick<Lane2Services, "approvalHooks"> {
   observedStore: EventStore;
   /**
    * The session's single Slack progress message; `update` is Lane 1's ProgressPort. Needs a repository (for link ids).
-   * `finish(session, summary)` adds the agent's final summary (shown labeled model-written): call it just BEFORE storing the
+   * `finish(session, summary)` adds the agent's final summary (shown labeled model-written): AWAIT it just before storing the
    * session's terminal status. Storing the terminal status closes the message anyway, without a summary, if nobody did.
    */
   progress?: Pick<ProgressMessages, "update" | "finish">;

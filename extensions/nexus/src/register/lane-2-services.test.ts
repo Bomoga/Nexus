@@ -7,6 +7,7 @@ import { FakeGit } from "../services/git/fake-git";
 import type { BotApi } from "../services/slack/bot";
 import { readFileSync } from "node:fs";
 import path from "node:path";
+import { createAvatarResolver } from "../services/slack/avatars";
 import { buildLane2, SLACK_SECRET_KEYS, userAllowlist, type Lane2Inputs } from "./lane-2-services";
 
 function bot() {
@@ -352,5 +353,25 @@ describe("buildLane2", () => {
     expect(texts.some(t => t.includes("Fixed the discount for qty"))).toBe(true);
     await new Promise(r => setTimeout(r, 20));
     expect(JSON.stringify(updates().at(-1)?.[0])).toContain("Fixed the discount for qty");   // the later store write does not edit it away
+  });
+
+  it("slack.users never returns a remote avatarUrl: a data URI when fetched, none otherwise", async () => {
+    const users = [
+      { id: "U1", name: "a", displayName: "A", isBot: false, avatarUrl: "https://avatars.slack-edge.com/a.png" },
+      { id: "U2", name: "b", displayName: "B", isBot: false, avatarUrl: "https://avatars.slack-edge.com/b.png" },
+      { id: "U3", name: "c", displayName: "C", isBot: false, avatarUrl: "https://evil.example/c.png" },
+    ];
+    const fetch = vi.fn(async (url: string) => (url.endsWith("a.png") ? new Response(new Uint8Array([1, 2, 3]), { headers: { "content-type": "image/png" } }) : new Response("no", { status: 404 })));
+    const { router, built } = setup({ avatars: createAvatarResolver({ fetch }) });
+    vi.spyOn(built.served, "users").mockResolvedValue(users);
+    const out = (await router.call("slack.users", {})) as { id: string; avatarUrl?: string }[];
+    expect(out.map(u => u.avatarUrl)).toEqual(["data:image/png;base64,AQID", undefined, undefined]);
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("slack.users drops remote avatars with the default resolver when nothing can be fetched", async () => {
+    const { router, built } = setup();
+    vi.spyOn(built.served, "users").mockResolvedValue([{ id: "U9", name: "x", displayName: "X", isBot: false, avatarUrl: "http://evil.example/x.png" }]);
+    expect(await router.call("slack.users", {})).toEqual([{ id: "U9", name: "x", displayName: "X", isBot: false }]);
   });
 });

@@ -6,6 +6,7 @@ import { ProcessHost, forkAgentProcess } from "../agent/process-host";
 import { FakeBridgeServer } from "../bridge/fake-bridge-server";
 import type { BridgeRouter } from "../bridge/types";
 import { OptimizerService } from "../features/accounts/optimizer";
+import { startPruneStatus } from "../features/accounts/prune-status";
 import type { AccountsService } from "../features/accounts/accounts-service";
 import { secretKeyFor } from "../features/accounts/accounts-service";
 import type { ModelPicker } from "../features/accounts/model-picker";
@@ -99,6 +100,8 @@ export function registerFeatures(context: vscode.ExtensionContext, accounts: Acc
   };
   const optimizer = new OptimizerService({ state: context.globalState, store: l2.store, getPruneKey: () => Promise.resolve(context.secrets.get(secretKeyFor("prune"))) });
   picker.attachOptimizer({ get: () => optimizer.get(), toggle: async () => { await optimizer.toggle(); } });
+  const pruneBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 99);
+  context.subscriptions.push(pruneBar, { dispose: startPruneStatus(optimizer, { set: (text, tooltip) => { if (text) { pruneBar.text = text; pruneBar.tooltip = tooltip; pruneBar.show(); } else pruneBar.hide(); } }, m => console.warn(`Nexus: ${m}`)) });
   const entry = join(context.extensionPath, "out", "agent-process", "main.js");
 
   // Phone approval (CIBA): inert unless nexus.ciba.serviceUrl is set and the user is signed in. The controller exists only after composeLane1, so it is reached lazily.

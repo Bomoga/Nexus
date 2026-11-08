@@ -33,6 +33,7 @@ export function safeCommandUi(inner: CommandUi): CommandUi {
   return {
     info: safe.info,
     error: safe.error,
+    ...(inner.openSession ? { openSession: (id: string) => inner.openSession?.(id) } : {}),
     pickApproval: items => inner.pickApproval(items.map(i => ({ id: i.id, label: clean(i.label), detail: clean(i.detail) }))),
   };
 }

@@ -11,6 +11,8 @@ export interface CommandUi {
   error(message: string): void;
   /** Lets the person choose one of several waiting approvals; undefined when they dismiss it. */
   pickApproval(items: Array<{ id: string; label: string; detail: string }>): Promise<string | undefined>;
+  /** Shows a session in the agent view. */
+  openSession?(sessionId: string): void;
 }
 
 const failure = (e: unknown, fallback: string) => (e instanceof Error && e.message ? plain(e.message) : fallback);
@@ -42,6 +44,17 @@ export function lane1Commands(lane: Lane1, ui: CommandUi, identity: () => string
       if (!channelId || !threadTs) { ui.info("Choose \"Make task\" on a thread in the Slack view."); return; }
       try {
         const task = await lane.tasks.createFromThread(channelId, threadTs);
+        // "Make task" means an agent works on it: start one with the model chosen in the status bar and show it. Without a
+        // chosen model (or when a session is already running) the draft opens in the task editor to choose and start there.
+        const model = lane.agentModel?.();
+        if (model) {
+          try {
+            const session = await lane.sessions.start(task.id, model);
+            ui.openSession?.(session.id);
+            ui.info(`Agent started on: ${plain(task.title, 200)}`);
+            return;
+          } catch (e) { ui.error(`${failure(e, "The agent did not start.")} The task is saved as a draft.`); }
+        }
         if (openTaskEditor) {
           try { openTaskEditor(task.id); return; } catch { /* fall through to the notice */ }
         }

@@ -152,7 +152,7 @@ export function composeLane1(d: Lane1Deps) {
     "receipts.subscribe": (publish: (r: ModelCallReceipt) => void) => d.optimizer.subscribe(publish),
   };
 
-  return { tasks, sessions, approvals, review, decompose, scheduler, optimizer: d.optimizer, host, gate, handlers, subscriptions, replays, live };
+  return { tasks, sessions, approvals, review, decompose, scheduler, agentModel: d.agentModel, optimizer: d.optimizer, host, gate, handlers, subscriptions, replays, live };
 }
 
 export type Lane1 = ReturnType<typeof composeLane1>;

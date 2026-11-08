@@ -135,6 +135,7 @@ export function registerFeatures(context: vscode.ExtensionContext, accounts: Acc
   const ui = safeCommandUi({
     info: (m: string) => void vscode.window.showInformationMessage(m),
     error: (m: string) => void vscode.window.showErrorMessage(m),
+    openSession: (id: string) => void vscode.commands.executeCommand("nexus.openSession", id),
     pickApproval: async (items: Array<{ id: string; label: string; detail: string }>) => (await vscode.window.showQuickPick(items, { placeHolder: "Which approval?" }))?.id,
   });
   const commands = lane1Commands(lane, ui, () => identity().userId, openTaskEditor);

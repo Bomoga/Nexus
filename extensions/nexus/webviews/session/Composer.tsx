@@ -53,7 +53,18 @@ export function Composer({ bridge, onStarted }: ComposerProps) {
       })
       .catch((e) => live && setModelsError(friendlyError(e, "models")));
     b.request("accounts.list", {})
-      .then((a) => live && setAccounts(a))
+      .then((a) => {
+        if (!live) return;
+        setAccounts(a);
+        // accounts.list is what verifies keys on a cold host; if a provider came back connected after an empty
+        // models answer, ask for the models again instead of leaving the picker empty.
+        if (a.some((x) => x.status === "connected")) {
+          setModels((cur) => {
+            if (cur.length === 0) void b.request("models.list", { role: "agent" }).then((m) => { if (live && m.length) { setModels(m); setSelected((sel) => (sel && m.some((x) => modelKey(x) === sel) ? sel : modelKey(m[0]))); } }).catch(() => undefined);
+            return cur;
+          });
+        }
+      })
       .catch(() => undefined); // labels fall back to "data use unknown" + leaves machine
     b.request("optimizer.get", {})
       .then((o) => live && setOptimizer(o))
@@ -123,7 +134,7 @@ export function Composer({ bridge, onStarted }: ComposerProps) {
             {modelsError} <Button size="sm" onClick={() => setAttempt((n) => n + 1)}>RETRY</Button>
           </StatusLine>
         ) : null}
-        {modelsLoaded && models.length === 0 ? <StatusLine tone="pending">no agent model: run Nexus: Connect provider, then RETRY</StatusLine> : null}
+        {modelsLoaded && models.length === 0 ? <StatusLine tone="pending">no agent model yet: connect Anthropic or Gemini with the command Nexus: Connect provider, then RETRY</StatusLine> : null}
         {error ? <StatusLine tone="error">{error}</StatusLine> : null}
         <div className="nx-caption">the agent works on its own branch and asks before running commands or committing</div>
       </div>

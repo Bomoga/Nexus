@@ -47,8 +47,11 @@ export interface SyncDeps {
   listen?: ListenFn;
   local: SyncLocal;
   machineId: string;
-  /** The open repo's workspace id; `events` rows of any other workspace are not copied locally, and none are while it is unknown. */
-  workspaceId?: () => Promise<string | undefined>;
+  /**
+   * The workspace ids of the open repo (its root-commit sha1 and any legacy id). `events` rows of any other workspace are not copied
+   * locally. While the list is empty (unknown) the `events` table is not pulled at all, so those rows are read once it is known.
+   */
+  workspaceIds?: () => Promise<string[]>;
   flushOutbox(): Promise<unknown>;
   setOnline?(online: boolean): void;
   timers?: SyncTimers;
@@ -401,6 +404,12 @@ export function createSync(deps: SyncDeps): Sync {
     held.delete(sessionId);
   }
 
+  /** The ids resolved once for the batch of `events` rows being applied (never a lookup per row). */
+  let eventWorkspaces = new Set<string>();
+  async function resolveWorkspaces(): Promise<Set<string>> {
+    try { return new Set((await deps.workspaceIds?.()) ?? []); } catch { return new Set(); }
+  }
+
   async function applyRows(table: TableName, rows: Row[], snap: Set<string>): Promise<void> {
     const agentBySession = new Map<string, Row[]>();
     for (const r of rows) {
@@ -428,9 +437,7 @@ export function createSync(deps: SyncDeps): Sync {
     switch (table) {
       case "events": {
         if (r.machine_id === machineId) return;
-        let workspace: string | undefined;
-        try { workspace = (await deps.workspaceId?.()) || undefined; } catch { workspace = undefined; }
-        if (!workspace || r.workspace_id !== workspace) return;
+        if (!eventWorkspaces.has(String(r.workspace_id))) return;
         const e = mappers.events(r);
         if (!e) return;
         await quiet("events", e.id, "put", () => local.putNexusEvent(e));
@@ -494,6 +501,10 @@ export function createSync(deps: SyncDeps): Sync {
 
   // ---- pulling ----
   async function pullTable(table: TableName): Promise<void> {
+    if (table === "events") {
+      eventWorkspaces = await resolveWorkspaces();
+      if (eventWorkspaces.size === 0) return;   // unknown: leave the rows unseen and the cursor where it is
+    }
     // Keyset paging within a cycle: the overlap applies to the first page only; later pages continue after the previous
     // page's last (millisecond, key) tuple and stop only on a short page, so any number of rows with one timestamp are read.
     let after: { ms: number; keys: unknown[] } | undefined;
@@ -576,6 +587,10 @@ export function createSync(deps: SyncDeps): Sync {
   async function handleNotify(n: NotifyPayload): Promise<void> {
     if (degraded) return;   // the next poll cycle recovers and pulls everything
     try {
+      if (n.table === "events") {
+        eventWorkspaces = await resolveWorkspaces();
+        if (eventWorkspaces.size === 0) return;   // the next cycle pulls it once the ids are known
+      }
       const snap = dirtySnapshot();
       const rows = await q(SYNC_SQL.byKey(n.table as Exclude<TableName, "agent_events">), [n.id]);
       await applyRows(n.table, rows, snap);

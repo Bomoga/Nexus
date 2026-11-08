@@ -9,7 +9,7 @@ The shared store's tables, run once against the team's Tiger Cloud service (Post
 | `003_notify.sql` | `updated_at` columns and triggers, and the `nexus` NOTIFY triggers that live sync listens to | L2-11 |
 | `004_activity_ws.sql` | Continuous aggregate `events_ws_15m` (events per workspace and orbit per 15 minutes) and its refresh policy; the activity strip reads this one | L2-18 |
 
-Apply in order, outside any transaction for `002` and `004` (the refresh policies):
+Apply in order (`002` and `004` run fine inside a transaction because they are `WITH NO DATA`; only the commented `CALL refresh_continuous_aggregate(...)` in them must run outside one):
 
 ```bash
 psql "$TIGER_URL" -v ON_ERROR_STOP=1 -f sql/001_schema.sql
@@ -18,7 +18,7 @@ psql "$TIGER_URL" -v ON_ERROR_STOP=1 -f sql/003_notify.sql
 psql "$TIGER_URL" -v ON_ERROR_STOP=1 -f sql/004_activity_ws.sql
 ```
 
-Check it from the extension folder (applies `001` twice and round-trips one row per table inside a transaction that is rolled back, so the team's data is untouched):
+Check it from the extension folder (applies `001` to `004` twice and round-trips one row per table inside a transaction that is rolled back, so the team's data is untouched):
 
 ```bash
 npm run test:int -- schema

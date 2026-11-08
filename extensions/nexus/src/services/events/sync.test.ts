@@ -99,7 +99,7 @@ let dir: string, local: LocalStore, remote: FakeRemote, timers: FakeTimers, flus
 let listenFn: ListenFn | undefined, notify: ((p: string) => void) | undefined, onClose: ((e?: unknown) => void) | undefined, unlistened: number;
 
 let flushImpl: () => Promise<unknown> = async () => undefined;
-function make(opts: { workspaceId?: (() => Promise<string | undefined>) | null; listen?: "ok" | "fail" | "none"; since?: string; batchSize?: number; holdMs?: number; local?: LocalStore } = {}) {
+function make(opts: { workspaceIds?: (() => Promise<string[]>) | null; listen?: "ok" | "fail" | "none"; since?: string; batchSize?: number; holdMs?: number; local?: LocalStore } = {}) {
   const mode = opts.listen ?? "none";
   listenFn = mode === "none" ? undefined : async (_c, onPayload, close) => {
     if (mode === "fail") throw new Error("no listen");
@@ -107,7 +107,7 @@ function make(opts: { workspaceId?: (() => Promise<string | undefined>) | null; 
     return async () => { unlistened++; };
   };
   sync = createSync({
-    client: remote, listen: listenFn, local: opts.local ?? local, machineId: ME, workspaceId: opts.workspaceId === null ? undefined : (opts.workspaceId ?? (async () => fx.event.workspaceId)), timers, since: opts.since, batchSize: opts.batchSize, holdMs: opts.holdMs,
+    client: remote, listen: listenFn, local: opts.local ?? local, machineId: ME, workspaceIds: opts.workspaceIds === null ? undefined : (opts.workspaceIds ?? (async () => [fx.event.workspaceId])), timers, since: opts.since, batchSize: opts.batchSize, holdMs: opts.holdMs,
     flushOutbox: async () => { flushes.push("flush"); remote.log.push("flush"); return flushImpl(); },
     setOnline: o => online.push(o), log: m => logs.push(m), pollMs: 2000, reconcileMs: 30_000,
   });
@@ -171,16 +171,44 @@ describe("sync: pulling what other machines wrote", () => {
     expect((await local.queryEvents({ from: "2000-01-01T00:00:00Z", to: "2100-01-01T00:00:00Z", limit: 100 })).map(e => e.id)).toEqual(["ws:commit:here"]);
     await sync.stop();
 
-    const unknown: Array<(() => Promise<string | undefined>) | null> = [null, async () => undefined, async (): Promise<string> => { throw new Error("not a repo"); }];
-    for (const workspaceId of unknown) {
+    const unknown: Array<(() => Promise<string[]>) | null> = [null, async () => [], async (): Promise<string[]> => { throw new Error("not a repo"); }];
+    for (const workspaceIds of unknown) {
       const dir2 = fs.mkdtempSync(path.join(os.tmpdir(), "nexus-sync-"));
       try {
         const empty = new LocalStore({ dir: dir2, redact: t => t });
-        await make({ local: empty, workspaceId }).start();
+        await make({ local: empty, workspaceIds }).start();
         expect(await empty.queryEvents({ from: "2000-01-01T00:00:00Z", to: "2100-01-01T00:00:00Z", limit: 100 })).toEqual([]);
         await sync.stop();
       } finally { fs.rmSync(dir2, { recursive: true, force: true }); }
     }
+  });
+
+  it("applies a legacy-id agent_session event when the set has it, and one from an unrelated workspace never", async () => {
+    const session = (id: string, workspaceId: string): NexusEvent => ({ ...fx.event, id, kind: "agent_session", machineId: OTHER, title: id, workspaceId, target: { type: "session", sessionId: "ses_b" } });
+    remote.put("events", eventRow(session("ws:session:legacy", "ws_nexus")), T(5));
+    remote.put("events", eventRow(session("ws:session:other", "ws_unrelated")), T(6));
+    await make({ workspaceIds: async () => [fx.event.workspaceId, "ws_nexus"] }).start();
+    expect((await local.queryEvents({ from: "2000-01-01T00:00:00Z", to: "2100-01-01T00:00:00Z", limit: 100 })).map(e => e.id)).toEqual(["ws:session:legacy"]);
+  });
+
+  it("resolves the workspace ids once per pull, not once per row", async () => {
+    for (let i = 0; i < 6; i++) remote.put("events", eventRow({ ...fx.event, id: `ws:commit:m${i}`, machineId: OTHER }), T(5 + i));
+    let lookups = 0;
+    await make({ batchSize: 4, workspaceIds: async () => { lookups++; return [fx.event.workspaceId]; } }).start();
+    expect((await local.queryEvents({ from: "2000-01-01T00:00:00Z", to: "2100-01-01T00:00:00Z", limit: 100 })).length).toBe(6);
+    expect(lookups).toBe(1);   // two pages, one lookup
+  });
+
+  it("leaves events unpulled while the ids are unknown and applies them on the next cycle once known", async () => {
+    remote.put("events", eventRow({ ...fx.event, id: "ws:commit:late", machineId: OTHER }), T(5));
+    let ids: string[] = [];
+    await make({ workspaceIds: async () => ids }).start();
+    const all = { from: "2000-01-01T00:00:00Z", to: "2100-01-01T00:00:00Z", limit: 100 };
+    expect(await local.queryEvents(all)).toEqual([]);
+    expect(remote.log.filter(l => l === SYNC_SQL.poll("events") || l === SYNC_SQL.pollAfter("events"))).toEqual([]);   // not even read
+    ids = [fx.event.workspaceId];
+    await sync.pullNow();
+    expect((await local.queryEvents(all)).map(e => e.id)).toEqual(["ws:commit:late"]);
   });
 
   it("skips this machine's own rows and publishes the others on the subscriptions", async () => {

@@ -92,10 +92,10 @@ describe("createSharedStore", () => {
   it("exposes its client and limits the shared events reads to the workspace it was given", async () => {
     const calls: { text: string; params: unknown[] }[] = [];
     const client = { query: vi.fn(async (text: string, params: unknown[] = []) => { calls.push({ text, params }); return { rows: [], rowCount: 0 }; }), end: vi.fn(async () => undefined) };
-    const shared = createSharedStore({ connectionString: URL_OK, local: local(), machineId: "m-uuid", redact: t => t, log: () => {}, workspaceId: async () => "ws_here", client, listen: async () => async () => undefined });
+    const shared = createSharedStore({ connectionString: URL_OK, local: local(), machineId: "m-uuid", redact: t => t, log: () => {}, workspaceIds: async () => ["ws_here"], client, listen: async () => async () => undefined });
     expect(shared.client).toBe(client);
     await shared.store.searchEvents("cart", 5);
-    expect(calls.filter(c => c.text.includes("workspace_id = $3")).map(c => c.params.at(-1))).toEqual(["ws_here"]);
+    expect(calls.filter(c => c.text.includes("workspace_id = ANY($3::text[])")).map(c => c.params.at(-1))).toEqual([["ws_here"]]);
     const unknown = createSharedStore({ connectionString: URL_OK, local: local(), machineId: "m-uuid", redact: t => t, log: () => {}, client, listen: async () => async () => undefined });
     calls.length = 0;
     await unknown.store.searchEvents("cart", 5);

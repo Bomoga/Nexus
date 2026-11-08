@@ -68,10 +68,15 @@ export function registerLane2(context: vscode.ExtensionContext): Lane2Wiring {
   // and the activity strip are limited to this repo. Memoized once it is known; unknown (no folder, no commits) is retried next time.
   const gitService = folder ? new GitCli(folder.uri.fsPath, { sessionsDir: join(context.globalStorageUri.fsPath, "sessions", workspaceSlug) }) : undefined;
   let workspaceIdPromise: Promise<string | undefined> | undefined;
-  const workspaceId = (): Promise<string | undefined> => {
+  const rootWorkspaceId = (): Promise<string | undefined> => {
     if (!gitService) return Promise.resolve(undefined);
     workspaceIdPromise ??= gitService.workspaceId().then(id => id || undefined, () => undefined).then(id => { if (!id) workspaceIdPromise = undefined; return id; });
     return workspaceIdPromise;
+  };
+  // Lane 1 still names its tasks' (and so its agent and Slack events') workspace `ws_<folder slug>`; both ids belong to this repo.
+  const workspaceIds = async (): Promise<string[]> => {
+    if (!folder) return [];
+    return [...new Set([await rootWorkspaceId(), `ws_${workspaceSlug}`].filter((id): id is string => !!id))];
   };
   // The shared store's client once it exists; before that (or without TIGER_URL) the query throws, so the strip counts the local copy.
   let sharedClient: TigerClient | undefined;
@@ -93,7 +98,7 @@ export function registerLane2(context: vscode.ExtensionContext): Lane2Wiring {
     if (!url) return;
     try {
       const shared = createSharedStore({
-        connectionString: url, local, machineId: machineId!, redact, workspaceId, log: m => log(`shared store: ${m}`),
+        connectionString: url, local, machineId: machineId!, redact, workspaceIds, log: m => log(`shared store: ${m}`),
         notify: m => { void vscode.window.showWarningMessage(plainNotificationText(m)); },
       });
       current = shared.store;
@@ -133,7 +138,7 @@ export function registerLane2(context: vscode.ExtensionContext): Lane2Wiring {
   });
 
   const lane2 = buildLane2({
-    router, store, redact, tokenVault, activityQuery, workspaceId,
+    router, store, redact, tokenVault, activityQuery, workspaceIds,
     readSessionLocally: id => local.getSession(id),
     secret: key => Promise.resolve(context.secrets.get(key)),
     env: process.env,

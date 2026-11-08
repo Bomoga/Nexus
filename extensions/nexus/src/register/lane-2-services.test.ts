@@ -187,11 +187,11 @@ describe("buildLane2", () => {
 
   it("asks the activity query for the current workspace, and falls back to the local copy when it throws (no shared store yet)", async () => {
     const calls: unknown[][] = [];
-    const answering = setup({ workspaceId: async () => "ws_here", activityQuery: { query: async (_t, p) => { calls.push(p); return { rows: [{ bucket: new Date("2026-11-07T10:00:00Z"), orbit: "remote", count: 4 }] }; } } });
+    const answering = setup({ workspaceIds: async () => ["ws_here", "ws_legacy"], activityQuery: { query: async (_t, p) => { calls.push(p); return { rows: [{ bucket: new Date("2026-11-07T10:00:00Z"), orbit: "remote", count: 4 }] }; } } });
     expect(await answering.router.call("events.activity", { from: "2026-11-07T10:00:00Z", to: "2026-11-07T10:15:00Z" })).toEqual([{ bucketStart: "2026-11-07T10:00:00.000Z", orbit: "remote", count: 4 }]);
-    expect(calls).toEqual([["2026-11-07T10:00:00.000Z", "2026-11-07T10:15:00.000Z", "ws_here"]]);
+    expect(calls).toEqual([["2026-11-07T10:00:00.000Z", "2026-11-07T10:15:00.000Z", ["ws_here", "ws_legacy"]]]);
 
-    const notConnected = setup({ workspaceId: async () => "ws_here", activityQuery: { query: async () => { throw new Error("shared store not connected"); } } });
+    const notConnected = setup({ workspaceIds: async () => ["ws_here", "ws_legacy"], activityQuery: { query: async () => { throw new Error("shared store not connected"); } } });
     await notConnected.store.putNexusEvent({ ...fx.event, id: "evt_act_3", at: "2026-11-07T10:05:00.000Z", orbit: "act-local" });
     const buckets = await notConnected.router.call("events.activity", { from: "2026-11-07T10:00:00Z", to: "2026-11-07T10:15:00Z" });
     expect(buckets.filter(b => b.orbit === "act-local")).toEqual([{ bucketStart: "2026-11-07T10:00:00.000Z", orbit: "act-local", count: 1 }]);

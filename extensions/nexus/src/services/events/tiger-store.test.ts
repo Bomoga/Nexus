@@ -94,16 +94,16 @@ class FakePg implements TigerClient {
     let i = 2;
     const orbits = text.includes("orbit = ANY") ? (params[i++] as string[]) : undefined;
     const kinds = text.includes("kind = ANY") ? (params[i++] as string[]) : undefined;
-    const workspace = text.includes("AND workspace_id = $") ? params[i++] : undefined;
+    const workspace = text.includes("AND workspace_id = ANY($") ? (params[i++] as string[]) : undefined;
     const limit = params[i] as number;
     return [...this.table("events").values()]
-      .filter(r => (workspace === undefined || r.workspace_id === workspace) && +(r.at as Date) >= +from && +(r.at as Date) <= +to && (!orbits || orbits.includes(r.orbit as string)) && (!kinds || kinds.includes(r.kind as string)))
+      .filter(r => (workspace === undefined || workspace.includes(r.workspace_id as string)) && +(r.at as Date) >= +from && +(r.at as Date) <= +to && (!orbits || orbits.includes(r.orbit as string)) && (!kinds || kinds.includes(r.kind as string)))
       .sort((a, b) => +(a.at as Date) - +(b.at as Date) || String(a.id).localeCompare(String(b.id))).slice(0, limit);
   }
 
   private search(pattern: string, limit: number, workspace: unknown): Record<string, unknown>[] {
     const q = pattern.slice(1, -1).replace(/!(.)/g, "$1");
-    return [...this.table("events").values()].filter(r => r.workspace_id === workspace).map(r => {
+    return [...this.table("events").values()].filter(r => (workspace as string[]).includes(r.workspace_id as string)).map(r => {
       const title = String(r.title).toLowerCase(), sha = String((r.target as { sha?: string }).sha ?? "").toLowerCase();
       const other = `${r.orbit}\n${r.actor_name}`.toLowerCase();
       return { ...r, score: title.includes(q) ? 3 : sha.includes(q) ? 2 : other.includes(q) ? 1 : 0 } as Record<string, unknown> & { score: number };
@@ -112,7 +112,7 @@ class FakePg implements TigerClient {
 }
 
 const WS = fx.event.workspaceId;
-const make = (fake = new FakePg(), auth0UserId?: string) => ({ fake, store: new TigerStore({ client: fake, redact, auth0UserId, workspaceId: async () => WS }) });
+const make = (fake = new FakePg(), auth0UserId?: string) => ({ fake, store: new TigerStore({ client: fake, redact, auth0UserId, workspaceIds: async () => [WS] }) });
 const ALL = { from: "2000-01-01T00:00:00Z", to: "2100-01-01T00:00:00Z", limit: 5000 };
 
 describe("TigerStore SQL", () => {
@@ -263,21 +263,21 @@ describe("TigerStore SQL", () => {
       [
         "SELECT *, CASE WHEN lower(title) LIKE $1 ESCAPE '!' THEN 3 WHEN lower(target->>'sha') LIKE $1 ESCAPE '!' THEN 2 ELSE 1 END AS score
       FROM events
-      WHERE workspace_id = $3 AND (lower(title) LIKE $1 ESCAPE '!' OR lower(target->>'sha') LIKE $1 ESCAPE '!' OR lower(orbit || chr(10) || actor_name) LIKE $1 ESCAPE '!')
+      WHERE workspace_id = ANY($3::text[]) AND (lower(title) LIKE $1 ESCAPE '!' OR lower(target->>'sha') LIKE $1 ESCAPE '!' OR lower(orbit || chr(10) || actor_name) LIKE $1 ESCAPE '!')
       ORDER BY score DESC, at DESC
       LIMIT $2",
       ]
     `);
     expect(await sqlFor(() => store.queryEvents({ ...ALL, orbits: ["main"], kinds: ["commit"] }))).toMatchInlineSnapshot(`
       [
-        "SELECT * FROM events WHERE at >= $1::timestamptz AND at <= $2::timestamptz AND orbit = ANY($3::text[]) AND kind = ANY($4::text[]) AND workspace_id = $5 ORDER BY at, id LIMIT $6",
+        "SELECT * FROM events WHERE at >= $1::timestamptz AND at <= $2::timestamptz AND orbit = ANY($3::text[]) AND kind = ANY($4::text[]) AND workspace_id = ANY($5::text[]) ORDER BY at, id LIMIT $6",
       ]
     `);
     expect([queryEventsSql(false, false), queryEventsSql(true, false), queryEventsSql(false, true)]).toMatchInlineSnapshot(`
       [
-        "SELECT * FROM events WHERE at >= $1::timestamptz AND at <= $2::timestamptz AND workspace_id = $3 ORDER BY at, id LIMIT $4",
-        "SELECT * FROM events WHERE at >= $1::timestamptz AND at <= $2::timestamptz AND orbit = ANY($3::text[]) AND workspace_id = $4 ORDER BY at, id LIMIT $5",
-        "SELECT * FROM events WHERE at >= $1::timestamptz AND at <= $2::timestamptz AND kind = ANY($3::text[]) AND workspace_id = $4 ORDER BY at, id LIMIT $5",
+        "SELECT * FROM events WHERE at >= $1::timestamptz AND at <= $2::timestamptz AND workspace_id = ANY($3::text[]) ORDER BY at, id LIMIT $4",
+        "SELECT * FROM events WHERE at >= $1::timestamptz AND at <= $2::timestamptz AND orbit = ANY($3::text[]) AND workspace_id = ANY($4::text[]) ORDER BY at, id LIMIT $5",
+        "SELECT * FROM events WHERE at >= $1::timestamptz AND at <= $2::timestamptz AND kind = ANY($3::text[]) AND workspace_id = ANY($4::text[]) ORDER BY at, id LIMIT $5",
       ]
     `);
   });
@@ -286,17 +286,17 @@ describe("TigerStore SQL", () => {
     const { fake, store } = make();
     await store.queryEvents({ ...ALL, orbits: ["main"], limit: 7 });
     await store.searchEvents("Cart", 5);
-    expect(fake.calls.map(c => c.text.includes("workspace_id = $") && c.text)).toEqual([
-      "SELECT * FROM events WHERE at >= $1::timestamptz AND at <= $2::timestamptz AND orbit = ANY($3::text[]) AND workspace_id = $4 ORDER BY at, id LIMIT $5",
-      expect.stringContaining("WHERE workspace_id = $3 AND (lower(title) LIKE $1"),
+    expect(fake.calls.map(c => c.text.includes("workspace_id = ANY($") && c.text)).toEqual([
+      "SELECT * FROM events WHERE at >= $1::timestamptz AND at <= $2::timestamptz AND orbit = ANY($3::text[]) AND workspace_id = ANY($4::text[]) ORDER BY at, id LIMIT $5",
+      expect.stringContaining("WHERE workspace_id = ANY($3::text[]) AND (lower(title) LIKE $1"),
     ]);
-    expect(fake.calls.map(c => c.params)).toEqual([[ALL.from, ALL.to, ["main"], WS, 7], ["%cart%", 5, WS]]);
+    expect(fake.calls.map(c => c.params)).toEqual([[ALL.from, ALL.to, ["main"], [WS], 7], ["%cart%", 5, [WS]]]);
   });
 
   it("returns nothing, without querying, while the workspace id is unknown", async () => {
-    for (const workspaceId of [undefined, async () => undefined, async () => "", async (): Promise<string> => { throw new Error("not a repo"); }]) {
+    for (const workspaceIds of [undefined, async () => [], async (): Promise<string[]> => { throw new Error("not a repo"); }]) {
       const fake = new FakePg();
-      const store = new TigerStore({ client: fake, redact, ...(workspaceId ? { workspaceId } : {}) });
+      const store = new TigerStore({ client: fake, redact, ...(workspaceIds ? { workspaceIds } : {}) });
       expect(await store.queryEvents(ALL)).toEqual([]);
       expect(await store.searchEvents("cart", 5)).toEqual([]);
       expect(fake.calls).toEqual([]);
@@ -309,6 +309,17 @@ describe("TigerStore SQL", () => {
     await store.putNexusEvent({ ...fx.event, id: "other", title: "cart other", workspaceId: "f".repeat(40) });
     expect((await store.queryEvents(ALL)).map(e => e.id)).toEqual(["mine"]);
     expect((await store.searchEvents("cart", 5)).map(h => h.event.id)).toEqual(["mine"]);
+  });
+
+  it("returns events of every id in the set (the sha1 and the legacy ws_<slug>) and no other workspace's", async () => {
+    const fake = new FakePg();
+    const store = new TigerStore({ client: fake, redact, workspaceIds: async () => [WS, "ws_nexus", WS] });
+    await store.putNexusEvent({ ...fx.event, id: "sha", title: "cart sha" });
+    await store.putNexusEvent({ ...fx.event, id: "legacy", kind: "agent_session", title: "cart session", workspaceId: "ws_nexus", target: { type: "session", sessionId: "ses_1" } });
+    await store.putNexusEvent({ ...fx.event, id: "elsewhere", kind: "agent_session", title: "cart session", workspaceId: "ws_other", target: { type: "session", sessionId: "ses_2" } });
+    expect((await store.queryEvents(ALL)).map(e => e.id).sort()).toEqual(["legacy", "sha"]);
+    expect((await store.searchEvents("cart", 5)).map(h => h.event.id).sort()).toEqual(["legacy", "sha"]);
+    expect(fake.calls.at(-1)!.params.at(-1)).toEqual([WS, "ws_nexus"]);   // deduplicated
   });
 
   it("never puts a value in the SQL text", async () => {

@@ -16,13 +16,13 @@ export interface ActivityDeps {
   query?: ActivityQueryClient;
   /** Local events with from <= at <= to (inclusive, like EventStore.queryEvents), at most `limit`. */
   localEvents(window: { from: string; to: string; limit: number }): Promise<NexusEvent[]>;
-  /** The open repo's workspace id. While it is unknown the remote aggregate (which holds every repo) is skipped and the local copy is counted. */
-  workspaceId?: () => Promise<string | undefined>;
+  /** The open repo's workspace ids. While the list is empty (unknown) the remote aggregate (which holds every repo) is skipped and the local copy is counted. */
+  workspaceIds?: () => Promise<string[]>;
   remoteBudgetMs?: number;
 }
 
 export const ACTIVITY_SQL =
-  "SELECT bucket, orbit, count FROM events_ws_15m WHERE workspace_id = $3 AND bucket >= time_bucket('15 minutes', $1::timestamptz) AND bucket < $2::timestamptz ORDER BY bucket, orbit";
+  "SELECT bucket, orbit, sum(count) AS count FROM events_ws_15m WHERE workspace_id = ANY($3::text[]) AND bucket >= time_bucket('15 minutes', $1::timestamptz) AND bucket < $2::timestamptz GROUP BY bucket, orbit ORDER BY bucket, orbit";
 
 export type ActivityFn = (from: string, to: string) => Promise<ActivityBucket[]>;
 
@@ -103,16 +103,19 @@ export function createActivity(deps: ActivityDeps): ActivityFn {
   return async (from, to) => {
     const { fromMs, toMs } = parseWindow(from, to);
     const client = deps.query;
-    let workspace: string | undefined;
     if (client) {
-      try { workspace = (await deps.workspaceId?.()) || undefined; } catch { workspace = undefined; }
-    }
-    if (client && workspace) {
       let timer: ReturnType<typeof setTimeout> | undefined;
       try {
+        // The workspace lookup (a git call) counts against the same budget as the query.
         const timeout = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("remote budget exceeded")), budget); });
-        const result = await Promise.race([client.query(ACTIVITY_SQL, [new Date(fromMs).toISOString(), new Date(toMs).toISOString(), workspace]), timeout]);
-        return mapRows(result.rows);
+        const remote = (async () => {
+          const workspaces = [...new Set(((await deps.workspaceIds?.()) ?? []).filter(id => id))];
+          if (workspaces.length === 0) return undefined;   // unknown: the local copy is counted
+          return client.query(ACTIVITY_SQL, [new Date(fromMs).toISOString(), new Date(toMs).toISOString(), workspaces]);
+        })();
+        remote.catch(() => undefined);
+        const result = await Promise.race([remote, timeout]);
+        if (result) return mapRows(result.rows);
       } catch {
         // fall through to the local copy; the error text may carry connection details, so it is not logged
       } finally {

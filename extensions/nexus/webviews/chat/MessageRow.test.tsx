@@ -64,6 +64,8 @@ describe("MessageRow", () => {
     render(<MessageRow message={{ ...base, blocks: buttons() }} bridge={client} />);
     expect(await screen.findByRole("button", { name: "APPROVE" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "REJECT" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "APPROVE" }).className).toContain("nx-button--primary");
+    expect(screen.getByRole("button", { name: "REJECT" }).className).toContain("nx-button--danger");
     expect(screen.getByText(/<script>alert\(1\)<\/script>/)).toBeTruthy();
     expect(document.querySelector("script")).toBeNull();
   });

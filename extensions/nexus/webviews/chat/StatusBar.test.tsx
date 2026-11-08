@@ -11,14 +11,14 @@ const client = (s: SlackStatus) => ({ request: vi.fn().mockResolvedValue(s), sub
 const base: SlackStatus = { connected: true, postsAs: { userId: "U1", name: "Adrian" }, userTokenSource: "token_vault", botName: "Nexus" };
 
 describe("StatusBar", () => {
-  test("says who posts and via which token source", async () => {
+  test("says the connection state and which token source it uses", async () => {
     render(<StatusBar bridge={client(base)} />);
-    expect(await screen.findByText("posting as Adrian via token vault")).toBeTruthy();
+    expect(await screen.findByText("slack connected · token: token vault")).toBeTruthy();
   });
 
   test("manual token source", async () => {
     render(<StatusBar bridge={client({ ...base, userTokenSource: "manual" })} />);
-    expect(await screen.findByText("posting as Adrian via manual")).toBeTruthy();
+    expect(await screen.findByText("slack connected · token: manual")).toBeTruthy();
   });
 
   test("warns when postsAs is null", async () => {

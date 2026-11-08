@@ -270,6 +270,25 @@ describe("confirms", () => {
   });
 });
 
+describe("dismiss", () => {
+  test("DISMISS drops a failed send; a pending one cannot be dropped", async () => {
+    const host = createTestHost();
+    host.failNextPost();
+    render(<History bridge={host.client} channelId="C_DEMO" />);
+    await screen.findByText(/cart total ignores the discount/);
+    await settle();
+    send("nope");
+    await screen.findByText("RETRY");
+    fireEvent.click(screen.getByText("DISMISS"));
+    await waitFor(() => expect(screen.queryByText("nope")).toBeNull());
+    expect(screen.queryByText("RETRY")).toBeNull();
+    host.holdPosts();
+    send("slow");
+    await screen.findByText("slow");
+    expect(screen.queryByText("DISMISS")).toBeNull();
+  });
+});
+
 describe("against the kit's fake host", () => {
   test("the fake echoes the clientId on the post reply and on the slack.subscribe copy; the send shows once", async () => {
     const client = createBridgeClient(createFakeTransport({ liveIntervalMs: 0 }));

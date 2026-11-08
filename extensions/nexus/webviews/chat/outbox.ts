@@ -32,6 +32,8 @@ export interface OutboxStore {
   send(target: Target, text: string): OutboxEntry;
   /** Re-posts a failed or unconfirmed entry with the same clientId. */
   retry(clientId: string): void;
+  /** Drops a failed or unconfirmed entry from the view (DISMISS). A pending one cannot be dropped. */
+  dismiss(clientId: string): void;
   /** Open entries of a target, in the order they were sent. */
   entriesFor(target: Target): OutboxEntry[];
   /** Slack's copies of this page's confirmed sends to a target (the most recent few). */
@@ -178,6 +180,13 @@ export function createOutbox(client: BridgeClient, opts: OutboxOptions = {}): Ou
       entries.set(clientId, next);
       changed();
       post(next);
+    },
+    dismiss(clientId) {
+      const e = entries.get(clientId);
+      if (!e || e.state === "pending") return;
+      entries.delete(clientId);
+      attempts.delete(clientId);
+      changed();
     },
     entriesFor: (t) => [...entries.values()].filter((e) => e.channelId === t.channelId && (e.threadTs ?? "") === (t.threadTs ?? "")),
     confirmedFor: (t) => confirmed.get(targetKey(t)) ?? [],

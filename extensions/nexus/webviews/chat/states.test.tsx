@@ -28,11 +28,21 @@ describe("chat states", () => {
     render(<StatusBar bridge={{ request, subscribe: vi.fn() } as unknown as BridgeClient} />);
     expect(await screen.findByText("slack isn't connected yet")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "RETRY" }));
-    await waitFor(() => expect(screen.getByText("posting as Adrian via manual")).toBeTruthy());
+    await waitFor(() => expect(screen.getByText("slack connected · token: manual")).toBeTruthy());
   });
 
   test("SEND shows its Enter hint", () => {
     render(<Composer onSend={() => {}} />);
-    expect(screen.getByRole("button", { name: /SEND/ }).textContent).toContain("↵");
+    expect(screen.getByRole("button", { name: /SEND/ }).textContent).toContain("ENTER");
+  });
+
+  test("the composer says who a send posts as, or that it goes as the app", () => {
+    const { rerender } = render(<Composer onSend={() => {}} identity={{ known: true, self: { userId: "U1", name: "adrian" } }} />);
+    expect(screen.getByText("@adrian")).toBeTruthy();
+    expect(screen.getByText(/posting as/)).toBeTruthy();
+    rerender(<Composer onSend={() => {}} identity={{ known: true, self: undefined }} />);
+    expect(screen.getByText("no user token: posts go as the app").className).toContain("chat-identity--app");
+    rerender(<Composer onSend={() => {}} identity={{ known: false, self: undefined }} />);
+    expect(screen.queryByText(/posting as|no user token/)).toBeNull();
   });
 });

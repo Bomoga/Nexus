@@ -15,6 +15,9 @@ export const MAIN_RADIUS = 2.0;
 
 export const TIME_WINDOWS: readonly TimeWindow[] = ["24h", "36h", "7d", "30d"];
 
+/** Options for the time-window segmented control (24H 36H 7D 30D); values are the TimeWindow enum. */
+export const WINDOW_OPTIONS: readonly { value: TimeWindow; label: string }[] = TIME_WINDOWS.map((w) => ({ value: w, label: w.toUpperCase() }));
+
 export function windowMs(w: TimeWindow): number {
   return WINDOW_MS[w];
 }

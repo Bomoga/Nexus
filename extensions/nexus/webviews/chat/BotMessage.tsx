@@ -107,8 +107,8 @@ function Approval({ approvalId, bridge }: { approvalId: string; bridge?: BridgeC
     const by = decided.decidedBy;
     return (
       <div className="chat-approval">
-        <Chip tone={decided.decision === "approved" ? "ok" : "error"}>{decided.decision.toUpperCase()}</Chip>
-        <span className="nx-data">{by ? `decided by ${by.userId} via ${by.via}` : "decided"}</span>
+        <Chip kind={decided.decision === "approved" ? "ok" : "error"}>{decided.decision.toUpperCase()}</Chip>
+        <span className="nx-data chat-approval-by">{by ? `decided by ${by.userId} via ${by.via}` : "decided"}</span>
       </div>
     );
   }
@@ -122,10 +122,10 @@ function Approval({ approvalId, bridge }: { approvalId: string; bridge?: BridgeC
   }
   return (
     <div className="chat-approval">
-      <Button variant="primary" disabled={busy} onClick={() => resolve("approved")}>
+      <Button size="sm" variant="primary" disabled={busy} onClick={() => resolve("approved")}>
         APPROVE
       </Button>
-      <Button disabled={busy} onClick={() => resolve("rejected")}>
+      <Button size="sm" variant="danger" disabled={busy} onClick={() => resolve("rejected")}>
         REJECT
       </Button>
       {error ? <span className="chat-approval-error">{error}</span> : null}

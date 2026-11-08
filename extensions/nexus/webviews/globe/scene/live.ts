@@ -56,14 +56,24 @@ export function markLive(event: NexusEvent, perfNow = performance.now()): void {
   arrivals.set(event.id, perfNow);
 }
 
-/** Scale for a marker this frame: 1 unless it just arrived live. */
+/** The marker under the pointer grows by this factor. */
+export const HOVER_SCALE = 1.3;
+let hoveredId: string | undefined;
+
+/** Set by picking: the event under the pointer (undefined for none). Read per frame by liveScale; no React state. */
+export function setHovered(eventId: string | undefined): void {
+  hoveredId = eventId;
+}
+
+/** Scale for a marker this frame: 1 (HOVER_SCALE under the pointer), times the scale-in while it just arrived live. */
 export function liveScale(eventId: string, perfNow: number): number {
-  if (arrivals.size === 0) return 1;
+  const base = eventId === hoveredId ? HOVER_SCALE : 1;
+  if (arrivals.size === 0) return base;
   const t = arrivals.get(eventId);
-  if (t === undefined) return 1;
+  if (t === undefined) return base;
   const s = scaleIn(perfNow - t);
   if (s >= 1) arrivals.delete(eventId);
-  return s;
+  return s * base;
 }
 
 const tmp: Vec3 = [0, 0, 0];

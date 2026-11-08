@@ -3,7 +3,8 @@ import { useFrame } from "@react-three/fiber";
 import { BufferGeometry, Line, LineBasicMaterial, Vector3 } from "three";
 import type { Group } from "three";
 import { GLOBE_RADIUS } from "../model";
-import { PURPLE } from "./colors";
+import { ACCENT_DEEP } from "./colors";
+import { prefersReducedMotion } from "./fade";
 
 function ringPoints(r: number, y: number, segments: number): Vector3[] {
   const pts: Vector3[] = [];
@@ -15,7 +16,7 @@ function ringPoints(r: number, y: number, segments: number): Vector3[] {
 }
 
 /** Wireframe planet: latitude rings and meridians, slowly rotating. A depth-only sphere hides lines behind it. */
-const globeMaterial = new LineBasicMaterial({ color: PURPLE });
+const globeMaterial = new LineBasicMaterial({ color: ACCENT_DEEP, transparent: true, opacity: 0.9 });
 
 export function Globe() {
   const group = useRef<Group>(null);
@@ -43,8 +44,9 @@ export function Globe() {
     [lines],
   );
 
+  const still = useMemo(() => prefersReducedMotion(), []);
   useFrame((_, dt) => {
-    if (group.current) group.current.rotation.y += Math.min(dt, 0.05) * 0.05;
+    if (group.current && !still) group.current.rotation.y += Math.min(dt, 0.05) * 0.05;
   });
 
   return (

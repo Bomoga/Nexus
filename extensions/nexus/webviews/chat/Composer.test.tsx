@@ -167,11 +167,11 @@ describe("posting from the channel view", () => {
   test("a live reply bumps the parent's reply count instead of joining the channel list", async () => {
     const host = createTestHost();
     const { container } = render(<History bridge={host.client} channelId="C_DEMO" />);
-    await screen.findByText("↳ 1");
+    await screen.findByText("1 REPLY");
     const ts = host.slackTs(5);
     const reply: ChatMessage = { id: `C_DEMO:${ts}`, channelId: "C_DEMO", ts, threadTs: "1762485300.000100", author: brandon, text: "a reply", codeRefs: [], sentVia: "user" };
     act(() => host.emit({ type: "message", message: reply }));
-    await screen.findByText("↳ 2");
+    await screen.findByText("2 REPLIES");
     expect(screen.queryByText("a reply")).toBeNull();
     expect(container.querySelectorAll(".chat-row").length).toBe(1);
   });

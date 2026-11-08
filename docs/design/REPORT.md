@@ -107,7 +107,18 @@ exus` from the built checkout, fresh user-data dir, demo folder): three tonight;
 
 ## 5. Not done / known issues
 
-_(file, line, smallest next step)_
+Everything in D-00 to D-12 landed. What is left, with the smallest next step:
+
+- `extensions/nexus/src/bridge/host.ts` (Lane 2): re-setting a view's `webview.html` does not reset the router session, so a reply to the previous page's first request (`r1`) or its `agent.subscribe` (`s4`) can land on the new page in the short window between two fast `nexus.openSession` calls. Next step: a `reload(html)` on the host that bumps the router epoch (`router.ts` `reset()`) before setting the html; one test in `host.test.ts` that `onResolveView` fires after `attach`.
+- `extensions/nexus/webviews/globe/App.tsx` (DetailStrip `event={hovered ?? selected}`): while the pointer rests on marker B with A selected, Enter/OPEN opens B. Next step: show the hover preview but keep OPEN bound to `selected ?? hovered`.
+- `extensions/nexus/webviews/session/App.tsx`: the whole transcript re-renders on every `useNow` tick (pre-existing) and RETRY on a `sessions.list` error reloads the whole session; the switcher's list has no request ordering. Next step: memoize `LogRow` and key the list refetch by a counter.
+- `extensions/nexus/webviews/chat/History.tsx`: the LIVE badge follows `channel.botIsMember`, not the actual subscription state; MEMBER/BOT badges hide under 480 px. Next step: derive LIVE from `slack.subscribe`'s status event.
+- `extensions/nexus/webviews/timeline/App.test.tsx` "shows a truncated line when the query hit the limit": passes alone and in every quiet full run, but timed out at 6.5 s and 21.7 s when three suites ran at once. Next step: use fake timers or raise its own timeout; not changed tonight (no test weakened).
+- Dev host only: "nexus.nexus created a webview without a content security policy" logs once when the first Nexus WebviewView resolves (`src/vs/workbench/contrib/webview/browser/webviewElement.ts:651` fires it only under `isExtensionDevelopment`); `buildHtml` does emit the CSP meta. Next step: check whether VS Code's empty initial document triggers it; if so it is noise.
+- Unexplained once: 371 "Maximum update depth exceeded" console lines in the shared browser pane at about 03:44 while workers navigated the same tab; zero in every isolated run since; `loop.test.tsx` guards the session view. Next step: open each view in a quiet browser and watch the console for a minute.
+- Headless Chrome at `--window-size=360` does not honour the width for layout, so the `*-narrow.png` shots are indicative; the real browser at 320 to 360 px was checked by hand for the git and session views only.
+- Unchanged by design: `PanelHeader` now puts the heading role on the title; the globe's top bar is a `role="toolbar"` div; the timeline has no activity strip; Slack `http://` text is plain, only `https://` is a link.
+- Still Held (never touched tonight): live API spend, Slack posts, Auth0/CIBA, `cp-*` tags, dependency upgrades, the demo repo seed, font bundling.
 
 ## 6. Demo notes
 

@@ -15,6 +15,7 @@ export interface CodeRefChipProps {
   bridge?: BridgeClient;
 }
 
+/** An accent chip with path:lines and the short commit in mono; dashed once the ref turned out stale. The path is untrusted text. */
 export function CodeRefChip({ codeRef, bridge }: CodeRefChipProps) {
   const [stale, setStale] = useState(false);
   const [error, setError] = useState<string | undefined>();
@@ -28,9 +29,15 @@ export function CodeRefChip({ codeRef, bridge }: CodeRefChipProps) {
       })
       .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)));
   };
+  const [loc, sha] = codeRefLabel(codeRef).split(" ");
   return (
-    <button type="button" className={`chat-coderef${stale ? " chat-coderef--stale" : ""}${error ? " chat-coderef--error" : ""}`} title={title} onClick={open}>
-      <Chip tone={error ? "error" : "muted"}>{codeRefLabel(codeRef)}</Chip>
-    </button>
+    <Chip
+      kind={error ? "error" : stale ? "stale" : "accent"}
+      className={`chat-coderef${stale ? " chat-coderef--stale" : ""}${error ? " chat-coderef--error" : ""}`}
+      title={title}
+      onClick={open}
+    >
+      <span className="chat-coderef-loc">{loc}</span> <span className="chat-coderef-sha">{sha}</span>
+    </Chip>
   );
 }

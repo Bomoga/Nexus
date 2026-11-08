@@ -33,7 +33,7 @@ describe("History", () => {
     expect(row.querySelector(".chat-avatar")?.textContent).toBe("A");
     await waitFor(() => expect(row.querySelector(".chat-name")?.textContent).toBe("Adrian"));
     expect(row.querySelector(".chat-time")?.textContent).toBe(formatTime("1762485300.000100"));
-    expect(row.querySelector(".chat-replies")?.textContent).toBe("↳ 1");
+    expect(row.querySelector(".chat-replies")?.textContent).toBe("1 REPLY");
   });
 
   test("loads the newest page first, oldest-to-newest top-to-bottom", async () => {
@@ -130,7 +130,7 @@ describe("History", () => {
     const { client } = fakeClient({ first: { messages: [msg(1, { replyCount: 3 })], fromCache: false } });
     const onOpenThread = vi.fn();
     render(<History bridge={client} channelId="C1" onOpenThread={onOpenThread} />);
-    fireEvent.click(await screen.findByText("↳ 3"));
+    fireEvent.click(await screen.findByText("3 REPLIES"));
     expect(onOpenThread).toHaveBeenCalledWith(expect.objectContaining({ replyCount: 3 }));
   });
 
@@ -246,5 +246,27 @@ describe("History", () => {
     expect(olderCalls.map(([b]) => `${b.channelId}:${b.cursor}`)).toEqual(["C1:a2", "C2:b2"]);
     releaseB({ messages: [], fromCache: false });
     await settle();
+  });
+
+  test("a day separator heads each calendar day, the header shows the channel name and the badges", async () => {
+    const day1 = msg(1, { ts: "1762485300.000100" });
+    const day2 = msg(2, { ts: "1762585300.000100", id: "C1:1762585300.000100" });
+    const { client } = fakeClient({ first: { messages: [day2, day1], fromCache: false } });
+    const channel = { id: "C1", name: "general", isPrivate: false, isMember: true, botIsMember: false };
+    const { container } = render(<History bridge={client} channelId="C1" channelName="general" channel={channel} />);
+    await screen.findByText("message 2");
+    expect(container.querySelectorAll(".chat-day")).toHaveLength(2);
+    expect(container.querySelector(".nx-panel-header")?.textContent).toContain("#general");
+    expect(screen.getByText("MEMBER")).toBeTruthy();
+    expect(screen.getByText("NO BOT")).toBeTruthy();
+    expect(screen.queryByText("LIVE")).toBeNull();
+  });
+
+  test("the LIVE badge shows when the bot is in the channel", async () => {
+    const { client } = fakeClient({ first: { messages: [msg(1)], fromCache: false } });
+    const channel = { id: "C1", name: "general", isPrivate: false, isMember: true, botIsMember: true };
+    render(<History bridge={client} channelId="C1" channelName="general" channel={channel} />);
+    await screen.findByText("message 1");
+    expect(screen.getByText("LIVE")).toBeTruthy();
   });
 });

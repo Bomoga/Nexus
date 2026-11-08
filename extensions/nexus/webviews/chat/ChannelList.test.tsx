@@ -29,6 +29,15 @@ describe("ChannelList", () => {
     expect(onSelect).toHaveBeenCalledWith(expect.objectContaining({ id: "C_DEMO" }));
     const build = await screen.findByRole("button", { name: /nexus-build/ });
     expect(build.getAttribute("aria-current")).toBe("true");
+    expect(build.className).toContain("is-selected");
+    expect(demo.className).not.toContain("is-selected");
+  });
+
+  test("rows are the kit's 20 px small rows and show a CHANNELS header with the count", async () => {
+    const { container } = render(<ChannelList bridge={bridge()} selectedId={undefined} onSelect={() => {}} />);
+    await screen.findByRole("button", { name: /nexus-demo/ });
+    expect(container.querySelector(".nx-panel-header")?.textContent).toMatch(/^CHANNELS\s*\d+$/);
+    expect(container.querySelectorAll(".nx-list-row--sm").length).toBeGreaterThan(0);
   });
 
   test("shows a dot with the invite tooltip only when botIsMember is false", async () => {
@@ -41,8 +50,9 @@ describe("ChannelList", () => {
     const noBot = await screen.findByRole("button", { name: /no-bot/ });
     const dot = noBot.querySelector(".chat-dot");
     expect(dot).not.toBeNull();
-    expect(dot?.getAttribute("title")).toBe("invite @Nexus for live updates");
-    expect(INVITE_TOOLTIP).toBe("invite @Nexus for live updates");
+    expect(dot?.getAttribute("title")).toBe("bot not in channel: no live updates");
+    expect(dot?.getAttribute("aria-label")).toBe("bot not in channel: no live updates");
+    expect(INVITE_TOOLTIP).toBe("bot not in channel: no live updates");
     const withBot = await screen.findByRole("button", { name: /with-bot/ });
     expect(withBot.querySelector(".chat-dot")).toBeNull();
   });

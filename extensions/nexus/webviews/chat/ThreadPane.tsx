@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ChatMessage } from "../../src/contracts";
-import { Button, EmptyState, StatusLine, friendlyError, getBridge } from "../shared";
+import { Button, EmptyState, PanelHeader, StatusLine, friendlyError, getBridge } from "../shared";
 import type { BridgeClient } from "../shared";
 import { Composer, EchoBar, echoClass } from "./Composer";
-import { mergeMessages, usePostsAs, useSlackLive, useUsers } from "./live";
+import { mergeMessages, usePostsAsState, useSlackLive, useUsers } from "./live";
 import { useOutboxRows, useOutboxStore } from "./outbox";
 import { MessageRow } from "./MessageRow";
 
@@ -40,7 +40,8 @@ export function ThreadPane({ bridge, channelId, threadTs, onClose, onOpenLink, r
   const scroller = useRef<HTMLDivElement>(null);
   const atBottom = useRef(true);
   const stick = useRef(true);
-  const self = usePostsAs(client);
+  const identity = usePostsAsState(client);
+  const self = identity.self;
   const outbox = useOutboxStore(client);
   const target = useMemo(() => ({ channelId, threadTs }), [channelId, threadTs]);
   const { shown, rows } = useOutboxRows(outbox, target, messages, self);
@@ -103,17 +104,25 @@ export function ThreadPane({ bridge, channelId, threadTs, onClose, onOpenLink, r
     outbox.send(target, text);
   };
 
+  const replyCount = shown.filter((m) => m.ts !== threadTs).length;
+
   return (
-    <div className="chat-thread-pane">
-      <div className="chat-thread-head">
-        <span className="chat-thread-title">THREAD</span>
-        <Button variant="primary" onClick={makeTask} disabled={make === "working" || make === "done"}>
-          MAKE TASK
-        </Button>
-        <Button onClick={onClose}>CLOSE</Button>
-      </div>
-      {make === "done" ? <StatusLine tone="ok">task drafted</StatusLine> : null}
-      {make === "failed" ? <StatusLine tone="error">could not make a task</StatusLine> : null}
+    <div
+      className="chat-thread-pane"
+      onKeyDown={(e) => {
+        if (e.key === "Escape" && !e.nativeEvent.isComposing) onClose();
+      }}
+    >
+      <PanelHeader
+        className="chat-thread-head"
+        title="THREAD"
+        count={replyCount}
+        actions={
+          <Button size="sm" kbd="ESC" onClick={onClose}>
+            CLOSE
+          </Button>
+        }
+      />
       {load === "failed" ? (
         <EmptyState message={loadFailure} action={{ label: "RETRY", onClick: () => setAttempt((n) => n + 1) }} />
       ) : (
@@ -125,7 +134,7 @@ export function ThreadPane({ bridge, channelId, threadTs, onClose, onOpenLink, r
             atBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight <= 4;
           }}
         >
-          {load === "loading" ? <StatusLine>loading</StatusLine> : null}
+          {load === "loading" ? <StatusLine>… loading</StatusLine> : null}
           {rows.map(({ message: m, entry }) => (
             <div key={m.id} className={echoClass(entry?.state)}>
               <MessageRow
@@ -134,7 +143,9 @@ export function ThreadPane({ bridge, channelId, threadTs, onClose, onOpenLink, r
                 avatarUrl={users[m.author.id]?.avatarUrl}
                 onOpenLink={onOpenLink}
               />
-              {entry && entry.state !== "pending" ? <EchoBar state={entry.state} onRetry={() => outbox.retry(entry.clientId)} /> : null}
+              {entry && entry.state !== "pending" ? (
+                <EchoBar state={entry.state} onRetry={() => outbox.retry(entry.clientId)} onDismiss={() => outbox.dismiss(entry.clientId)} />
+              ) : null}
             </div>
           ))}
         </div>
@@ -144,10 +155,19 @@ export function ThreadPane({ bridge, channelId, threadTs, onClose, onOpenLink, r
           key={threadKey}
           onSend={send}
           placeholder="reply"
+          identity={identity}
           initialText={outbox.draftFor(target)}
           onDraftChange={(text) => outbox.setDraft(target, text)}
         />
       )}
+      <div className="chat-thread-foot">
+        <Button variant="primary" size="sm" onClick={makeTask} disabled={make === "working" || make === "done"}>
+          MAKE TASK
+        </Button>
+        {make === "working" ? <span className="chat-thread-note">… drafting</span> : null}
+        {make === "done" ? <span className="chat-thread-note nx-tone-ok">task drafted</span> : null}
+        {make === "failed" ? <span className="chat-thread-note nx-tone-error">could not make a task</span> : null}
+      </div>
     </div>
   );
 }

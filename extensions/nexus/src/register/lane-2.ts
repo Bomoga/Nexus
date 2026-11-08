@@ -112,7 +112,7 @@ export function registerLane2(context: vscode.ExtensionContext): Lane2Wiring {
   });
   void (async () => {
     const url = (await context.secrets.get(TIGER_SECRET_KEY)) || process.env.TIGER_URL;
-    if (!url) return;
+    if (!url) { log("shared store: no connection string (set TIGER_URL or the nexus.tiger.url secret); using the local copy only"); return; }
     try {
       const shared = createSharedStore({
         connectionString: url, local, machineId: machineId!, redact, workspaceIds, log: m => log(`shared store: ${m}`),
@@ -122,6 +122,7 @@ export function registerLane2(context: vscode.ExtensionContext): Lane2Wiring {
       sharedClient = shared.client;
       context.subscriptions.push({ dispose: () => { void shared.dispose(); } });
       await shared.sync.start();
+      log("shared store: started");
     } catch (e) {
       log(`shared store not started: ${e instanceof Error ? e.message : "unknown error"}`);   // these messages never contain the URL
     }

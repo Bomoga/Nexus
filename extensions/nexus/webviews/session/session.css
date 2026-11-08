@@ -73,16 +73,25 @@ html, body, #root { height: 100%; }
   .session-body .nx-table td { white-space: normal; max-width: none; height: auto; padding-top: 2px; padding-bottom: 2px; line-height: var(--nx-lh-sm); vertical-align: top; }
 }
 
-/* Composer: the empty agent view. The grey mark sits in the middle of the bar with the brief box under it, like an
-   editor's chat side bar; nothing here needs a Slack thread. */
-.sv-compose { flex: 1; min-height: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: var(--nx-gap-2); padding: var(--nx-gap-2) var(--nx-pad-x); overflow: auto; }
-.sv-logo { flex: none; color: var(--nx-muted); opacity: 0.55; }
-.sv-compose-form { width: 100%; max-width: 560px; display: flex; flex-direction: column; gap: var(--nx-gap-1); }
-.sv-compose-brief { min-height: 72px; resize: vertical; }
-.sv-compose-row { display: flex; align-items: center; gap: var(--nx-gap-1); }
+/* Composer: the empty agent view, laid out like an editor's chat side bar. A bordered box at the top holds the brief
+   and, along its bottom edge, the model picker (left) and START (right); a caption strip sits under it, the grey mark
+   fills the empty space, and the past sessions are listed at the bottom. */
+.sv-compose { flex: none; display: flex; flex-direction: column; gap: var(--nx-gap-1); padding: var(--nx-gap-2) var(--nx-pad-x) var(--nx-gap-1); }
+.sv-compose-box { display: flex; flex-direction: column; border: var(--nx-border-w) solid var(--nx-input-border); background: var(--nx-input-bg); }
+.sv-compose-box:focus-within { outline: var(--nx-border-w) solid var(--nx-focus); outline-offset: 1px; border-color: var(--nx-focus); }
+.sv-compose-brief, .sv-compose-brief:focus { min-height: 72px; resize: none; border: 0; outline: 0; background: transparent; }
+.sv-compose-row { display: flex; align-items: center; gap: var(--nx-gap-1); padding: var(--nx-gap-1); }
 .sv-compose-row .nx-select { flex: 1 1 0; min-width: 0; width: 0; text-overflow: ellipsis; }
+.sv-compose-strip { display: flex; flex-direction: column; gap: var(--nx-gap-1); }
 .sv-compose .nx-status-line { border-top: 0; padding: 0; height: auto; min-height: 0; white-space: normal; word-break: break-word; }
 .sv-compose .nx-caption { color: var(--nx-muted); font-size: var(--nx-font-ui-sm); line-height: var(--nx-lh-sm); }
+.sv-empty-mark { flex: 1 1 0; min-height: 0; display: flex; align-items: center; justify-content: center; overflow: hidden; }
+.sv-logo { flex: none; color: var(--nx-muted); opacity: 0.55; }
+.sv-past { flex: none; }
+.sv-past-body { max-height: calc(var(--nx-list-row-h) * 6); overflow-y: auto; }
+.sv-past-meta { display: inline-flex; align-items: center; gap: var(--nx-gap-1); }
+.sv-past-model { font-family: var(--nx-font-data); max-width: 12ch; overflow: hidden; text-overflow: ellipsis; }
+.sv-past-age { min-width: 3ch; text-align: right; font-family: var(--nx-font-data); font-variant-numeric: tabular-nums; color: var(--nx-muted); }
 
 /* The empty hint is a sentence, not a status: let it wrap in a narrow side bar instead of truncating. */
 .session-app .nx-empty, .session-app .nx-empty-message { white-space: normal; height: auto; min-height: var(--nx-control-h); line-height: var(--nx-lh-ui); padding-top: 3px; padding-bottom: 3px; }

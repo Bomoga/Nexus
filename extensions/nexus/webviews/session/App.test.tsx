@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, test, vi } from "vitest";
-import type { AgentEvent, Envelope } from "../../src/contracts";
+import type { AgentEvent, AgentSession, Envelope } from "../../src/contracts";
 import { fx } from "../../src/contracts/fixtures";
 import { scriptedAgentEvents, scriptedReceipts } from "../../src/contracts/fixtures/stream";
 import { createBridgeClient } from "../shared";
@@ -26,6 +26,7 @@ function setup(answers: Answers = {}) {
   const sumBase = scriptedReceipts.reduce((a, r) => a + (r.baselineCostUsd ?? 0), 0);
   const defaults: Answers = {
     "sessions.get": () => fx.session,
+    "sessions.list": () => [fx.session],
     "tasks.get": () => fx.task,
     "receipts.list": () => ({ receipts: scriptedReceipts, summary: { sessionId: "ses_01", calls: 4, costUsd: sumCost, savedUsd: sumBase - sumCost } }),
     "approvals.list": () => [fx.approval, fx.approvalDecided],
@@ -65,6 +66,9 @@ function setup(answers: Answers = {}) {
 }
 
 const rows = () => screen.queryAllByTestId("log-row");
+const statusBadge = () => screen.getByTestId("session-status").querySelector(".nx-badge") as HTMLElement;
+const receiptRows = () => [...screen.getByRole("table", { name: "model call receipts" }).querySelectorAll("tbody tr")];
+const receiptTotals = () => (screen.getByRole("table", { name: "model call receipts" }).querySelector("tfoot") as HTMLElement).textContent ?? "";
 const seqs = () => rows().map((r) => Number(r.getAttribute("data-seq")));
 const ev = (seq: number, rest: object) => ({ sessionId: "ses_01", seq, at: fx.session.startedAt, ...rest }) as AgentEvent;
 
@@ -72,7 +76,7 @@ describe("session view", () => {
   test("header shows task title, requested model, branch, status and CANCEL", async () => {
     const { bridge, reqs } = setup();
     render(<App bridge={bridge} sessionId="ses_01" />);
-    expect(await screen.findByText("Fix cart discount for qty > 1")).toBeTruthy();
+    expect(await screen.findByText(/Fix cart discount for qty > 1/)).toBeTruthy();
     expect(reqs("sessions.get")[0].body).toEqual({ sessionId: "ses_01" });
     expect(reqs("tasks.get")[0].body).toEqual({ taskId: "task_01" });
     expect(screen.getByText("claude-sonnet-4-5")).toBeTruthy();
@@ -129,25 +133,25 @@ describe("session view", () => {
   test("status events drive the header status and CANCEL enablement", async () => {
     const { bridge, emit, subbed } = setup();
     render(<App bridge={bridge} sessionId="ses_01" />);
-    await screen.findByText("Fix cart discount for qty > 1");
+    await screen.findByText(/Fix cart discount for qty > 1/);
     await waitFor(() => expect(subbed("agent.subscribe").length).toBe(1));
     emit("agent.subscribe", ev(0, { type: "status", status: "awaiting_approval" }));
-    expect(screen.getByTestId("session-status").className).toContain("nx-tone-pending");
+    expect(statusBadge().className).toContain("nx-badge--pending");
     emit("agent.subscribe", ev(1, { type: "status", status: "done" }));
-    expect(screen.getByTestId("session-status").className).toContain("nx-tone-ok");
+    expect(statusBadge().className).toContain("nx-badge--ok");
     expect((screen.getByRole("button", { name: /cancel/i }) as HTMLButtonElement).disabled).toBe(true);
     emit("agent.subscribe", ev(2, { type: "status", status: "failed" }));
-    expect(screen.getByTestId("session-status").className).toContain("nx-tone-error");
+    expect(statusBadge().className).toContain("nx-badge--error");
   });
 
   test("CANCEL requests agent.cancel", async () => {
     const { bridge, reqs } = setup();
     render(<App bridge={bridge} sessionId="ses_01" />);
-    await screen.findByText("Fix cart discount for qty > 1");
+    await screen.findByText(/Fix cart discount for qty > 1/);
     fireEvent.click(screen.getByRole("button", { name: /cancel/i }));
     await waitFor(() => expect(reqs("agent.cancel").length).toBe(1));
     expect(reqs("agent.cancel")[0].body).toEqual({ sessionId: "ses_01" });
-    await waitFor(() => expect(screen.getByTestId("session-status").textContent).toContain("cancelled"));
+    await waitFor(() => expect(screen.getByTestId("session-status").textContent).toMatch(/cancelled/i));
   });
 
   test("DIFF keeps the latest diff per path, colored as text", async () => {
@@ -182,19 +186,18 @@ describe("session view", () => {
     render(<App bridge={bridge} sessionId="ses_01" />);
     fireEvent.click(screen.getByRole("tab", { name: /receipts/i }));
     expect(await screen.findByText("rcpt_fixture_01")).toBeTruthy();
-    expect(screen.getAllByTestId("receipt-row").length).toBe(4);
-    const totals = screen.getByTestId("receipts-totals");
-    expect(totals.textContent).toContain("0.0177");
-    expect(totals.textContent).toContain("0.0431");
-    expect(totals.textContent).toContain("0.0254");
+    expect(receiptRows().length).toBe(4);
+    expect(receiptTotals()).toContain("0.0177");
+    expect(receiptTotals()).toContain("0.0431");
+    expect(receiptTotals()).toContain("0.0254");
     expect(screen.getAllByRole("button", { name: /open/i }).every((b) => (b as HTMLButtonElement).disabled)).toBe(true);
     await waitFor(() => expect(subbed("receipts.subscribe").length).toBe(1));
     expect(subbed("receipts.subscribe")[0].body).toEqual({ sessionId: "ses_01" });
     emit("receipts.subscribe", scriptedReceipts[0]); // duplicate callId
-    expect(screen.getAllByTestId("receipt-row").length).toBe(4);
+    expect(receiptRows().length).toBe(4);
     emit("receipts.subscribe", routed);
-    expect(screen.getAllByTestId("receipt-row").length).toBe(5);
-    expect(screen.getByTestId("receipts-totals").textContent).toContain("0.0182");
+    expect(receiptRows().length).toBe(5);
+    expect(receiptTotals()).toContain("0.0182");
     expect(screen.getByText(/cheap-model/).className).toContain("nx-tone-pending");
   });
 
@@ -209,7 +212,7 @@ describe("session view", () => {
     fireEvent.click(within(row).getByRole("button", { name: /approve/i }));
     await waitFor(() => expect(reqs("approvals.resolve").length).toBe(1));
     expect(reqs("approvals.resolve")[0].body).toEqual({ approvalId: "apr_01", decision: "approved" });
-    expect(await within(rows()[0]).findByText(/decided by app me/)).toBeTruthy();
+    expect(await within(rows()[0]).findByText(/approved by app me/)).toBeTruthy();
     expect(within(rows()[0]).queryByRole("button", { name: /approve/i })).toBeNull();
   });
 
@@ -223,7 +226,7 @@ describe("session view", () => {
     const row = rows()[0];
     fireEvent.click(await within(row).findByRole("button", { name: /reject/i }));
     await waitFor(() => expect(reqs("approvals.resolve")[0].body).toEqual({ approvalId: "apr_01", decision: "rejected" }));
-    expect(await within(rows()[0]).findByText(/decided by slack U_BRANDON/)).toBeTruthy();
+    expect(await within(rows()[0]).findByText(/approved by slack U_BRANDON/)).toBeTruthy();
   });
 
   test("a lost race (host answers conflict) shows the winner from approvals.list, not an error", async () => {
@@ -240,7 +243,7 @@ describe("session view", () => {
     await waitFor(() => expect(subbed("agent.subscribe").length).toBe(1));
     emit("agent.subscribe", scriptedAgentEvents[8]);
     fireEvent.click(await within(rows()[0]).findByRole("button", { name: /reject/i }));
-    expect(await within(rows()[0]).findByText(/decided by slack U_BRANDON/)).toBeTruthy();
+    expect(await within(rows()[0]).findByText(/approved by slack U_BRANDON/)).toBeTruthy();
     expect(within(rows()[0]).queryByRole("button", { name: /approve/i })).toBeNull();
     expect(screen.queryByText(/Already decided/)).toBeNull();
     expect(reqs("approvals.list").length).toBe(2);
@@ -252,10 +255,10 @@ describe("session view", () => {
     await waitFor(() => expect(subbed("approvals.subscribe").length).toBe(1));
     emit("agent.subscribe", scriptedAgentEvents[8]);
     emit("approvals.subscribe", { ...fx.approval, decision: "approved", decidedBy: { via: "slack", userId: "U1" }, decidedAt: fx.approval.requestedAt });
-    await within(rows()[0]).findByText(/decided by slack U1/);
+    await within(rows()[0]).findByText(/approved by slack U1/);
     emit("approvals.subscribe", fx.approval);
     expect(within(rows()[0]).queryByRole("button", { name: /approve/i })).toBeNull();
-    expect(within(rows()[0]).getByText(/decided by slack U1/)).toBeTruthy();
+    expect(within(rows()[0]).getByText(/approved by slack U1/)).toBeTruthy();
   });
 
   test("approvals.subscribe updates an approval live", async () => {
@@ -265,14 +268,215 @@ describe("session view", () => {
     emit("agent.subscribe", scriptedAgentEvents[8]);
     await within(rows()[0]).findByRole("button", { name: /approve/i });
     emit("approvals.subscribe", { ...fx.approval, decision: "rejected", decidedBy: { via: "auth0_push", userId: "auth0|1" }, decidedAt: fx.approval.requestedAt });
-    expect(await within(rows()[0]).findByText(/decided by auth0_push auth0\|1/)).toBeTruthy();
+    expect(await within(rows()[0]).findByText(/rejected by auth0_push auth0\|1/)).toBeTruthy();
+  });
+});
+
+describe("agent view layout", () => {
+  test("approval buttons show only while undecided; a decided one states who and when", async () => {
+    const { bridge, emit, subbed } = setup();
+    render(<App bridge={bridge} sessionId="ses_01" />);
+    await waitFor(() => expect(subbed("agent.subscribe").length).toBe(1));
+    emit("agent.subscribe", ev(0, { type: "approval_request", approvalId: "apr_02" }));
+    emit("agent.subscribe", ev(1, { type: "approval_request", approvalId: "apr_01" }));
+    expect(await within(rows()[0]).findByText(/^approved by slack U_BRANDON at T\+/)).toBeTruthy();
+    expect(within(rows()[0]).queryByRole("button", { name: /approve|reject/i })).toBeNull();
+    expect(within(rows()[1]).getByRole("button", { name: /approve/i })).toBeTruthy();
+    expect(within(rows()[1]).getByRole("button", { name: /reject/i })).toBeTruthy();
   });
 
-  test("no session id: one line, no requests", () => {
-    const { bridge, reqs, subbed } = setup();
+  test("the swarm verdict badge and judges table sit on the approval card, labeled model-written", async () => {
+    const { bridge, emit, subbed, reqs } = setup({ "swarms.review.get": () => fx.review });
+    render(<App bridge={bridge} sessionId="ses_01" />);
+    await waitFor(() => expect(subbed("agent.subscribe").length).toBe(1));
+    emit("agent.subscribe", ev(0, { type: "approval_request", approvalId: "apr_02" }));
+    const row = rows()[0];
+    expect(await within(row).findByText("LOOKS GOOD")).toBeTruthy();
+    expect(reqs("swarms.review.get")[0].body).toEqual({ approvalId: "apr_02" });
+    expect(within(row).getByText("judge-a")).toBeTruthy();
+    expect(within(row).getByText("No negative-discount guard")).toBeTruthy();
+    expect(within(row).getAllByText(/model-written/i).length).toBeGreaterThan(0);
+    emit("swarms.review.subscribe", { ...fx.review, status: "unavailable", verdict: undefined });
+    expect(await within(row).findByText("REVIEW UNAVAILABLE")).toBeTruthy();
+  });
+
+  test("tabs carry counts and a diff collapses", async () => {
+    const { bridge, emit, subbed } = setup();
+    render(<App bridge={bridge} sessionId="ses_01" />);
+    await waitFor(() => expect(subbed("agent.subscribe").length).toBe(1));
+    emit("agent.subscribe", ev(0, { type: "file_edit", path: "a.ts", diff: "@@ -1 +1 @@\n-old\n+new" }));
+    emit("agent.subscribe", ev(1, { type: "message", text: "hi" }));
+    expect(screen.getByRole("tab", { name: /^LOG\s*2$/ })).toBeTruthy();
+    expect(screen.getByRole("tab", { name: /^DIFF\s*1$/ })).toBeTruthy();
+    fireEvent.click(screen.getByRole("tab", { name: /diff/i }));
+    expect(screen.getByText("+1")).toBeTruthy();
+    expect(screen.getByText("−1")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "COLLAPSE" }));
+    expect(screen.queryByText("+new")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "EXPAND" }));
+    expect(screen.getByText("+new")).toBeTruthy();
+  });
+
+  test("tool results get a check or cross glyph and the strip carries the spend", async () => {
+    const { bridge, emit, subbed } = setup();
+    render(<App bridge={bridge} sessionId="ses_01" />);
+    await waitFor(() => expect(subbed("agent.subscribe").length).toBe(1));
+    emit("agent.subscribe", ev(0, { type: "tool_result", tool: "fs.read", ok: true, summary: "read 40 lines" }));
+    emit("agent.subscribe", ev(1, { type: "tool_result", tool: "cmd.run", ok: false, summary: "exit 1" }));
+    expect(within(rows()[0]).getByRole("img", { name: "ok" }).textContent).toBe("✓");
+    expect(within(rows()[1]).getByRole("img", { name: "failed" }).textContent).toBe("✗");
+    await waitFor(() => expect(screen.getByTitle(/^nexus\/agent-ses_01 · claude-sonnet-4-5 · T\+\d\d:\d\d · .+ · \$0\.0177 \(saved 0\.0254\)$/)).toBeTruthy());
+  });
+});
+
+describe("async answers after a session switch", () => {
+  const mk = (id: string, m: number): AgentSession => ({ ...fx.session, id, startedAt: new Date(Date.parse(fx.session.startedAt) + m * 60_000).toISOString(), branch: `nexus/agent-${id}` });
+
+  test("a cancel answer that lands after switching never marks the new session cancelled or shows its error", async () => {
+    const list = [mk("ses_b", 5), mk("ses_a", 0)];
+    const h = setup({ "sessions.list": () => list, "sessions.get": (b) => list.find((x) => x.id === b.sessionId) });
+    let answer!: (ok: boolean) => void;
+    const real = h.bridge.request.bind(h.bridge);
+    const bridge = {
+      ...h.bridge,
+      request: (name: string, body: unknown, o?: unknown) =>
+        name === "agent.cancel"
+          ? new Promise((res, rej) => {
+              answer = (ok) => (ok ? res({ ...fx.session, status: "cancelled" }) : rej({ code: "offline", message: "down" }));
+            })
+          : (real as (n: string, b: unknown, o?: unknown) => Promise<unknown>)(name, body, o),
+    } as unknown as typeof h.bridge;
+    render(<App bridge={bridge} sessionId="ses_a" />);
+    await waitFor(() => expect(h.subbed("agent.subscribe").length).toBe(1));
+    for (let i = 0; i < 4; i++) h.emit("agent.subscribe", ev(i, { type: "status", status: "running" }));
+    await waitFor(() => expect((screen.getByRole("combobox", { name: "session" }) as HTMLSelectElement).options.length).toBe(2));
+    fireEvent.click(screen.getByRole("button", { name: /cancel/i }));
+    await waitFor(() => expect(answer).toBeTypeOf("function"));
+    fireEvent.change(screen.getByRole("combobox", { name: "session" }), { target: { value: "ses_b" } });
+    await waitFor(() => expect(h.subbed("agent.subscribe").length).toBe(2));
+    h.emit("agent.subscribe", ev(1, { type: "status", status: "running" }));
+    await act(async () => {
+      answer(true);
+    });
+    expect(statusBadge().textContent).toMatch(/running/i);
+    expect((screen.getByRole("button", { name: /cancel/i }) as HTMLButtonElement).disabled).toBe(false);
+    // the failure path leaks nothing either
+    fireEvent.click(screen.getByRole("button", { name: /cancel/i }));
+    fireEvent.change(screen.getByRole("combobox", { name: "session" }), { target: { value: "ses_a" } });
+    await waitFor(() => expect(h.subbed("agent.subscribe").length).toBe(3));
+    await act(async () => {
+      answer(false);
+    });
+    expect(screen.queryByText(/offline/)).toBeNull();
+    expect((screen.getByRole("button", { name: /cancel/i }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  test("an approval_request whose id is not in approvals.list renders no buttons", async () => {
+    const { bridge, emit, subbed } = setup({ "approvals.list": () => [] });
+    render(<App bridge={bridge} sessionId="ses_01" />);
+    await waitFor(() => expect(subbed("agent.subscribe").length).toBe(1));
+    emit("agent.subscribe", ev(0, { type: "approval_request", approvalId: "apr_ghost" }));
+    expect(await within(rows()[0]).findByText(/apr_ghost · … loading/)).toBeTruthy();
+    expect(within(rows()[0]).queryByRole("button")).toBeNull();
+  });
+
+  test("once approval_resolved was seen, an undecided stored copy shows no buttons", async () => {
+    const { bridge, emit, subbed } = setup();
+    render(<App bridge={bridge} sessionId="ses_01" />);
+    await waitFor(() => expect(subbed("agent.subscribe").length).toBe(1));
+    emit("agent.subscribe", ev(0, { type: "approval_request", approvalId: "apr_01" }));
+    await within(rows()[0]).findByRole("button", { name: /approve/i });
+    emit("agent.subscribe", ev(1, { type: "approval_resolved", approvalId: "apr_01", decision: "approved" }));
+    expect(within(rows()[0]).queryByRole("button", { name: /approve|reject/i })).toBeNull();
+    expect(within(rows()[0]).getByText(/approved \(resolved event\)/)).toBeTruthy();
+  });
+
+  test("the switcher refetches sessions.list on focus and shows a one-line error when that fails", async () => {
+    let down = false;
+    const { bridge, reqs } = setup({
+      "sessions.list": () => {
+        if (down) throw { code: "offline", message: "down" };
+        return [fx.session];
+      },
+    });
+    render(<App bridge={bridge} sessionId="ses_01" />);
+    const select = await screen.findByRole("combobox", { name: "session" });
+    await waitFor(() => expect(reqs("sessions.list").length).toBe(1));
+    down = true;
+    await new Promise((r) => setTimeout(r, 1100));
+    fireEvent.focus(select);
+    expect(await screen.findByText("sessions: offline")).toBeTruthy();
+    expect(reqs("sessions.list").length).toBe(2);
+  });
+});
+
+describe("session resolution", () => {
+  const T = (m: number) => new Date(Date.parse(fx.session.startedAt) + m * 60_000).toISOString();
+  const mk = (id: string, status: AgentSession["status"], m: number): AgentSession => ({ ...fx.session, id, status, startedAt: T(m), branch: `nexus/agent-${id}` });
+
+  test("no id: sessions.list picks the newest running session over a newer finished one", async () => {
+    const { bridge, reqs, subbed } = setup({
+      "sessions.list": () => [mk("ses_old", "running", 0), mk("ses_done", "done", 30), mk("ses_run", "awaiting_approval", 10)],
+      "sessions.get": (b) => mk(String(b.sessionId), "running", 10),
+    });
     render(<App bridge={bridge} sessionId={undefined} />);
-    expect(screen.getByText(/no session/i)).toBeTruthy();
+    await waitFor(() => expect(subbed("agent.subscribe").length).toBe(1));
+    expect(reqs("sessions.get")[0].body).toEqual({ sessionId: "ses_run" });
+    expect(subbed("agent.subscribe")[0].body).toEqual({ sessionId: "ses_run", fromSeq: 0 });
+    expect((screen.getByRole("combobox", { name: "session" }) as HTMLSelectElement).value).toBe("ses_run");
+  });
+
+  test("the switcher lists sessions newest first and re-subscribes from seq 0 for the chosen one", async () => {
+    const list = [mk("ses_a", "done", 0), mk("ses_b", "running", 5)];
+    const { bridge, reqs, subbed } = setup({ "sessions.list": () => list, "sessions.get": (b) => list.find((x) => x.id === b.sessionId) });
+    render(<App bridge={bridge} sessionId={undefined} />);
+    await waitFor(() => expect(subbed("agent.subscribe").length).toBe(1));
+    const select = screen.getByRole("combobox", { name: "session" }) as HTMLSelectElement;
+    await waitFor(() => expect(select.options.length).toBe(2));
+    expect([...select.options].map((o) => o.value)).toEqual(["ses_b", "ses_a"]);
+    expect(select.options[0].textContent).toMatch(/^RUNNING · Fix cart discount for qty > 1 · claude-sonnet-4-5$/);
+    fireEvent.change(select, { target: { value: "ses_a" } });
+    await waitFor(() => expect(subbed("agent.subscribe").length).toBe(2));
+    expect(subbed("agent.subscribe")[1].body).toEqual({ sessionId: "ses_a", fromSeq: 0 });
+    expect(reqs("sessions.get").map((r) => r.body)).toEqual([{ sessionId: "ses_b" }, { sessionId: "ses_a" }]);
+    // A later sessions.list never resets the choice.
+    fireEvent.mouseDown(select);
+    await waitFor(() => expect(reqs("sessions.list").length).toBe(2));
+    expect(select.value).toBe("ses_a");
+    expect(subbed("agent.subscribe").length).toBe(2);
+  });
+
+  test("an id from the host wins over the list", async () => {
+    const { bridge, subbed } = setup({ "sessions.list": () => [mk("ses_x", "running", 50), fx.session] });
+    render(<App bridge={bridge} sessionId="ses_01" />);
+    await waitFor(() => expect(subbed("agent.subscribe").length).toBe(1));
+    await waitFor(() => expect((screen.getByRole("combobox", { name: "session" }) as HTMLSelectElement).options.length).toBe(2));
+    expect(subbed("agent.subscribe")[0].body).toEqual({ sessionId: "ses_01", fromSeq: 0 });
+    expect(subbed("agent.subscribe").length).toBe(1);
+  });
+
+  test("an empty list shows one hint line and makes no session requests", async () => {
+    const { bridge, reqs, subbed } = setup({ "sessions.list": () => [] });
+    render(<App bridge={bridge} sessionId={undefined} />);
+    expect(await screen.findByText("no agent session yet · start one from a Slack thread")).toBeTruthy();
+    expect(screen.queryByRole("button")).toBeNull();
     expect(reqs("sessions.get").length + subbed("agent.subscribe").length).toBe(0);
+  });
+
+  test("a failing sessions.list shows an error with RETRY", async () => {
+    let down = true;
+    const { bridge, reqs } = setup({
+      "sessions.list": () => {
+        if (down) throw { code: "offline", message: "down" };
+        return [fx.session];
+      },
+    });
+    render(<App bridge={bridge} sessionId={undefined} />);
+    expect(await screen.findByText("sessions: offline")).toBeTruthy();
+    down = false;
+    fireEvent.click(screen.getByRole("button", { name: "RETRY" }));
+    expect(await screen.findByText(/Fix cart discount/)).toBeTruthy();
+    expect(reqs("sessions.list").length).toBe(2);
   });
 });
 
@@ -290,7 +494,7 @@ describe("states", () => {
     expect(screen.queryByText(/no handler/)).toBeNull();
     missing = false;
     fireEvent.click(screen.getByRole("button", { name: "RETRY" }));
-    expect(await screen.findByText("Fix cart discount for qty > 1")).toBeTruthy();
+    expect(await screen.findByText(/Fix cart discount for qty > 1/)).toBeTruthy();
     expect(reqs("sessions.get")).toHaveLength(2);
   });
 
@@ -298,7 +502,7 @@ describe("states", () => {
     const down = { code: "offline", message: "down" };
     const a = setup({ "approvals.list": () => { throw down; } });
     render(<App bridge={a.bridge} sessionId="ses_01" />);
-    expect(await screen.findByText("Fix cart discount for qty > 1")).toBeTruthy();
+    expect(await screen.findByText(/Fix cart discount for qty > 1/)).toBeTruthy();
     expect(await screen.findByText("approvals: offline")).toBeTruthy();
     cleanup();
     const b = setup({ "sessions.get": () => { throw down; }, "approvals.list": () => { throw down; } });
@@ -309,7 +513,7 @@ describe("states", () => {
   test("empty tabs say one line each", async () => {
     const { bridge } = setup({ "receipts.list": () => ({ receipts: [], summary: { sessionId: "ses_01", calls: 0, costUsd: 0, savedUsd: 0 } }) });
     render(<App bridge={bridge} sessionId="ses_01" />);
-    await screen.findByText("Fix cart discount for qty > 1");
+    await screen.findByText(/Fix cart discount for qty > 1/);
     fireEvent.click(screen.getByRole("tab", { name: /diff/i }));
     expect(screen.getByText("no diffs yet")).toBeTruthy();
     fireEvent.click(screen.getByRole("tab", { name: /tests/i }));

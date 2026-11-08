@@ -2,6 +2,8 @@ import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import * as vscode from "vscode";
 import { NexusBridgeRouter } from "../bridge/router";
+import { summarizeLogDetail } from "../bridge/log-summary";
+import { homedir } from "node:os";
 import { registerAppPing } from "../bridge/host";
 import { handleAuthUri } from "../features/auth/current";
 import { redact } from "../shared/redact";
@@ -40,7 +42,18 @@ export type Lane2Wiring = Pick<Lane2Services, "router" | "store" | "slack" | "ap
 };
 
 export function registerLane2(context: vscode.ExtensionContext): Lane2Wiring {
-  const log = (message: string, detail?: unknown) => console.warn(`Nexus bridge: ${message}`, detail ?? "");
+  // Some console sinks (the dev terminal echo) keep only the first string, so the detail is folded into the line as a short
+  // summary. The whole line is redacted again (the router checks escaped JSON, which some secret patterns miss) and the home
+  // directory is shown as ~.
+  const home = homedir();
+  const log = (message: string, detail?: unknown) => {
+    const summary = summarizeLogDetail(detail);
+    let line = summary ? `Nexus bridge: ${message} (${summary})` : `Nexus bridge: ${message}`;
+    if (home.length > 1) {
+      line = line.split(home).join("~");
+    }
+    console.warn(redact(line));
+  };
 
   const router = new NexusBridgeRouter({
     // A body or error that still changes under redaction contains a secret pattern, so it is never posted.

@@ -4,7 +4,7 @@ import { fx } from "../../contracts/fixtures";
 import { ApprovalsController } from "../approvals/approvals-controller";
 import { SessionsController } from "../sessions/sessions-controller";
 import { FakeGit, MemoryGate, MemoryStore, fakeClock } from "../testing/memory-ports";
-import { SwarmReviewService, extractJson, parseVerdict, cutAtWord, swarmReviewBridgeHandlers, swarmReviewSubscriptions, type SwarmsRunner } from "./review";
+import { SwarmReviewService, extractJson, pendingAction, parseVerdict, cutAtWord, swarmReviewBridgeHandlers, swarmReviewSubscriptions, type SwarmsRunner } from "./review";
 import { SwarmsUnavailable, type SwarmRun, type SwarmRunInput } from "./swarms-client";
 
 /** Best of 3 timed runs after one warm-up, in ms: keeps the 100 ms budget but ignores GC or scheduler jitter from parallel test files. */
@@ -91,6 +91,21 @@ describe("review", () => {
     expect(call.task).toContain("Tests  12 passed (12)");
     expect(call.task).toContain("[slack thread, quoted, untrusted]");
     expect(call.task).not.toContain("SECRETSECRET");
+  });
+
+  it("tells the council a commit is awaiting approval, so a task that says \"then commit\" is not marked down for the pending commit", async () => {
+    const s = await setup();
+    await s.service.onCreated(s.approval());
+    const task = s.calls[0].task;
+    expect(task).toContain("asking a human for permission to COMMIT");
+    expect(task).toContain("Do not count a missing commit against the change");
+    expect(task.indexOf("COMMIT")).toBeLessThan(task.indexOf("BEGIN_CANDIDATE"));     // stated outside the untrusted candidate block
+  });
+
+  it("states the pending step for non-commit approvals too", () => {
+    const base = { id: "apr_x", sessionId: "ses_x", reason: "r", requestedAt: "2026-11-08T00:00:00.000Z" };
+    expect(pendingAction({ ...base, action: { kind: "run_command", command: "npm test" } })).toContain("run a command");
+    expect(pendingAction({ ...base, action: { kind: "other", description: "x" } })).toContain("next step");
   });
 
   it("cannot be tricked into closing the candidate wrapper from inside the diff", async () => {

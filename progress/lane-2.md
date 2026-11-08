@@ -1,4 +1,5 @@
 ## Done
+- L2-S1 live Slack check passed (2026-11-07 19:15 ET, #nexus-demo): a person's message arrived over Socket Mode, the bot posted the approval card, and the APPROVE click came back through interactivity as a human decision (38 s). A first try was lost because the message went out before the ~11 s connect finished or to another connected client; a diagnostic run of the service then received every message.
 - Shared store wired (lane-2, not on main yet): L2-09 schema, L2-10 Tiger store + combined store, L2-10b the agent's machine decides its approvals offline, L2-11 live sync (LISTEN/NOTIFY + keyset polling), L2-12 activity strip (events.activity, on main via PR #41), L2-15 Token Vault, L2-17 Slack progress message. Everything runs on the local copy until TIGER_URL (or SecretStorage nexus.tiger.url) is set; then the store switches to Tiger and sync starts.
 - L2-W1 Windows fixes merged to lane-2 (disputed once): isolated git config uses a real empty file instead of os.devNull; the gate awaits taskkill (3 s cap) before reporting a killed run, and finishes a timed-out run even when the kill leaves the child running; gate tests are platform-neutral (node -e), poll instead of fixed 20 ms waits, and skip on win32 only for POSIX process groups and the POSIX PATH-shadow script. Verified on macOS only.
 - PR #33 merged to main: code refs, nexus:// coderef links, ui.openTarget, notification-text sanitizing. Launch check passed.
@@ -15,6 +16,8 @@
 ## In flight
 
 ## Blocked
+- Tiger live: the TIGER_URL in Brandon's shell is not a postgres:// URL (a placeholder); the real connection string is needed, then sql/001, 002, 003 applied once.
+- Lane 1 handoff: lane-1-features.ts still passes vscode.env.machineId (a placeholder when telemetry is off) and no progress port; needs l2.machineId and l2.progress before the shared store goes live.
 
 ## Decisions
 T+0 = 22:00 ET, 2026-11-06
@@ -59,4 +62,9 @@ T+0 = 22:00 ET, 2026-11-06
 - 2026-11-07 Security: VS Code turns [label](command:...) in an extension's notification text into a clickable link that runs the command. All untrusted text in a notification goes through plainNotificationText (src/shared/plain-text.ts). Lane 2 uses it for code-ref paths and Slack names; Lane 1 fixed the approval notification and commands.ts in 344eb5ec. Still open, for Elkin: share-selection.ts:93 and :95 show file paths and raw errors, once it is wired.
 
 ## Next
-- Adrian: rerun `npx vitest run src/services/git src/services/gate src/services/coderef` on Windows; L2-S1 live Slack check (Brandon); L2-09 Tiger schema once the connection string is in; then L2-10 Tiger store, L2-11 sync, L2-12 aggregates; L2-15 Token Vault
+- All 17 planned Lane 2 tasks are on main (L2-01 to L2-17). Remaining are live checks and handoffs, not code:
+- Brandon: real TIGER_URL; apply sql/001-003; run `npm run test:int -- schema` (team DB, rolled back) and, against a scratch DB via TIGER_TEST_URL, the tiger and sync int tests; the psql LISTEN check in 003's header (H0-B4).
+- Token Vault live check once Slack is linked in Auth0 (token-vault.int.test.ts; confirm the not-connected error names and the connect URL).
+- Adrian: l2.machineId + l2.progress in lane-1-features.ts; rerun the git, gate and code-ref tests on Windows.
+- Elkin: nexus.openSlack should reveal the { channelId, threadTs } it is given (it only focuses the view); wire Share to Slack to coderef.create and formatCodeRefForSlack, and sanitise its notification text.
+- Adrian (optional, for the section 6 final summary): AWAIT `l2.progress.finish(session, summary)` just before storing the session's terminal status; the Slack progress message then shows the summary (labeled model-written). Without it the message still closes, without a summary.

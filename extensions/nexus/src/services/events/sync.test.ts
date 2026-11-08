@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fx } from "../../contracts/fixtures";
 import type { AgentEvent, DecidedBy, NexusEvent } from "../../contracts";
 import { LocalStore } from "./local-store";
@@ -23,6 +23,8 @@ class FakeRemote implements SyncClient {
   tables = Object.fromEntries(SYNC_TABLES.map(t => [t, [] as Row[]])) as Record<string, Row[]>;
   down = false;
   log: string[] = [];
+  /** Every query with its parameters (log keeps just the text). */
+  calls: { text: string; params: unknown[] }[] = [];
   onPoll?: (table: string) => void;
   hidden = new Set<string>();   // "agent_events:ses:seq" rows not yet visible (uncommitted)
   private keyOf(t: string, r: Row): string { return t === "agent_events" ? `${r.session_id}:${r.seq}` : String(t === "model_call_receipts" ? r.call_id : r.id); }
@@ -36,6 +38,7 @@ class FakeRemote implements SyncClient {
 
   async query(text: string, params: unknown[] = []) {
     this.log.push(text === SYNC_SQL.probe ? "probe" : text);
+    this.calls.push({ text, params });
     if (this.down) throw Object.assign(new Error("connection refused"), { code: "ECONNREFUSED" });
     if (text === SYNC_SQL.probe) return { rows: [], rowCount: 0 };
     for (const t of SYNC_TABLES) {
@@ -344,6 +347,23 @@ describe("sync: agent event edge cases", () => {
     await settle();
     expect(remote.log.filter(l => l === SYNC_SQL.agentFrom)).toHaveLength(1);
     expect((await local.agentEvents("ses_n", 0)).map(e => e.seq)).toEqual([0]);
+  });
+});
+
+describe("sync: long sessions", () => {
+  it("reads a session's local event log once, not on every NOTIFY tick", async () => {
+    await make({ listen: "ok" }).start();
+    const reads = vi.spyOn(local, "agentEvents");
+    for (let seq = 0; seq < 30; seq++) {
+      remote.put("agent_events", agentRow(msg("ses_long", seq)), T(80 + seq));
+      notify!(JSON.stringify({ table: "agent_events", id: `ses_long:${seq}`, session_id: "ses_long" }));
+      await settle();   // one tick per event, like a live session
+    }
+    expect((await local.agentEvents("ses_long", 0)).map(e => e.seq)).toEqual(Array.from({ length: 30 }, (_, i) => i));
+    expect(reads.mock.calls.filter(([sid]) => sid === "ses_long").length).toBeLessThanOrEqual(2);   // the first load (+ the check above)
+    // and each tick asks the shared store only for what is new, not for everything since the first load
+    const froms = remote.calls.filter(c => c.text === SYNC_SQL.agentFrom && c.params[0] === "ses_long").map(c => Number(c.params[1]));
+    expect(froms.slice(-3)).toEqual([27, 28, 29]);
   });
 });
 

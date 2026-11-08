@@ -293,4 +293,52 @@ describe("buildLane2", () => {
       expect(api.chat.postMessage).toHaveBeenCalledTimes(1);
     }
   }, 20_000);
+
+  it("drops a Token Vault token Slack refuses and uses the pasted one, instead of failing until it expires", async () => {
+    const used: string[] = [];
+    const makeApi = (token: string) => new Proxy({}, { get: () => new Proxy({}, { get: (_g, name) => async () => {
+      used.push(`${token}:${String(name)}`);
+      if (token === "xoxp-vault") throw Object.assign(new Error("An API error occurred: invalid_auth"), { data: { error: "invalid_auth" } });
+      if (name === "test") return { user_id: "U_ME", user: "brandon" };
+      throw new Error("offline");
+    } }) });
+    const vault = { getUserToken: vi.fn(async () => ({ token: "xoxp-vault", source: "token_vault" as const })), invalidate: vi.fn() };
+    const { built } = setup({ tokenVault: vault, now: () => 1_000_000, slackSeams: { webOptions: { makeApi } } as never }, { [SLACK_SECRET_KEYS.user]: "xoxp-pasted" });
+    expect((await built.served.status()).postsAs).toBeNull();   // the vault token is refused
+    expect(vault.invalidate).toHaveBeenCalledTimes(1);
+    const after = await built.served.status();
+    expect([after.postsAs?.name, after.userTokenSource]).toEqual(["brandon", "manual"]);
+    expect(vault.getUserToken).toHaveBeenCalledTimes(1);   // not asked again during the quiet minute
+    expect(used.filter(u => u.startsWith("xoxp-pasted")).length).toBeGreaterThan(0);
+  });
+
+  it("leaves Token Vault alone when Slack refuses a pasted token", async () => {
+    const makeApi = () => new Proxy({}, { get: () => new Proxy({}, { get: () => async () => { throw Object.assign(new Error("invalid_auth"), { data: { error: "invalid_auth" } }); } }) });
+    const vault = { getUserToken: vi.fn(async () => null), invalidate: vi.fn() };
+    let t = 1_000_000;
+    const { built } = setup({ tokenVault: vault, now: () => t, slackSeams: { webOptions: { makeApi } } as never }, { [SLACK_SECRET_KEYS.user]: "xoxp-pasted" });
+    await built.served.status();
+    expect(vault.invalidate).not.toHaveBeenCalled();
+    t += 61_000;   // the vault's own miss window ends; a refused pasted token must not have extended it
+    await built.served.status();
+    expect(vault.getUserToken).toHaveBeenCalledTimes(2);
+  });
+
+  it("puts Lane 1's final summary in the closed progress message when it calls finish before storing the end", async () => {
+    const { store, built, api } = setup({ git: new FakeGit() }, { [SLACK_SECRET_KEYS.bot]: "xoxb-1", [SLACK_SECRET_KEYS.app]: "xapp-1" });
+    const task = { ...fx.task, source: { kind: "thread" as const, channelId: "C9", threadTs: "40.000100" } };
+    await store.putTask(task);
+    const session = { ...fx.session, taskId: task.id, status: "running" as const, slackProgress: undefined };
+    await built.observedStore.putSession(session);
+    await vi.waitFor(async () => expect((await store.getSession(session.id))?.slackProgress).toBeDefined());
+    const done = { ...session, status: "done" as const };
+    await built.progress!.finish(done, "Fixed the discount for qty > 1 and added a test.");
+    await built.observedStore.putSession(done);
+    await vi.waitFor(() => expect(api.chat.update).toHaveBeenCalled());
+    const updates = () => api.chat.update.mock.calls as unknown as unknown[][];
+    const texts = updates().map(c => JSON.stringify(c[0]));
+    expect(texts.some(t => t.includes("Fixed the discount for qty"))).toBe(true);
+    await new Promise(r => setTimeout(r, 20));
+    expect(JSON.stringify(updates().at(-1)?.[0])).toContain("Fixed the discount for qty");   // the later store write does not edit it away
+  });
 });

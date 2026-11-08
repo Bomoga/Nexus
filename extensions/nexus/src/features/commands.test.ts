@@ -24,6 +24,43 @@ describe("make task opens the task editor", () => {
   });
 });
 
+describe("make task starts an agent", () => {
+  const model = { provider: "anthropic", modelId: "claude-sonnet-4-5" };
+  const lane = (over: object = {}) => ({
+    tasks: { createFromThread: async () => ({ id: "task_9", title: "T" }) },
+    agentModel: () => model,
+    sessions: { start: async (id: string, m: unknown) => { started.push([id, m]); return { id: "ses_9" }; } },
+    ...over,
+  }) as unknown as Lane1;
+  const started: unknown[] = [];
+
+  it("starts a session with the status bar's model and shows it, instead of opening the editor", async () => {
+    started.length = 0;
+    const c = ui();
+    const shown: string[] = [];
+    const opened: string[] = [];
+    await lane1Commands(lane(), { ...c.u, openSession: id => shown.push(id) }, () => "a", id => opened.push(id))["nexus.makeTaskFromThread"]("C1", "1.1");
+    expect(started).toEqual([["task_9", model]]);
+    expect(shown).toEqual(["ses_9"]);
+    expect(opened).toEqual([]);
+    expect(c.infos[0]).toContain("Agent started");
+  });
+
+  it("opens the task editor when no model is chosen, and keeps the draft when the start fails", async () => {
+    const c = ui();
+    const opened: string[] = [];
+    await lane1Commands(lane({ agentModel: () => undefined }), c.u, () => "a", id => opened.push(id))["nexus.makeTaskFromThread"]("C1", "1.1");
+    expect(opened).toEqual(["task_9"]);
+    const d = ui();
+    const opened2: string[] = [];
+    const failing = lane({ sessions: { start: async () => { throw new Error("An agent session is already running"); } } });
+    await lane1Commands(failing, d.u, () => "a", id => opened2.push(id))["nexus.makeTaskFromThread"]("C1", "1.1");
+    expect(d.errors[0]).toContain("already running");
+    expect(d.errors[0]).toContain("saved as a draft");
+    expect(opened2).toEqual(["task_9"]);
+  });
+});
+
 describe("lane1Commands keep untrusted text from becoming command links", () => {
   it("task titles", async () => {
     const lane = { tasks: { createFromThread: async () => ({ title: `Fix ${LINK}` }) } } as unknown as Lane1;

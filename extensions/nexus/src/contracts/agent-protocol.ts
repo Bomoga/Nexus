@@ -25,8 +25,9 @@ export const AgentRequests = {
 
 // extension -> agent
 export const HostRequests = {
-  "session.start":  { req: z.object({ session: z.object({ id: Id, taskId: Id, branch: z.string(), worktreePath: z.string(), baseCommit: Sha, model: z.object({ provider: z.string(), modelId: z.string() }) }), task: Task, systemRules: z.string(), untrustedBlocks: z.array(z.object({ label: z.string(), text: z.string() })) }), res: z.object({ accepted: z.literal(true) }) },
+  "session.start":  { req: z.object({ session: z.object({ id: Id, taskId: Id, branch: z.string(), worktreePath: z.string(), baseCommit: Sha, model: z.object({ provider: z.string(), modelId: z.string() }) }), task: Task, systemRules: z.string(), untrustedBlocks: z.array(z.object({ label: z.string(), text: z.string() })), resume: z.object({ history: z.array(z.object({ role: z.enum(["user", "assistant"]), text: z.string() })), message: z.string().min(1).max(20000) }).optional() }), res: z.object({ accepted: z.literal(true) }) },
   "session.cancel": { req: z.object({ sessionId: Id }), res: z.object({ cancelled: z.literal(true) }) },
+  "session.message":{ req: z.object({ sessionId: Id, text: z.string().min(1).max(20000) }), res: z.object({ accepted: z.literal(true) }) },   // a person's follow-up for the running loop; taken between model calls
   "health":         { req: z.object({}), res: z.object({ ok: z.literal(true), pid: z.number().int() }) },
 } as const;
 

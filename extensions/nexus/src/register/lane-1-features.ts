@@ -15,8 +15,8 @@ import { approvalsHookFor } from "../features/adapters/approvals-hook";
 import type { ApprovalHook, NotifyPort } from "../features/approvals/approvals-controller";
 import { makeConfiguredCibaHook } from "../features/approvals/ciba-wiring";
 import type { Auth0Session } from "../features/auth/auth0-signin";
-import { lane1Commands } from "../features/commands";
-import { openEditorAfterCreate } from "../features/tasks/tasks-controller";
+import { handleNewTask, lane1Commands } from "../features/commands";
+import { startAgentAfterCreate } from "../features/tasks/tasks-controller";
 import { safeCommandUi, safeNotifyPort } from "../features/notify-safe";
 import { composeLane1, type Lane1 } from "../features/compose";
 import type { Clock, GatePort, GitPort, StorePort } from "../features/ports";
@@ -130,16 +130,18 @@ export function registerFeatures(context: vscode.ExtensionContext, accounts: Acc
   });
 
   ref.lane = lane;
+  lane.sessions.reconcileOrphans().then(n => { if (n > 0) log(`ended ${n} session(s) left running by a previous run`); }).catch(e => log(`could not reconcile sessions: ${e instanceof Error ? e.message : "unknown error"}`));
   connectSlackApprovals(l2, lane.approvals);
 
   const ui = safeCommandUi({
     info: (m: string) => void vscode.window.showInformationMessage(m),
     error: (m: string) => void vscode.window.showErrorMessage(m),
+    openSession: (id: string) => void vscode.commands.executeCommand("nexus.openSession", id),
     pickApproval: async (items: Array<{ id: string; label: string; detail: string }>) => (await vscode.window.showQuickPick(items, { placeHolder: "Which approval?" }))?.id,
   });
   const commands = lane1Commands(lane, ui, () => identity().userId, openTaskEditor);
   context.subscriptions.push(
-    wireLane1ToRouter({ ...lane, handlers: openEditorAfterCreate(lane.handlers, openTaskEditor) }, l2.router),
+    wireLane1ToRouter({ ...lane, handlers: startAgentAfterCreate(lane.handlers, task => handleNewTask(lane, ui, openTaskEditor, task)) }, l2.router),
     { dispose: () => lane.host.dispose?.() },
     ...Object.entries(commands).map(([id, fn]) => vscode.commands.registerCommand(id, (...args: string[]) => (fn as (...a: string[]) => unknown)(...args))),
   );

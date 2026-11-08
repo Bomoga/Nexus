@@ -5,6 +5,7 @@ import { BridgeError, Badge, Button, EmptyState, ListRow, Logo, MonoBlock, Pendi
 import type { BadgeKind, BridgeClient, TableColumn } from "../shared";
 import { formatEventTime } from "../globe/model/picking";
 import { Composer } from "./Composer";
+import { Reply } from "./Reply";
 
 type Status = AgentSession["status"];
 const OPEN_RECEIPT_HINT = "opening receipts needs a bridge command (pending Lane 1)";
@@ -485,7 +486,11 @@ export function App({ bridge, sessionId: initialId, composeSeq }: AppProps) {
     const sid = sessionId;
     const here = () => sidRef.current === sid;
     b.request("agent.cancel", { sessionId: sid })
-      .then(() => here() && setCancelled({ atSeq }))
+      .then((res) => {
+        if (!here()) return;
+        if (res.status === "running" || res.status === "awaiting_approval") setError("the agent did not stop; try CANCEL again");
+        else setCancelled({ atSeq });
+      })
       .catch((e) => here() && setError(friendlyError(e, "session")))
       .finally(() => here() && setCancelling(false));
   };
@@ -634,6 +639,7 @@ export function App({ bridge, sessionId: initialId, composeSeq }: AppProps) {
           </div>
         ) : null}
       </div>
+      {session ? <Reply bridge={bridge} sessionId={sessionId} live={live} /> : null}
     </div>
   );
 }
@@ -714,6 +720,8 @@ function LogRow({ e, card }: { e: AgentEvent; card: ReactNode }) {
   switch (e.type) {
     case "message":
       return row("log-row--block", <div className="log-text">{e.text}<ModelWritten /></div>);
+    case "user_message":
+      return row("log-row--block", <div className="log-text log-user"><span className="log-you">YOU</span> {e.text}</div>);
     case "approval_request":
       return row("log-row--block", card);
     case "tool_call":

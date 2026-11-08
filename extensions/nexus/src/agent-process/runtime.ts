@@ -69,6 +69,8 @@ interface Running {
   sessionId: string;
   abort: AbortController;
   done: Promise<SessionOutcome>;
+  /** A person's follow-ups, taken by the loop between model calls (and before it would finish). */
+  inbox: string[];
 }
 
 export class AgentRuntime {
@@ -86,12 +88,20 @@ export class AgentRuntime {
     if (this.running) throw new Error("a session is already running in this agent process");
     const abort = new AbortController();
     const sessionId = start.session.id;
-    const done = this.loop(start, abort.signal).then(o => {
+    const inbox: string[] = [];
+    const done = this.loop(start, abort.signal, inbox).then(o => {
       this.running = undefined;
       this.deps.onFinished?.(o);
       return o;
     });
-    this.running = { sessionId, abort, done };
+    this.running = { sessionId, abort, done, inbox };
+  }
+
+  /** Queues a person's follow-up for the running loop; false when that session is not running (it just ended). */
+  message(sessionId: string, text: string): boolean {
+    if (!this.running || this.running.sessionId !== sessionId) return false;
+    this.running.inbox.push(text);
+    return true;
   }
 
   /** Stops the loop within one turn: aborts the provider call and abandons any tool still waiting on a human. */
@@ -117,6 +127,11 @@ export class AgentRuntime {
         if (!this.cancel(id)) throw new Error(`no running session ${id}`);
         return { cancelled: true };
       }
+      if (name === "session.message") {
+        const b = body as { sessionId: string; text: string };
+        if (!this.message(b.sessionId, b.text)) throw new Error(`no running session ${b.sessionId}`);
+        return { accepted: true };
+      }
       return { ok: true, pid: process.pid };
     }) as never);
   }
@@ -135,7 +150,7 @@ export class AgentRuntime {
     }
   }
 
-  private async loop(start: SessionStart, signal: AbortSignal): Promise<SessionOutcome> {
+  private async loop(start: SessionStart, signal: AbortSignal, inbox: string[]): Promise<SessionOutcome> {
     const sessionId = start.session.id;
     const maxTurns = this.deps.maxTurns ?? MAX_TURNS;
     let turns = 0;
@@ -151,11 +166,23 @@ export class AgentRuntime {
     const system = [start.systemRules, frame(start.untrustedBlocks)].filter(s => s.length > 0).join("\n\n");
     // The title may come from a Slack message, so it is fenced as data like every other untrusted text; the brief is
     // quoted by the brief builder (its Slack lines start with "> "), and the system rules say how to read both.
-    const messages: TurnMessage[] = [{ role: "user", content: `Task title (data, supplied by a person):\n${frame([{ label: "task title", text: start.task.title }])}\n\nTask brief:\n${start.task.brief}` }];
+    const messages: TurnMessage[] = [];
+    // Consecutive turns of one role are joined: providers expect alternating roles, and a follow-up can land right after tool results.
+    const add = (role: "user" | "assistant", text: string) => {
+      const last = messages[messages.length - 1];
+      if (last && last.role === role && !(last.role === "assistant" && last.toolCalls)) last.content = `${last.content}\n\n${text}`;
+      else messages.push(role === "user" ? { role, content: text } : { role, content: text });
+    };
+    add("user", `Task title (data, supplied by a person):\n${frame([{ label: "task title", text: start.task.title }])}\n\nTask brief:\n${start.task.brief}`);
+    // A resumed session starts from what was said so far (the worktree already holds the work), then the person's new message.
+    // The history is the transcript the host stored: the person's own messages and the agent's replies, not tool output.
+    for (const h of start.resume?.history ?? []) add(h.role, h.text);
+    if (start.resume) add("user", start.resume.message);
 
     while (turns < maxTurns) {
       if (signal.aborted) return finish("cancelled");
       turns++;
+      for (const text of inbox.splice(0)) add("user", text);          // a follow-up typed while the agent was working
 
       const callId = this.deps.newCallId?.() ?? `call_${sessionId}_${++this.callSeq}`;
       let text = "";
@@ -195,6 +222,7 @@ export class AgentRuntime {
 
       if (toolCalls.length === 0) {
         if (stop === "max_tokens") return fail("the model hit its output limit before finishing");
+        if (inbox.length > 0) continue;                               // a follow-up arrived during this turn: answer it instead of finishing
         return finish("done");
       }
 

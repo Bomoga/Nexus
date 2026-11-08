@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { NexusEvent, TimeWindow } from "../../src/contracts";
 import { Badge, Button, EmptyState, SegmentedControl, StatusLine, StoreStatusLine, friendlyError, getBridge, isFakeMode } from "../shared";
 import type { BridgeClient } from "../shared";
-import { QUERY_LIMIT, TIME_WINDOWS, familiesOf, keepNewest, visibleEvents, windowMs } from "./model";
+import { QUERY_LIMIT, WINDOW_OPTIONS, familiesOf, keepNewest, visibleEvents, windowMs } from "./model";
 import { formatEventTime } from "./model/picking";
 import { insertLive, scriptedNow } from "./model/arcs";
 import { markLive, useDriftNow, useLiveEvents } from "./scene/live";
@@ -14,8 +14,6 @@ import { Search } from "./Search";
 
 const NOW_TICK_MS = 5_000;
 const FAKE_SPAN_MS = 36 * 3_600_000;
-
-export const WINDOW_OPTIONS = TIME_WINDOWS.map((w) => ({ value: w, label: w.toUpperCase() }));
 
 export interface AppProps {
   /** Defaults to the real bridge. */

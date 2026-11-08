@@ -5,9 +5,9 @@ import { windowMs } from "../globe/model";
 const HOUR = 3_600_000;
 
 /** Height of a lane's mark row. */
-export const LANE_H = 20;
+export const LANE_H = 22;
 /** Thin activity strip (cubes, diamonds) directly under its lane. */
-export const ACTIVITY_H = 8;
+export const ACTIVITY_H = 6;
 /** One lane block: mark row plus activity strip. */
 export const BLOCK_H = LANE_H + ACTIVITY_H;
 /** Width of the plot in px; the window is stretched over it and the plot scrolls inside the view. */

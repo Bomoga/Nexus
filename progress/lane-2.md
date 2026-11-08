@@ -1,4 +1,5 @@
 ## Done
+- L2-S1 live Slack check passed (2026-11-07 19:15 ET, #nexus-demo): a person's message arrived over Socket Mode, the bot posted the approval card, and the APPROVE click came back through interactivity as a human decision (38 s). A first try was lost because the message went out before the ~11 s connect finished or to another connected client; a diagnostic run of the service then received every message.
 - Shared store wired (lane-2, not on main yet): L2-09 schema, L2-10 Tiger store + combined store, L2-10b the agent's machine decides its approvals offline, L2-11 live sync (LISTEN/NOTIFY + keyset polling), L2-12 activity strip (events.activity, on main via PR #41), L2-15 Token Vault, L2-17 Slack progress message. Everything runs on the local copy until TIGER_URL (or SecretStorage nexus.tiger.url) is set; then the store switches to Tiger and sync starts.
 - L2-W1 Windows fixes merged to lane-2 (disputed once): isolated git config uses a real empty file instead of os.devNull; the gate awaits taskkill (3 s cap) before reporting a killed run, and finishes a timed-out run even when the kill leaves the child running; gate tests are platform-neutral (node -e), poll instead of fixed 20 ms waits, and skip on win32 only for POSIX process groups and the POSIX PATH-shadow script. Verified on macOS only.
 - PR #33 merged to main: code refs, nexus:// coderef links, ui.openTarget, notification-text sanitizing. Launch check passed.
@@ -62,7 +63,6 @@ T+0 = 22:00 ET, 2026-11-06
 
 ## Next
 - All 17 planned Lane 2 tasks are on main (L2-01 to L2-17). Remaining are live checks and handoffs, not code:
-- Brandon: L2-S1 live Slack check (Socket Mode message + APPROVE click from the extension host: SLACK_TEST_CHANNEL + tokens, npm run test:int -- slack).
 - Brandon: real TIGER_URL; apply sql/001-003; run `npm run test:int -- schema` (team DB, rolled back) and, against a scratch DB via TIGER_TEST_URL, the tiger and sync int tests; the psql LISTEN check in 003's header (H0-B4).
 - Token Vault live check once Slack is linked in Auth0 (token-vault.int.test.ts; confirm the not-connected error names and the connect URL).
 - Adrian: l2.machineId + l2.progress in lane-1-features.ts; rerun the git, gate and code-ref tests on Windows.

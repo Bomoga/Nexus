@@ -32,7 +32,7 @@ function setup(responses: Array<Response | Error | (() => Response | Error)>, ov
   };
   return { client: new CibaClient(deps), calls, sleeps, deps };
 }
-const start = { authReqId: "req-1", expiresIn: 300, interval: 2 };
+const start = { authReqId: "req-1", binding: "bind-1", expiresIn: 300, interval: 2 };
 const run = (c: CibaClient, signal?: AbortSignal) => c.requestApproval({ approval, approverAuth0UserId: APPROVER, signal });
 
 describe("bindingMessage", () => {
@@ -70,7 +70,7 @@ describe("CibaClient", () => {
     expect(calls[0]!.auth).toBe("Bearer tok-secret");
     expect(calls[0]!.body).toMatchObject({ approvalId: "appr-1", sessionId: "sess-42", approverAuth0UserId: APPROVER });
     expect(String(calls[0]!.body.actionLabel).length).toBeLessThanOrEqual(64);
-    expect(calls[1]!.body).toEqual({ authReqId: "req-1" });
+    expect(calls[1]!.body).toEqual({ authReqId: "req-1", binding: "bind-1" });
     expect(sleeps[0]).toBe(2000);          // the service's interval hint wins over the default
   });
 

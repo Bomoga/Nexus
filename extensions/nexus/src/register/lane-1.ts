@@ -16,14 +16,14 @@ import { registerFeatures, withFallbacks, type Lane2Services } from "./lane-1-fe
 
 // Lane 1 wiring: accounts, models, agent, tasks, sessions, approvals, swarms, auth.
 // Lead-only file until wave 3: tasks list their registration lines and the lead adds them at merge time.
-export function registerLane1(context: vscode.ExtensionContext, lane2: Partial<Lane2Services> = {}): void {
+export function registerLane1(context: vscode.ExtensionContext, lane2: Partial<Lane2Services> = {}, openTaskEditor?: (taskId: string) => void): void {
   const accounts = new AccountsService({ secrets: context.secrets, state: context.globalState, providers: createProviders() });
   const picker = registerModelPicker(context, accounts);
   registerConnectProvider(context, accounts, picker);
   registerReseedDemoRepo(context);
   registerHomeKeeper(context);
   const auth = registerAuth(context);
-  registerFeatures(context, accounts, picker, auth, withFallbacks(lane2, m => console.warn(`Nexus: ${m}`)));
+  registerFeatures(context, accounts, picker, auth, withFallbacks(lane2, m => console.warn(`Nexus: ${m}`)), openTaskEditor);
 }
 
 function registerAuth(context: vscode.ExtensionContext): Auth0Session {

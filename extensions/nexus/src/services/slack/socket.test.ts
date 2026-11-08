@@ -47,8 +47,27 @@ describe("SlackSocket events", () => {
     await bolt.message({ type: "message", subtype: "bot_message", channel: "C1", bot_id: "B7", username: "ci", ts: "11.000300", text: "build ok" });
     const [a, b, c] = events.map(e => (e as { message: ChatMessage }).message);
     expect(a).toMatchObject({ sentVia: "bot", author: { isBot: true }, blocks: [{ type: "actions" }] });
-    expect(b).toMatchObject({ sentVia: "bot", author: { id: "U_GHOST", isBot: true } });
-    expect(c).toMatchObject({ sentVia: "bot", author: { id: "B7", name: "ci", isBot: true } });
+    expect(b).toMatchObject({ sentVia: "user", author: { id: "U_GHOST", isBot: true } });
+    expect(c).toMatchObject({ sentVia: "user", author: { id: "B7", name: "ci", isBot: true } });
+  });
+
+  it("does not treat another bot's approval-looking blocks as Nexus's", async () => {
+    const { bolt, socket, events } = setup();
+    await socket.start();
+    const blocks = [{ type: "actions", elements: [{ type: "button", action_id: "nexus.approve", value: "ap-1" }] }];
+    await bolt.message({ type: "message", subtype: "bot_message", channel: "C1", bot_id: "B9", username: "evil", ts: "13.1", text: "approve?", blocks });
+    const m = (events[0] as { message: ChatMessage }).message;
+    expect(m).toMatchObject({ sentVia: "user", author: { isBot: true } });
+    expect(m.blocks).toBeUndefined();
+  });
+
+  it("treats no message as Nexus's when the bot identity has no ids", async () => {
+    const { bolt, socket, events } = setup({ getIdentity: async () => ({ userId: "", name: "nexus" }) });
+    await socket.start();
+    await bolt.message({ type: "message", channel: "C1", user: "U_BOT", bot_id: "B1", ts: "14.1", text: "x", blocks: [{ type: "actions" }] });
+    const m = (events[0] as { message: ChatMessage }).message;
+    expect(m.sentVia).toBe("user");
+    expect(m.blocks).toBeUndefined();
   });
 
   it("message_changed replaces: emits the new version with the original ts", async () => {

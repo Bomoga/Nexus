@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import { Channel, ChatMessage, SlackUser, Thread, encodeCodeRef } from "../../contracts";
+import { formatCodeRefForSlack } from "../coderef/slack-format";
 import { fx } from "../../contracts/fixtures";
-import { extractCodeRefs, SlackWebClient, webClientOptions, type SlackApi } from "./web-client";
+import { escapeUserText, extractCodeRefs, SlackWebClient, webClientOptions, type SlackApi } from "./web-client";
 
 const link = encodeCodeRef(fx.codeRef);
 const SHA = fx.codeRef.commit;
@@ -38,7 +39,7 @@ function makeFake() {
 type Fake = ReturnType<typeof makeFake>;
 function client(api: Fake = makeFake(), token: { token: string; source: "manual" } | null = { token: "xoxp-test", source: "manual" }, poster: Fake = makeFake()) {
   const makeApi = vi.fn((_t: string, kind: string) => (kind === "post" ? poster : api) as unknown as SlackApi);
-  return { api, poster, makeApi, c: new SlackWebClient({ getToken: async () => token, botUserId: "U_BOT", makeApi }) };
+  return { api, poster, makeApi, c: new SlackWebClient({ getToken: async () => token, botUserId: "U_BOT", botId: "B1", makeApi }) };
 }
 
 describe("extractCodeRefs", () => {
@@ -131,7 +132,8 @@ describe("SlackWebClient", () => {
     const failing = makeFake();
     failing.conversations.history.mockResolvedValue({ messages: [own] } as never);
     failing.users.info.mockRejectedValue(new Error("down"));
-    expect((await client(failing).c.history("C1")).messages[0]).toMatchObject({ sentVia: "bot" });   // fallback when the lookup failed
+    expect((await client(failing).c.history("C1")).messages[0]).toMatchObject({ sentVia: "user", author: { isBot: true } });   // lookup failed: still a bot to show, but not Nexus (a person's user id is not the bot's)
+    expect((await client(failing).c.history("C1")).messages[0].blocks).toBeUndefined();
   });
 
   it("treats a message as bot when users.info fails (bot_id present)", async () => {
@@ -313,5 +315,58 @@ describe("SlackWebClient", () => {
     const loop = makeFake();
     loop.conversations.history.mockResolvedValue({ messages: [], response_metadata: { next_cursor: "same" } });
     expect((await client(loop).c.history("C1", "same")).nextCursor).toBeUndefined();
+  });
+
+  it("keeps sentVia and blocks only for the Nexus bot's own bot_id; other bots are bots without blocks", async () => {
+    const card = [{ type: "actions", elements: [{ type: "button", action_id: "nexus.approve", value: "ap-1" }] }];
+    const api = makeFake();
+    api.conversations.history.mockResolvedValue({ messages: [
+      { type: "message", ts: "7.1", user: "U_BOT", bot_id: "B1", text: "real", blocks: card },
+      { type: "message", ts: "7.2", user: "U_EVIL", bot_id: "B9", text: "fake", blocks: card },
+      { type: "message", ts: "7.3", subtype: "bot_message", bot_id: "B9", username: "hook", text: "fake2", blocks: card },
+    ] } as never);
+    api.users.info.mockImplementation((async (a: { user: string }) => a.user === "U_BOT"
+      ? { user: { id: "U_BOT", name: "nexus", is_bot: true } }
+      : { user: { id: a.user, name: "evil", is_bot: true } }) as never);
+    const [real, evil, hook] = (await client(api).c.history("C1")).messages;
+    expect(real).toMatchObject({ sentVia: "bot", author: { isBot: true }, blocks: card });
+    expect(evil).toMatchObject({ sentVia: "user", author: { isBot: true } });
+    expect(hook).toMatchObject({ sentVia: "user", author: { isBot: true } });
+    expect(evil.blocks).toBeUndefined();
+    expect(hook.blocks).toBeUndefined();
+  });
+
+  it("treats no message as Nexus's when the bot identity is unknown", async () => {
+    const api = makeFake();
+    api.conversations.history.mockResolvedValue({ messages: [{ type: "message", ts: "7.1", user: "U_BOT", bot_id: "B1", text: "x", blocks: [{ type: "actions" }] }] } as never);
+    const c = new SlackWebClient({ getToken: async () => ({ token: "xoxp-test", source: "manual" }), makeApi: (() => api) as never });
+    const m = (await c.history("C1")).messages[0];
+    expect(m).toMatchObject({ sentVia: "user", author: { isBot: true } });
+    expect(m.blocks).toBeUndefined();
+  });
+
+  it("escapes what a person posts but keeps Nexus code-ref links", async () => {
+    const { c, poster } = client();
+    const shared = formatCodeRefForSlack(fx.codeRef, "a < b && c > d `x`");
+    await c.postAsUser({ channelId: "C1", text: "<!channel> hi" });
+    await c.postAsUser({ channelId: "C1", text: shared });
+    expect(poster.chat.postMessage).toHaveBeenNthCalledWith(1, { channel: "C1", text: "&lt;!channel&gt; hi" });
+    expect(poster.chat.postMessage).toHaveBeenNthCalledWith(2, { channel: "C1", text: shared });
+  });
+});
+
+describe("escapeUserText", () => {
+  it("neutralises mentions and broadcasts", () => {
+    expect(escapeUserText("<!channel> <@U123> <#C1|x>")).toBe("&lt;!channel&gt; &lt;@U123&gt; &lt;#C1|x&gt;");
+  });
+  it("shows generics literally and escapes bare ampersands without double-escaping", () => {
+    expect(escapeUserText("Map<string, number>")).toBe("Map&lt;string, number&gt;");
+    expect(escapeUserText("a & b")).toBe("a &amp; b");
+    expect(escapeUserText("&amp; &lt; &gt;")).toBe("&amp; &lt; &gt;");
+  });
+  it("passes a formatCodeRefForSlack message through byte for byte, but not a lookalike link", () => {
+    const shared = formatCodeRefForSlack(fx.codeRef, "if (a < b && c > d) { /* & */ }");
+    expect(escapeUserText(shared)).toBe(shared);
+    expect(escapeUserText("<nexus://evil.example/coderef/x|y>")).toBe("&lt;nexus://evil.example/coderef/x|y&gt;");
   });
 });

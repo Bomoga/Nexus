@@ -87,10 +87,11 @@ export function createSlackService(opts: CreateSlackServiceOptions): ComposedSla
   const build = async (): Promise<UserSlack> => {
     if (built) return built;
     let botUserId: string | undefined;
-    try { botUserId = (await bot.identity()).userId; } catch { /* no bot token yet: botIsMember reads false */ }
+    let botId: string | undefined;
+    try { const me = await bot.identity(); botUserId = me.userId; botId = me.botId; } catch { /* no bot token yet: botIsMember reads false */ }
     const onTokenRejected = opts.onUserTokenRejected;
     if (!botUserId) return (withoutBot ??= new SlackWebClient({ getToken: opts.getUserToken, onTokenRejected, ...opts.webOptions }));
-    return (built = new SlackWebClient({ getToken: opts.getUserToken, botUserId, onTokenRejected, ...opts.webOptions }));
+    return (built = new SlackWebClient({ getToken: opts.getUserToken, botUserId, botId, onTokenRejected, ...opts.webOptions }));
   };
   const web: UserSlack = {
     postAsUser: async o => (await build()).postAsUser(o),

@@ -16,6 +16,7 @@ export const COMMANDS = {
   "nexus.cancelSession": "Nexus: Cancel agent session",     "nexus.openCodeRef": "Nexus: Open code reference",
   "nexus.setTimeWindow": "Nexus: Set globe time window",    "nexus.showIdentity": "Nexus: Show Slack posting identity",
   "nexus.dev.reseedDemoRepo": "Nexus (dev): Re-seed demo repo",
+  "nexus.newTask": "Nexus: New agent task",                 // a blank composer in the agent view: no Slack thread needed
 } as const;
 export type CommandId = keyof typeof COMMANDS;
 export const COMMAND_OWNER: Record<CommandId, "lane-1" | "lane-2" | "lane-3"> = {
@@ -25,5 +26,5 @@ export const COMMAND_OWNER: Record<CommandId, "lane-1" | "lane-2" | "lane-3"> = 
   "nexus.rerunSwarmReview": "lane-1", "nexus.signIn": "lane-1", "nexus.signOut": "lane-1", "nexus.connectSlack": "lane-2",
   "nexus.openSlack": "lane-3", "nexus.openApprovals": "lane-3", "nexus.openTimeline": "lane-3", "nexus.toggleOptimizer": "lane-1",
   "nexus.openReceipt": "lane-3", "nexus.cancelSession": "lane-1", "nexus.openCodeRef": "lane-2", "nexus.setTimeWindow": "lane-3",
-  "nexus.showIdentity": "lane-2", "nexus.dev.reseedDemoRepo": "lane-1",
+  "nexus.showIdentity": "lane-2", "nexus.dev.reseedDemoRepo": "lane-1", "nexus.newTask": "lane-3",
 };

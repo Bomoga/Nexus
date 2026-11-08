@@ -76,6 +76,11 @@ function buildHandlers(): Handlers {
       return { id: `${channelId}:${ts}`, channelId, ts, threadTs, author: { id: "U_ADRIAN", name: "adrian", isBot: false }, text, codeRefs: [], sentVia: "user", clientId };
     },
     "tasks.createFromThread": () => ({ ...fx.task, status: "draft" }),
+    "tasks.create": ({ title, brief }) => {
+      const t = { ...fx.task, id: `task_${String(tasks.length + 1).padStart(2, "0")}`, title, brief, source: { kind: "manual" as const }, status: "draft" as const, codeRefs: [] };
+      tasks.push(t);
+      return t;
+    },
     "tasks.get": ({ taskId }) => tasks.find((t) => t.id === taskId) ?? fx.task,
     "tasks.list": ({ status }) => tasks.filter((t) => !status || t.status === status),
     "tasks.update": ({ taskId, title, brief }) => {
